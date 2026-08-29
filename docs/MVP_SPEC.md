@@ -90,3 +90,53 @@ POS-001 does not implement capture, structured task or project state,
 recommendation, sessions, calendar behavior, AI behavior, Google integrations,
 HTTP endpoints, Shortcuts, NFC, user interfaces, or notifications.
 
+## Canonical structured state
+
+POS-002 implements deterministic persistence and Python operations for five
+canonical record types. It does not implement capture, eligibility,
+recommendation, sessions, or product-facing interfaces.
+
+### Projects and tasks
+
+Projects are ACTIVE or COMPLETED planning containers and are never executable
+recommendations. Tasks are executable work items with OPEN, BLOCKED, or
+COMPLETED status and distinct UNSPECIFIED, MUST, SHOULD, and COULD importance.
+UNSPECIFIED is the default and must not silently become SHOULD.
+
+Task scheduling uses one of:
+
+- FLEXIBLE, with no day or window fields;
+- DAY, with a calendar date and no invented clock time;
+- WINDOW, with a timezone-aware half-open interval `[start, end)` whose start is
+  strictly before its end.
+
+Scheduling and deadlines are independent. A task may have either a date-only
+deadline or an exact-time deadline, but never both. A date-only deadline remains
+a calendar date; an exact-time deadline is a normalized UTC instant. Neither
+form is a calendar commitment or directly occupies calendar time. Later
+eligibility policy must decide how a date-only deadline affects urgency or when
+it becomes overdue during its calendar day.
+
+### Fixed commitments
+
+Fixed commitments remain distinct from tasks. They have a required known start
+and may have an unknown end. An end is never invented and, when present, must be
+after the start. HARD, SOFT, and UNKNOWN classifications are explicit; UNKNOWN
+is the default because a timed event is not automatically hard.
+
+### Rules and unresolved inbox items
+
+Rules have a non-empty kind, structured JSON-object parameters, and an enabled
+state. POS-002 stores but does not evaluate them and defines no rule-kind
+taxonomy.
+
+Inbox items preserve original unresolved text and a reason. A null
+`resolved_at` means unresolved; first resolution sets it, and later resolution
+calls are no-ops. POS-002 does not interpret or resolve natural language.
+
+### Persistence boundary
+
+Schema initialization is explicit. Structured-state operations require an
+already initialized schema-version-2 database and do not migrate implicitly.
+Returned records expose typed dates and timezone-aware UTC datetimes rather than
+raw SQLite rows.

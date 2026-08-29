@@ -8,10 +8,12 @@ work session, and update that state. The product direction is described in
 
 ## Current boundary
 
-POS-001 provides repository and persistence infrastructure only. It does not
-implement capture, task or project workflows, recommendations, sessions,
-calendar behavior, AI behavior, integrations, or user interfaces. See
-`BUILD_STATE.md` for the exact implemented state.
+POS-002 provides canonical, validated structured-state models and SQLite-backed
+operations for projects, tasks, fixed commitments, rules, and unresolved inbox
+items. These operations are currently a Python API; the CLI remains limited to
+database initialization. Capture, recommendations, eligibility, sessions,
+calendar behavior, AI behavior, integrations, and user interfaces are not
+implemented. See `BUILD_STATE.md` for the exact state.
 
 ## Requirements and setup
 

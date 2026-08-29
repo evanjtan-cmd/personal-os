@@ -6,8 +6,10 @@ import pytest
 from personal_os import database
 from personal_os.database import (
     CURRENT_SCHEMA_VERSION,
+    TABLE_DDL,
     DatabaseInitializationError,
     initialize_database,
+    open_database,
 )
 
 
@@ -26,78 +28,112 @@ def user_objects(path: Path) -> list[str]:
     return [str(row[0]) for row in rows]
 
 
-def test_clean_database_initialization(tmp_path: Path) -> None:
+def test_fresh_database_migrates_through_version_2(tmp_path: Path) -> None:
     path = tmp_path / "runtime" / "personal_os.db"
 
     version = initialize_database(path)
 
-    assert path.exists()
-    assert version == CURRENT_SCHEMA_VERSION
-    assert read_version(path) == CURRENT_SCHEMA_VERSION
-    assert user_objects(path) == []
+    assert version == CURRENT_SCHEMA_VERSION == 2
+    assert read_version(path) == 2
+    assert user_objects(path) == sorted(TABLE_DDL)
 
 
-def test_repeated_initialization_is_idempotent(tmp_path: Path) -> None:
+def test_existing_version_1_migrates_to_version_2(tmp_path: Path) -> None:
+    path = tmp_path / "version1.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA user_version = 1")
+
+    assert initialize_database(path) == 2
+    assert user_objects(path) == sorted(TABLE_DDL)
+
+
+def test_repeated_version_2_initialization_is_idempotent(tmp_path: Path) -> None:
     path = tmp_path / "personal_os.db"
-
-    first_version = initialize_database(path)
+    initialize_database(path)
     first_bytes = path.read_bytes()
-    second_version = initialize_database(path)
 
-    assert first_version == second_version == CURRENT_SCHEMA_VERSION
+    assert initialize_database(path) == 2
     assert path.read_bytes() == first_bytes
 
 
 def test_newer_schema_version_fails_without_mutation(tmp_path: Path) -> None:
     path = tmp_path / "future.db"
     with sqlite3.connect(path) as connection:
-        connection.execute(f"PRAGMA user_version = {CURRENT_SCHEMA_VERSION + 1}")
+        connection.execute("PRAGMA user_version = 3")
     original = path.read_bytes()
 
     with pytest.raises(DatabaseInitializationError, match="newer than supported"):
         initialize_database(path)
 
     assert path.read_bytes() == original
-    assert read_version(path) == CURRENT_SCHEMA_VERSION + 1
 
 
 def test_unversioned_nonempty_database_is_rejected(tmp_path: Path) -> None:
     path = tmp_path / "unversioned.db"
     with sqlite3.connect(path) as connection:
         connection.execute("CREATE TABLE existing_data (value TEXT)")
-    original_objects = user_objects(path)
 
-    with pytest.raises(DatabaseInitializationError, match="unversioned database"):
+    with pytest.raises(DatabaseInitializationError, match="version 0"):
         initialize_database(path)
 
     assert read_version(path) == 0
-    assert user_objects(path) == original_objects
+    assert user_objects(path) == ["existing_data"]
 
 
-def test_current_version_with_unexpected_objects_is_rejected(tmp_path: Path) -> None:
-    path = tmp_path / "incompatible.db"
+def test_malformed_version_2_schema_is_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "malformed.db"
     with sqlite3.connect(path) as connection:
-        connection.execute("CREATE TABLE unexpected (value TEXT)")
-        connection.execute(f"PRAGMA user_version = {CURRENT_SCHEMA_VERSION}")
+        for name, ddl in TABLE_DDL.items():
+            if name != "rules":
+                connection.execute(ddl)
+        connection.execute("PRAGMA user_version = 2")
 
-    with pytest.raises(DatabaseInitializationError, match="unexpected objects"):
+    with pytest.raises(DatabaseInitializationError, match="objects differ"):
         initialize_database(path)
 
-    assert read_version(path) == CURRENT_SCHEMA_VERSION
-    assert user_objects(path) == ["unexpected"]
+    assert read_version(path) == 2
 
 
-def test_failed_migration_rolls_back(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_altered_version_2_table_is_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "altered.db"
+    initialize_database(path)
+    with sqlite3.connect(path) as connection:
+        connection.execute("ALTER TABLE rules ADD COLUMN unexpected TEXT")
+
+    with pytest.raises(DatabaseInitializationError, match="incompatible definition"):
+        initialize_database(path)
+
+
+def test_failed_migration_2_rolls_back_to_version_1(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     path = tmp_path / "failed.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA user_version = 1")
 
     def failing_migration(connection: sqlite3.Connection) -> None:
         connection.execute("CREATE TABLE partial_change (value TEXT)")
         raise RuntimeError("migration failed")
 
-    monkeypatch.setitem(database.MIGRATIONS, 1, failing_migration)
+    monkeypatch.setitem(database.MIGRATIONS, 2, failing_migration)
 
     with pytest.raises(RuntimeError, match="migration failed"):
         initialize_database(path)
 
-    assert read_version(path) == 0
+    assert read_version(path) == 1
     assert user_objects(path) == []
+
+
+def test_database_connections_enable_foreign_keys(tmp_path: Path) -> None:
+    path = tmp_path / "personal_os.db"
+    initialize_database(path)
+
+    connection = open_database(path, require_existing=True)
+    try:
+        assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        foreign_key = connection.execute("PRAGMA foreign_key_list(tasks)").fetchone()
+        assert foreign_key["table"] == "projects"
+        assert foreign_key["from"] == "project_id"
+        assert foreign_key["on_delete"] == "RESTRICT"
+    finally:
+        connection.close()

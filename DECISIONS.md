@@ -32,3 +32,28 @@ tables.
 CLI, HTTP, Shortcut, NFC, voice, and other interfaces remain thin adapters over
 centralized application and domain logic. POS-001's CLI exposes only database
 initialization.
+
+## 2026-08-29 — Canonical structured state
+
+Projects, tasks, fixed commitments, rules, and unresolved inbox items are the
+first canonical domain records. Application-facing state uses frozen
+dataclasses, string enums, typed `date` and timezone-aware `datetime` values,
+and a concrete SQLite state store. Local integer primary keys are sufficient
+for the personal-use MVP; future external-source identifiers remain separate.
+
+Task scheduling and deadlines are independent. Scheduling uses FLEXIBLE, DAY,
+or half-open WINDOW semantics. Deadlines preserve either a date-only fact or an
+exact UTC instant without converting one into the other.
+
+## 2026-08-29 — Schema version 2 and persistence integrity
+
+Schema version 2 contains exactly five domain tables and is validated against
+canonical table definitions. Each state operation requires an explicitly
+initialized current-version database, enables and verifies SQLite foreign-key
+enforcement, and owns its connection and transaction. State operations never
+run migrations implicitly.
+
+Persisted instants use fixed-width `YYYY-MM-DDTHH:MM:SS.ffffffZ` UTC text.
+Rules use canonically serialized JSON-object text validated by the application,
+without depending on optional SQLite JSON functions. Inbox resolution is
+represented nonredundantly by nullable `resolved_at` and is one-way.
