@@ -153,12 +153,18 @@ class SQLiteStateStore:
             "fixed commitment",
         )
 
+    @staticmethod
+    def _decode_rule_enabled(value: object) -> bool:
+        if type(value) is not int or value not in (0, 1):
+            raise DomainValidationError("stored rule enabled must be integer 0 or 1")
+        return value == 1
+
     def _rule_from_row(self, row: sqlite3.Row) -> Rule:
         return self._decode(
             lambda: Rule(
                 id=row["id"], kind=row["kind"],
                 parameters=parse_parameters(row["parameters_json"]),
-                enabled=bool(row["enabled"]),
+                enabled=self._decode_rule_enabled(row["enabled"]),
                 created_at=parse_instant(row["created_at"], "created_at"),
                 updated_at=parse_instant(row["updated_at"], "updated_at"),
             ),

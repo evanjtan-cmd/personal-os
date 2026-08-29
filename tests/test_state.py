@@ -290,6 +290,25 @@ def test_malformed_persisted_rule_json_raises_persistence_error(store: SQLiteSta
         store.get_rule(rule.id)
 
 
+def test_malformed_persisted_rule_enabled_raises_persistence_error(
+    store: SQLiteStateStore,
+) -> None:
+    disabled = store.create_rule("disabled", enabled=False)
+    enabled = store.create_rule("enabled", enabled=True)
+    assert store.get_rule(disabled.id).enabled is False
+    assert store.get_rule(enabled.id).enabled is True
+
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        assert connection.execute("PRAGMA ignore_check_constraints").fetchone()[0] == 1
+        connection.execute(
+            "UPDATE rules SET enabled = ? WHERE id = ?", (2, enabled.id)
+        )
+
+    with pytest.raises(PersistenceError, match="integer 0 or 1"):
+        store.get_rule(enabled.id)
+
+
 def test_inbox_round_trip_update_and_one_way_resolution(store: SQLiteStateStore) -> None:
     item = store.create_inbox_item("  Original raw text  ", "Missing date")
     updated = store.update_inbox_item(item.id, unresolved_reason="Missing exact date")
