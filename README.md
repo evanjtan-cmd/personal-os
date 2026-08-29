@@ -8,12 +8,12 @@ work session, and update that state. The product direction is described in
 
 ## Current boundary
 
-POS-002 provides canonical, validated structured-state models and SQLite-backed
-operations for projects, tasks, fixed commitments, rules, and unresolved inbox
-items. These operations are currently a Python API; the CLI remains limited to
-database initialization. Capture, recommendations, eligibility, sessions,
-calendar behavior, AI behavior, integrations, and user interfaces are not
-implemented. See `BUILD_STATE.md` for the exact state.
+POS-003 provides durable natural-language capture, constrained OpenAI Responses
+API interpretation, deterministic temporal resolution, and atomic application
+to the canonical SQLite-backed state. These operations are currently a Python
+API; the CLI remains limited to database initialization. Recommendations,
+eligibility, sessions, calendar behavior, additional integrations, and user
+interfaces are not implemented. See `BUILD_STATE.md` for the exact state.
 
 ## Requirements and setup
 
@@ -27,6 +27,11 @@ python -m pip install -e ".[dev]"
 ```
 
 Importing `personal_os` has no filesystem side effects.
+
+To use the production capture interpreter, set `PERSONAL_OS_CAPTURE_MODEL` to
+an OpenAI model that supports strict structured output and provide
+`OPENAI_API_KEY` through the standard SDK environment. No model is assumed and
+no secret or `.env` file belongs in the repository.
 
 ## Initialize the database
 

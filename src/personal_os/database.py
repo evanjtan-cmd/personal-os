@@ -8,7 +8,7 @@ from pathlib import Path
 
 from personal_os.errors import PersonalOSError
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 
 class DatabaseInitializationError(PersonalOSError):
@@ -26,7 +26,7 @@ def _date_check(column: str) -> str:
     return f"CHECK(length({column}) = 10)"
 
 
-TABLE_DDL: dict[str, str] = {
+V2_TABLE_DDL: dict[str, str] = {
     "projects": f"""
         CREATE TABLE projects (
             id INTEGER PRIMARY KEY,
@@ -105,6 +105,51 @@ TABLE_DDL: dict[str, str] = {
     """,
 }
 
+def _ddl_after_add_source_column(name: str, ddl: str) -> str:
+    column = "            source_capture_id INTEGER REFERENCES captures(id) ON DELETE RESTRICT"
+    if name == "tasks":
+        marker = "            CHECK(\n                (schedule_mode"
+        return ddl.replace(marker, f"{column},\n{marker}", 1)
+    if name == "fixed_commitments":
+        marker = "            CHECK(end_at IS NULL"
+        return ddl.replace(marker, f"{column},\n{marker}", 1)
+    return ddl.replace("        )\n    ", f"            , {column.strip()}\n        )\n    ", 1)
+
+
+TABLE_DDL: dict[str, str] = {
+    **{
+        name: _ddl_after_add_source_column(name, ddl)
+        if name in {"projects", "tasks", "fixed_commitments", "inbox_items"}
+        else ddl
+        for name, ddl in V2_TABLE_DDL.items()
+    },
+    "captures": f"""
+        CREATE TABLE captures (
+            id INTEGER PRIMARY KEY,
+            raw_text TEXT NOT NULL CHECK(length(trim(raw_text)) > 0),
+            status TEXT NOT NULL CHECK(status IN ('RECEIVED', 'APPLIED', 'UNRESOLVED', 'FAILED')),
+            reference_time TEXT NOT NULL {_utc_check('reference_time')},
+            timezone_name TEXT NOT NULL CHECK(length(trim(timezone_name)) > 0),
+            interpretation_json TEXT,
+            interpretation_version INTEGER,
+            model_provider TEXT,
+            model_name TEXT,
+            model_response_id TEXT,
+            unresolved_reason TEXT,
+            failure_kind TEXT CHECK(failure_kind IN ('CONFIGURATION_ERROR', 'PROVIDER_ERROR', 'REFUSAL', 'INVALID_OUTPUT')),
+            failure_reason TEXT,
+            created_at TEXT NOT NULL {_utc_check('created_at')},
+            updated_at TEXT NOT NULL {_utc_check('updated_at')},
+            CHECK((interpretation_json IS NULL AND interpretation_version IS NULL)
+                OR (interpretation_json IS NOT NULL AND interpretation_version = 1)),
+            CHECK((status = 'RECEIVED' AND unresolved_reason IS NULL AND failure_kind IS NULL AND failure_reason IS NULL)
+                OR (status = 'APPLIED' AND unresolved_reason IS NULL AND failure_kind IS NULL AND failure_reason IS NULL)
+                OR (status = 'UNRESOLVED' AND unresolved_reason IS NOT NULL AND failure_kind IS NULL AND failure_reason IS NULL)
+                OR (status = 'FAILED' AND unresolved_reason IS NULL AND failure_kind IS NOT NULL AND failure_reason IS NOT NULL))
+        )
+    """,
+}
+
 Migration = Callable[[sqlite3.Connection], None]
 
 
@@ -117,11 +162,22 @@ def _migration_1(connection: sqlite3.Connection) -> None:
 def _migration_2(connection: sqlite3.Connection) -> None:
     """Create the first canonical structured-state schema."""
 
-    for ddl in TABLE_DDL.values():
+    for ddl in V2_TABLE_DDL.values():
         connection.execute(ddl)
 
 
-MIGRATIONS: dict[int, Migration] = {1: _migration_1, 2: _migration_2}
+def _migration_3(connection: sqlite3.Connection) -> None:
+    """Add durable natural-language captures and source traceability."""
+
+    connection.execute(TABLE_DDL["captures"])
+    for table in ("projects", "tasks", "fixed_commitments", "inbox_items"):
+        connection.execute(
+            f"ALTER TABLE {table} ADD COLUMN source_capture_id INTEGER "
+            "REFERENCES captures(id) ON DELETE RESTRICT"
+        )
+
+
+MIGRATIONS: dict[int, Migration] = {1: _migration_1, 2: _migration_2, 3: _migration_3}
 
 
 def open_database(path: Path, *, require_existing: bool = False) -> sqlite3.Connection:
@@ -165,7 +221,10 @@ def _user_objects(connection: sqlite3.Connection) -> dict[str, tuple[str, str]]:
 
 
 def _normalize_ddl(sql: str) -> str:
-    return " ".join(sql.split()).rstrip(";")
+    normalized = " ".join(sql.split()).rstrip(";")
+    while " )" in normalized:
+        normalized = normalized.replace(" )", ")")
+    return normalized
 
 
 def validate_schema(connection: sqlite3.Connection, version: int) -> None:
@@ -179,28 +238,35 @@ def validate_schema(connection: sqlite3.Connection, version: int) -> None:
                 f"schema version {version} contains unexpected objects: {names}"
             )
         return
-    if version != 2:
+    if version not in (2, 3):
         raise DatabaseInitializationError(f"unsupported schema version {version}")
-    if set(objects) != set(TABLE_DDL):
-        expected = ", ".join(sorted(TABLE_DDL))
+    expected_tables = V2_TABLE_DDL if version == 2 else TABLE_DDL
+    if set(objects) != set(expected_tables):
+        expected = ", ".join(sorted(expected_tables))
         actual = ", ".join(sorted(objects)) or "none"
         raise DatabaseInitializationError(
-            f"schema version 2 objects differ; expected {expected}; found {actual}"
+            f"schema version {version} objects differ; expected {expected}; found {actual}"
         )
-    for table, expected_ddl in TABLE_DDL.items():
+    for table, expected_ddl in expected_tables.items():
         object_type, actual_ddl = objects[table]
         if object_type != "table" or _normalize_ddl(actual_ddl) != _normalize_ddl(expected_ddl):
             raise DatabaseInitializationError(
-                f"schema version 2 table {table} has an incompatible definition"
+                f"schema version {version} table {table} has an incompatible definition"
             )
-    foreign_keys = connection.execute("PRAGMA foreign_key_list(tasks)").fetchall()
-    expected = [("projects", "project_id", "id", "NO ACTION", "RESTRICT")]
-    actual = [
-        (row["table"], row["from"], row["to"], row["on_update"], row["on_delete"])
-        for row in foreign_keys
-    ]
-    if actual != expected:
-        raise DatabaseInitializationError("tasks has incompatible foreign-key metadata")
+    expected_fks = {
+        "projects": [] if version == 2 else [("captures", "source_capture_id", "id", "NO ACTION", "RESTRICT")],
+        "tasks": [("projects", "project_id", "id", "NO ACTION", "RESTRICT")]
+        + ([] if version == 2 else [("captures", "source_capture_id", "id", "NO ACTION", "RESTRICT")]),
+        "fixed_commitments": [] if version == 2 else [("captures", "source_capture_id", "id", "NO ACTION", "RESTRICT")],
+        "inbox_items": [] if version == 2 else [("captures", "source_capture_id", "id", "NO ACTION", "RESTRICT")],
+    }
+    for table, expected in expected_fks.items():
+        actual = sorted(
+            (row["table"], row["from"], row["to"], row["on_update"], row["on_delete"])
+            for row in connection.execute(f"PRAGMA foreign_key_list({table})")
+        )
+        if actual != sorted(expected):
+            raise DatabaseInitializationError(f"{table} has incompatible foreign-key metadata")
 
 
 def initialize_database(database_path: Path) -> int:

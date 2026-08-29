@@ -57,3 +57,19 @@ Persisted instants use fixed-width `YYYY-MM-DDTHH:MM:SS.ffffffZ` UTC text.
 Rules use canonically serialized JSON-object text validated by the application,
 without depending on optional SQLite JSON functions. Inbox resolution is
 represented nonredundantly by nullable `resolved_at` and is one-way.
+
+## 2026-08-29 — Durable constrained capture
+
+Schema version 3 adds durable captures and nullable `source_capture_id` foreign
+keys on projects, tasks, fixed commitments, and inbox items. Raw text and its
+trusted reference instant/timezone are committed before interpretation.
+Finalization is one-way and atomically creates either validated derived state or
+one unresolved inbox item. Configuration/provider/refusal/invalid-output
+failures preserve the capture without creating an inbox item.
+
+Capture interpretation has one versioned semantic JSON contract and one OpenAI
+3.x Responses API adapter using strict structured output and `store=False`.
+Model configuration is explicit through `PERSONAL_OS_CAPTURE_MODEL`; SDK client
+construction remains lazy. Deterministic application code owns relative-date,
+weekend, timezone, and daylight-saving resolution. Bare clock hours and dates
+without years are preserved as semantic uncertainty and remain unresolved.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
@@ -19,6 +20,9 @@ from personal_os.database import (
 from personal_os.errors import DomainValidationError, EntityNotFoundError, PersistenceError
 from personal_os.models import (
     CommitmentHardness,
+    Capture,
+    CaptureFailureKind,
+    CaptureStatus,
     FixedCommitment,
     InboxItem,
     Project,
@@ -118,6 +122,7 @@ class SQLiteStateStore:
                 status=ProjectStatus(row["status"]),
                 created_at=parse_instant(row["created_at"], "created_at"),
                 updated_at=parse_instant(row["updated_at"], "updated_at"),
+                source_capture_id=row["source_capture_id"],
             ),
             "project",
         )
@@ -136,6 +141,7 @@ class SQLiteStateStore:
                 estimated_minutes=row["estimated_minutes"],
                 created_at=parse_instant(row["created_at"], "created_at"),
                 updated_at=parse_instant(row["updated_at"], "updated_at"),
+                source_capture_id=row["source_capture_id"],
             ),
             "task",
         )
@@ -149,6 +155,7 @@ class SQLiteStateStore:
                 hardness=CommitmentHardness(row["hardness"]),
                 created_at=parse_instant(row["created_at"], "created_at"),
                 updated_at=parse_instant(row["updated_at"], "updated_at"),
+                source_capture_id=row["source_capture_id"],
             ),
             "fixed commitment",
         )
@@ -179,6 +186,7 @@ class SQLiteStateStore:
                 resolved_at=None if row["resolved_at"] is None else parse_instant(row["resolved_at"], "resolved_at"),
                 created_at=parse_instant(row["created_at"], "created_at"),
                 updated_at=parse_instant(row["updated_at"], "updated_at"),
+                source_capture_id=row["source_capture_id"],
             ),
             "inbox item",
         )
@@ -435,3 +443,143 @@ class SQLiteStateStore:
                 (now, now, item_id),
             )
             return self._inbox_from_row(self._row_or_missing(connection, "inbox_items", item_id, "inbox item"))
+
+    def _capture_from_row(self, row: sqlite3.Row) -> Capture:
+        def decode() -> Capture:
+            interpretation = None
+            if row["interpretation_json"] is not None:
+                interpretation = json.loads(row["interpretation_json"])
+                if not isinstance(interpretation, dict):
+                    raise DomainValidationError("stored interpretation must be a JSON object")
+            return Capture(
+                id=row["id"], raw_text=row["raw_text"], status=CaptureStatus(row["status"]),
+                reference_time=parse_instant(row["reference_time"], "reference_time"),
+                timezone_name=row["timezone_name"], interpretation=interpretation,
+                interpretation_version=row["interpretation_version"],
+                model_provider=row["model_provider"], model_name=row["model_name"],
+                model_response_id=row["model_response_id"],
+                unresolved_reason=row["unresolved_reason"],
+                failure_kind=None if row["failure_kind"] is None else CaptureFailureKind(row["failure_kind"]),
+                failure_reason=row["failure_reason"],
+                created_at=parse_instant(row["created_at"], "created_at"),
+                updated_at=parse_instant(row["updated_at"], "updated_at"),
+            )
+        return self._decode(decode, "capture")
+
+    def create_capture(self, raw_text: str, reference_time: datetime, timezone_name: str) -> Capture:
+        raw = require_text(raw_text, "raw_text", preserve=True)
+        reference = normalize_instant(reference_time, "reference_time")
+        zone = require_text(timezone_name, "timezone_name")
+        with self._transaction() as connection:
+            now = serialize_instant(self._now())
+            cursor = connection.execute(
+                "INSERT INTO captures (raw_text, status, reference_time, timezone_name, created_at, updated_at) VALUES (?, 'RECEIVED', ?, ?, ?, ?)",
+                (raw, serialize_instant(reference), zone, now, now),
+            )
+            return self._capture_from_row(self._row_or_missing(connection, "captures", cursor.lastrowid, "capture"))
+
+    def get_capture(self, capture_id: int) -> Capture:
+        with self._connection() as connection:
+            return self._capture_from_row(self._row_or_missing(connection, "captures", capture_id, "capture"))
+
+    def list_captures(self) -> list[Capture]:
+        with self._connection() as connection:
+            return [self._capture_from_row(row) for row in connection.execute("SELECT * FROM captures ORDER BY id")]
+
+    @staticmethod
+    def _ensure_received(connection: sqlite3.Connection, capture_id: int) -> None:
+        row = SQLiteStateStore._row_or_missing(connection, "captures", capture_id, "capture")
+        if row["status"] != CaptureStatus.RECEIVED.value:
+            raise PersistenceError(f"capture {capture_id} has already been finalized")
+
+    @staticmethod
+    def _interpretation_json(interpretation: dict[str, Any] | None) -> str | None:
+        if interpretation is None:
+            return None
+        return json.dumps(interpretation, allow_nan=False, separators=(",", ":"), sort_keys=True)
+
+    def mark_capture_failed(
+        self, capture_id: int, kind: CaptureFailureKind, reason: str, *,
+        interpretation: dict[str, Any] | None = None, model_provider: str | None = None,
+        model_name: str | None = None, model_response_id: str | None = None,
+    ) -> Capture:
+        kind = require_enum(kind, CaptureFailureKind, "failure_kind")  # type: ignore[assignment]
+        reason = require_text(reason, "failure_reason")
+        with self._transaction() as connection:
+            self._ensure_received(connection, capture_id)
+            connection.execute(
+                """UPDATE captures SET status='FAILED', interpretation_json=?, interpretation_version=?,
+                    model_provider=?, model_name=?, model_response_id=?, failure_kind=?, failure_reason=?, updated_at=? WHERE id=?""",
+                (self._interpretation_json(interpretation), 1 if interpretation is not None else None,
+                 model_provider, model_name, model_response_id, kind.value, reason,
+                 serialize_instant(self._now()), capture_id),
+            )
+            return self._capture_from_row(self._row_or_missing(connection, "captures", capture_id, "capture"))
+
+    def apply_unresolved_capture(
+        self, capture_id: int, reason: str, *, interpretation: dict[str, Any],
+        model_provider: str, model_name: str, model_response_id: str | None,
+    ) -> tuple[Capture, InboxItem]:
+        reason = require_text(reason, "unresolved_reason")
+        with self._transaction() as connection:
+            row = self._row_or_missing(connection, "captures", capture_id, "capture")
+            self._ensure_received(connection, capture_id)
+            now = serialize_instant(self._now())
+            cursor = connection.execute(
+                "INSERT INTO inbox_items (raw_text, unresolved_reason, resolved_at, created_at, updated_at, source_capture_id) VALUES (?, ?, NULL, ?, ?, ?)",
+                (row["raw_text"], reason, now, now, capture_id),
+            )
+            connection.execute(
+                """UPDATE captures SET status='UNRESOLVED', interpretation_json=?, interpretation_version=1,
+                    model_provider=?, model_name=?, model_response_id=?, unresolved_reason=?, updated_at=? WHERE id=?""",
+                (self._interpretation_json(interpretation), model_provider, model_name,
+                 model_response_id, reason, now, capture_id),
+            )
+            capture = self._capture_from_row(self._row_or_missing(connection, "captures", capture_id, "capture"))
+            inbox = self._inbox_from_row(self._row_or_missing(connection, "inbox_items", cursor.lastrowid, "inbox item"))
+            return capture, inbox
+
+    def apply_resolved_capture(
+        self, capture_id: int, *, interpretation: dict[str, Any], model_provider: str,
+        model_name: str, model_response_id: str | None, project: dict[str, Any] | None,
+        tasks: list[dict[str, Any]], commitments: list[dict[str, Any]],
+    ) -> tuple[Capture, Project | None, list[Task], list[FixedCommitment]]:
+        with self._transaction() as connection:
+            self._ensure_received(connection, capture_id)
+            now = serialize_instant(self._now())
+            created_project = None
+            if project is not None:
+                cursor = connection.execute(
+                    "INSERT INTO projects (name, description, status, created_at, updated_at, source_capture_id) VALUES (?, ?, 'ACTIVE', ?, ?, ?)",
+                    (project["name"], project.get("description"), now, now, capture_id),
+                )
+                created_project = self._project_from_row(self._row_or_missing(connection, "projects", cursor.lastrowid, "project"))
+            created_tasks = []
+            for item in tasks:
+                project_id = created_project.id if item.get("project_id") == "NEW" else item.get("project_id")
+                values = validate_task_fields(**{**item, "project_id": project_id})
+                self._require_project(connection, values["project_id"])
+                cursor = connection.execute(
+                    """INSERT INTO tasks (title, project_id, status, importance, schedule_mode, day_date,
+                    window_start, window_end, deadline_date, deadline_at, estimated_minutes, created_at,
+                    updated_at, source_capture_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    self._task_sql_values(values) + (now, now, capture_id),
+                )
+                created_tasks.append(self._task_from_row(self._row_or_missing(connection, "tasks", cursor.lastrowid, "task")))
+            created_commitments = []
+            for item in commitments:
+                cursor = connection.execute(
+                    "INSERT INTO fixed_commitments (title, start_at, end_at, hardness, created_at, updated_at, source_capture_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (item["title"], serialize_instant(item["start_at"]),
+                     None if item.get("end_at") is None else serialize_instant(item["end_at"]),
+                     item.get("hardness", CommitmentHardness.UNKNOWN).value, now, now, capture_id),
+                )
+                created_commitments.append(self._commitment_from_row(self._row_or_missing(connection, "fixed_commitments", cursor.lastrowid, "fixed commitment")))
+            connection.execute(
+                """UPDATE captures SET status='APPLIED', interpretation_json=?, interpretation_version=1,
+                    model_provider=?, model_name=?, model_response_id=?, updated_at=? WHERE id=?""",
+                (self._interpretation_json(interpretation), model_provider, model_name,
+                 model_response_id, now, capture_id),
+            )
+            capture = self._capture_from_row(self._row_or_missing(connection, "captures", capture_id, "capture"))
+            return capture, created_project, created_tasks, created_commitments

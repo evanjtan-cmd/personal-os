@@ -29,13 +29,16 @@ The system must preserve the fact that something belongs on a day without invent
 
 Input:
 
-“Call Mike tomorrow at 4.”
+“Call Mike tomorrow at 4 PM.”
 
 Expected interpretation:
 
 * Type: Fixed/timed commitment
 * Date: tomorrow
 * Time: 4 PM
+
+A bare time such as “at 4” without AM/PM or unambiguous 24-hour notation is
+unresolved; the system must not infer which clock hour was intended.
 
 Input:
 

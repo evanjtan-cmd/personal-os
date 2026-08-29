@@ -137,6 +137,36 @@ calls are no-ops. POS-002 does not interpret or resolve natural language.
 ### Persistence boundary
 
 Schema initialization is explicit. Structured-state operations require an
-already initialized schema-version-2 database and do not migrate implicitly.
+already initialized current-version database and do not migrate implicitly.
 Returned records expose typed dates and timezone-aware UTC datetimes rather than
 raw SQLite rows.
+
+## Natural-language capture
+
+POS-003 adds a Python application service for durable natural-language capture.
+Each non-empty capture is stored as RECEIVED before external interpretation.
+It then becomes APPLIED, UNRESOLVED with one linked inbox item, or FAILED with a
+classified configuration, provider, refusal, or invalid-output failure. Derived
+projects, tasks, fixed commitments, and inbox items retain their immutable
+source-capture relationship, and resolved output is applied atomically.
+
+AI interpretation is constrained to a versioned semantic JSON contract. It may
+extract explicit facts, including a bare clock hour, but it may not resolve a
+bare `at 4` to AM or PM, infer a missing year, invent importance or duration,
+silently choose a project, or express recurrence. A bare clock and an explicit
+date without a year remain UNRESOLVED rather than becoming failed captures.
+
+Relative dates are resolved deterministically from the capture's trusted,
+timezone-aware reference instant and IANA timezone. TODAY, TOMORROW, weekday,
+next-weekday, explicit full dates, and this-weekend windows are supported. Day
+facts remain dates. Exact local times become UTC only when the local time is
+unambiguous and exists; daylight-saving gaps and folds remain unresolved. A
+fixed commitment that resolves into the past is unresolved, while a past
+deadline remains a valid fact.
+
+The production interpreter uses the OpenAI 3.x Responses API with an explicitly
+configured `PERSONAL_OS_CAPTURE_MODEL`, strict JSON Schema structured output,
+and `store=False`. `OPENAI_API_KEY` is read by the standard SDK. Client creation
+and all network activity are lazy, and no live request is part of automated
+validation. POS-003 adds no capture CLI, recurrence, rule capture, calendar
+integration, recommendation, eligibility, session, or HTTP behavior.

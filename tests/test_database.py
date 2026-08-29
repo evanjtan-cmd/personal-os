@@ -7,6 +7,7 @@ from personal_os import database
 from personal_os.database import (
     CURRENT_SCHEMA_VERSION,
     TABLE_DDL,
+    V2_TABLE_DDL,
     DatabaseInitializationError,
     initialize_database,
     open_database,
@@ -28,38 +29,56 @@ def user_objects(path: Path) -> list[str]:
     return [str(row[0]) for row in rows]
 
 
-def test_fresh_database_migrates_through_version_2(tmp_path: Path) -> None:
+def test_fresh_database_migrates_through_version_3(tmp_path: Path) -> None:
     path = tmp_path / "runtime" / "personal_os.db"
 
     version = initialize_database(path)
 
-    assert version == CURRENT_SCHEMA_VERSION == 2
-    assert read_version(path) == 2
+    assert version == CURRENT_SCHEMA_VERSION == 3
+    assert read_version(path) == 3
     assert user_objects(path) == sorted(TABLE_DDL)
 
 
-def test_existing_version_1_migrates_to_version_2(tmp_path: Path) -> None:
+def test_existing_version_1_migrates_to_version_3(tmp_path: Path) -> None:
     path = tmp_path / "version1.db"
     with sqlite3.connect(path) as connection:
         connection.execute("PRAGMA user_version = 1")
 
-    assert initialize_database(path) == 2
+    assert initialize_database(path) == 3
     assert user_objects(path) == sorted(TABLE_DDL)
 
 
-def test_repeated_version_2_initialization_is_idempotent(tmp_path: Path) -> None:
+def test_populated_version_2_migrates_to_version_3_without_rebuilding(tmp_path: Path) -> None:
+    path = tmp_path / "version2.db"
+    with sqlite3.connect(path) as connection:
+        for ddl in V2_TABLE_DDL.values():
+            connection.execute(ddl)
+        stamp = "2026-09-01T12:00:00.000000Z"
+        connection.execute(
+            "INSERT INTO projects (name, status, created_at, updated_at) VALUES ('College', 'ACTIVE', ?, ?)",
+            (stamp, stamp),
+        )
+        connection.execute("PRAGMA user_version = 2")
+
+    assert initialize_database(path) == 3
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("SELECT name, source_capture_id FROM projects").fetchone() == ("College", None)
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+
+
+def test_repeated_version_3_initialization_is_idempotent(tmp_path: Path) -> None:
     path = tmp_path / "personal_os.db"
     initialize_database(path)
     first_bytes = path.read_bytes()
 
-    assert initialize_database(path) == 2
+    assert initialize_database(path) == 3
     assert path.read_bytes() == first_bytes
 
 
 def test_newer_schema_version_fails_without_mutation(tmp_path: Path) -> None:
     path = tmp_path / "future.db"
     with sqlite3.connect(path) as connection:
-        connection.execute("PRAGMA user_version = 3")
+        connection.execute("PRAGMA user_version = 4")
     original = path.read_bytes()
 
     with pytest.raises(DatabaseInitializationError, match="newer than supported"):
@@ -131,9 +150,10 @@ def test_database_connections_enable_foreign_keys(tmp_path: Path) -> None:
     connection = open_database(path, require_existing=True)
     try:
         assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
-        foreign_key = connection.execute("PRAGMA foreign_key_list(tasks)").fetchone()
-        assert foreign_key["table"] == "projects"
-        assert foreign_key["from"] == "project_id"
-        assert foreign_key["on_delete"] == "RESTRICT"
+        foreign_keys = connection.execute("PRAGMA foreign_key_list(tasks)").fetchall()
+        assert {(row["table"], row["from"], row["on_delete"]) for row in foreign_keys} == {
+            ("projects", "project_id", "RESTRICT"),
+            ("captures", "source_capture_id", "RESTRICT"),
+        }
     finally:
         connection.close()

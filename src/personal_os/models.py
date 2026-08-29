@@ -44,6 +44,20 @@ class CommitmentHardness(StrEnum):
     SOFT = "SOFT"
 
 
+class CaptureStatus(StrEnum):
+    RECEIVED = "RECEIVED"
+    APPLIED = "APPLIED"
+    UNRESOLVED = "UNRESOLVED"
+    FAILED = "FAILED"
+
+
+class CaptureFailureKind(StrEnum):
+    CONFIGURATION_ERROR = "CONFIGURATION_ERROR"
+    PROVIDER_ERROR = "PROVIDER_ERROR"
+    REFUSAL = "REFUSAL"
+    INVALID_OUTPUT = "INVALID_OUTPUT"
+
+
 def require_identifier(value: object, field: str = "id") -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise DomainValidationError(f"{field} must be a positive integer")
@@ -240,6 +254,7 @@ class Project:
     status: ProjectStatus
     created_at: datetime
     updated_at: datetime
+    source_capture_id: int | None = None
 
     def __post_init__(self) -> None:
         created, updated = _validate_timestamps(self.created_at, self.updated_at)
@@ -249,6 +264,7 @@ class Project:
         object.__setattr__(self, "status", require_enum(self.status, ProjectStatus, "status"))
         object.__setattr__(self, "created_at", created)
         object.__setattr__(self, "updated_at", updated)
+        object.__setattr__(self, "source_capture_id", None if self.source_capture_id is None else require_identifier(self.source_capture_id, "source_capture_id"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -267,6 +283,7 @@ class Task:
     estimated_minutes: int | None
     created_at: datetime
     updated_at: datetime
+    source_capture_id: int | None = None
 
     def __post_init__(self) -> None:
         values = validate_task_fields(
@@ -282,6 +299,7 @@ class Task:
             object.__setattr__(self, field, value)
         object.__setattr__(self, "created_at", created)
         object.__setattr__(self, "updated_at", updated)
+        object.__setattr__(self, "source_capture_id", None if self.source_capture_id is None else require_identifier(self.source_capture_id, "source_capture_id"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -293,6 +311,7 @@ class FixedCommitment:
     hardness: CommitmentHardness
     created_at: datetime
     updated_at: datetime
+    source_capture_id: int | None = None
 
     def __post_init__(self) -> None:
         start = normalize_instant(self.start_at, "start_at")
@@ -307,6 +326,7 @@ class FixedCommitment:
         object.__setattr__(self, "hardness", require_enum(self.hardness, CommitmentHardness, "hardness"))
         object.__setattr__(self, "created_at", created)
         object.__setattr__(self, "updated_at", updated)
+        object.__setattr__(self, "source_capture_id", None if self.source_capture_id is None else require_identifier(self.source_capture_id, "source_capture_id"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,6 +357,7 @@ class InboxItem:
     resolved_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    source_capture_id: int | None = None
 
     def __post_init__(self) -> None:
         created, updated = _validate_timestamps(self.created_at, self.updated_at)
@@ -346,7 +367,59 @@ class InboxItem:
         object.__setattr__(self, "resolved_at", optional_instant(self.resolved_at, "resolved_at"))
         object.__setattr__(self, "created_at", created)
         object.__setattr__(self, "updated_at", updated)
+        object.__setattr__(self, "source_capture_id", None if self.source_capture_id is None else require_identifier(self.source_capture_id, "source_capture_id"))
 
     @property
     def is_resolved(self) -> bool:
         return self.resolved_at is not None
+
+
+@dataclass(frozen=True, slots=True)
+class Capture:
+    id: int
+    raw_text: str
+    status: CaptureStatus
+    reference_time: datetime
+    timezone_name: str
+    interpretation: dict[str, Any] | None
+    interpretation_version: int | None
+    model_provider: str | None
+    model_name: str | None
+    model_response_id: str | None
+    unresolved_reason: str | None
+    failure_kind: CaptureFailureKind | None
+    failure_reason: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    def __post_init__(self) -> None:
+        created, updated = _validate_timestamps(self.created_at, self.updated_at)
+        object.__setattr__(self, "id", require_identifier(self.id))
+        object.__setattr__(self, "raw_text", require_text(self.raw_text, "raw_text", preserve=True))
+        object.__setattr__(self, "status", require_enum(self.status, CaptureStatus, "status"))
+        object.__setattr__(self, "reference_time", normalize_instant(self.reference_time, "reference_time"))
+        object.__setattr__(self, "timezone_name", require_text(self.timezone_name, "timezone_name"))
+        if self.interpretation is not None and not isinstance(self.interpretation, dict):
+            raise DomainValidationError("interpretation must be a JSON object or None")
+        if (self.interpretation is None) != (self.interpretation_version is None):
+            raise DomainValidationError("interpretation and version must both be present or absent")
+        if self.interpretation_version not in (None, 1):
+            raise DomainValidationError("interpretation_version must be 1")
+        for field in ("model_provider", "model_name", "model_response_id", "unresolved_reason", "failure_reason"):
+            object.__setattr__(self, field, optional_text(getattr(self, field), field))
+        if self.failure_kind is not None:
+            object.__setattr__(self, "failure_kind", require_enum(self.failure_kind, CaptureFailureKind, "failure_kind"))
+        if self.status is CaptureStatus.RECEIVED:
+            if any(value is not None for value in (self.interpretation, self.unresolved_reason, self.failure_kind, self.failure_reason)):
+                raise DomainValidationError("RECEIVED capture cannot contain finalization fields")
+        elif self.status is CaptureStatus.APPLIED:
+            if self.interpretation is None or any(value is not None for value in (self.unresolved_reason, self.failure_kind, self.failure_reason)):
+                raise DomainValidationError("APPLIED capture has inconsistent finalization fields")
+        elif self.status is CaptureStatus.UNRESOLVED:
+            if self.interpretation is None or self.unresolved_reason is None or self.failure_kind is not None or self.failure_reason is not None:
+                raise DomainValidationError("UNRESOLVED capture has inconsistent finalization fields")
+        elif self.status is CaptureStatus.FAILED:
+            if self.failure_kind is None or self.failure_reason is None or self.unresolved_reason is not None:
+                raise DomainValidationError("FAILED capture has inconsistent finalization fields")
+        object.__setattr__(self, "created_at", created)
+        object.__setattr__(self, "updated_at", updated)
