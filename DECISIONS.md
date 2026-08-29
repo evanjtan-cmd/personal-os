@@ -73,3 +73,7 @@ Model configuration is explicit through `PERSONAL_OS_CAPTURE_MODEL`; SDK client
 construction remains lazy. Deterministic application code owns relative-date,
 weekend, timezone, and daylight-saving resolution. Bare clock hours and dates
 without years are preserved as semantic uncertainty and remain unresolved.
+The interpreter receives neither the trusted reference instant nor timezone;
+decoded JSON is validated into frozen typed intents before deterministic
+resolution. Active project context is deterministic and bounded, and a single
+multi-date task intent expands atomically into independent canonical task rows.

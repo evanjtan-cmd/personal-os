@@ -1,5 +1,4 @@
 import json
-from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -30,18 +29,21 @@ def client(response):
 
 
 def interpret(adapter):
-    return adapter.interpret("text", projects=[], reference_time=datetime(2026, 9, 1, tzinfo=UTC), timezone_name="UTC")
+    return adapter.interpret("text", projects=[])
 
 
 def test_adapter_uses_responses_strict_schema_and_disables_storage() -> None:
     fake, responses = client(SimpleNamespace(id="resp_1", model="gpt-test", status="completed", output=[], output_text=json.dumps(PAYLOAD)))
     result = interpret(OpenAIResponsesCaptureInterpreter(client=fake, model="gpt-test"))
-    assert result.payload == PAYLOAD
+    assert result.interpretation.to_dict() == PAYLOAD
     assert result.response_id == "resp_1"
     assert responses.kwargs["model"] == "gpt-test"
     assert responses.kwargs["store"] is False
     assert responses.kwargs["text"]["format"]["type"] == "json_schema"
     assert responses.kwargs["text"]["format"]["strict"] is True
+    assert set(json.loads(responses.kwargs["input"])) == {"raw_text", "active_projects"}
+    commitment = responses.kwargs["text"]["format"]["schema"]["properties"]["commitments"]["items"]
+    assert "end" not in commitment["properties"]
 
 
 def test_adapter_configuration_is_lazy_and_classified(monkeypatch: pytest.MonkeyPatch) -> None:

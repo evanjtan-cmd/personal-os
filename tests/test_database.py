@@ -29,6 +29,30 @@ def user_objects(path: Path) -> list[str]:
     return [str(row[0]) for row in rows]
 
 
+def create_populated_v2(path: Path) -> None:
+    stamp = "2026-09-01T12:00:00.000000Z"
+    with sqlite3.connect(path) as connection:
+        for ddl in V2_TABLE_DDL.values():
+            connection.execute(ddl)
+        connection.execute("INSERT INTO projects (id, name, description, status, created_at, updated_at) VALUES (11, 'College', 'Applications', 'ACTIVE', ?, ?)", (stamp, stamp))
+        connection.execute("INSERT INTO tasks (id, title, project_id, status, importance, schedule_mode, day_date, deadline_date, estimated_minutes, created_at, updated_at) VALUES (21, 'Draft essay', 11, 'OPEN', 'MUST', 'DAY', '2026-09-05', '2026-09-10', 45, ?, ?)", (stamp, stamp))
+        connection.execute("INSERT INTO fixed_commitments (id, title, start_at, end_at, hardness, created_at, updated_at) VALUES (31, 'Appointment', '2026-09-02T14:00:00.000000Z', NULL, 'HARD', ?, ?)", (stamp, stamp))
+        connection.execute("INSERT INTO rules (id, kind, parameters_json, enabled, created_at, updated_at) VALUES (41, 'hours', '{\"start\":9}', 1, ?, ?)", (stamp, stamp))
+        connection.execute("INSERT INTO inbox_items (id, raw_text, unresolved_reason, resolved_at, created_at, updated_at) VALUES (51, 'Maybe Tuesday', 'ambiguous', NULL, ?, ?)", (stamp, stamp))
+        connection.execute("PRAGMA user_version = 2")
+
+
+def read_v2_data(path: Path) -> dict[str, dict[str, object]]:
+    result = {}
+    with sqlite3.connect(path) as connection:
+        connection.row_factory = sqlite3.Row
+        for table in V2_TABLE_DDL:
+            row = connection.execute(f"SELECT * FROM {table}").fetchone()
+            assert row is not None
+            result[table] = dict(row)
+    return result
+
+
 def test_fresh_database_migrates_through_version_3(tmp_path: Path) -> None:
     path = tmp_path / "runtime" / "personal_os.db"
 
@@ -50,20 +74,50 @@ def test_existing_version_1_migrates_to_version_3(tmp_path: Path) -> None:
 
 def test_populated_version_2_migrates_to_version_3_without_rebuilding(tmp_path: Path) -> None:
     path = tmp_path / "version2.db"
-    with sqlite3.connect(path) as connection:
-        for ddl in V2_TABLE_DDL.values():
-            connection.execute(ddl)
-        stamp = "2026-09-01T12:00:00.000000Z"
-        connection.execute(
-            "INSERT INTO projects (name, status, created_at, updated_at) VALUES ('College', 'ACTIVE', ?, ?)",
-            (stamp, stamp),
-        )
-        connection.execute("PRAGMA user_version = 2")
+    create_populated_v2(path)
+    original = read_v2_data(path)
 
     assert initialize_database(path) == 3
     with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT name, source_capture_id FROM projects").fetchone() == ("College", None)
+        for table, expected in original.items():
+            columns = ", ".join(expected)
+            row = connection.execute(f"SELECT {columns} FROM {table}").fetchone()
+            assert row is not None
+            assert dict(zip(expected, row, strict=True)) == expected
+        assert connection.execute("SELECT id,name,description,status,source_capture_id FROM projects").fetchone() == (11, "College", "Applications", "ACTIVE", None)
+        assert connection.execute("SELECT id,title,project_id,status,importance,schedule_mode,day_date,deadline_date,estimated_minutes,source_capture_id FROM tasks").fetchone() == (21, "Draft essay", 11, "OPEN", "MUST", "DAY", "2026-09-05", "2026-09-10", 45, None)
+        assert connection.execute("SELECT id,title,start_at,end_at,hardness,source_capture_id FROM fixed_commitments").fetchone() == (31, "Appointment", "2026-09-02T14:00:00.000000Z", None, "HARD", None)
+        assert connection.execute("SELECT id,kind,parameters_json,enabled FROM rules").fetchone() == (41, "hours", '{\"start\":9}', 1)
+        assert connection.execute("SELECT id,raw_text,unresolved_reason,resolved_at,source_capture_id FROM inbox_items").fetchone() == (51, "Maybe Tuesday", "ambiguous", None, None)
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        task_fks = {(row[2], row[3], row[4], row[6]) for row in connection.execute("PRAGMA foreign_key_list(tasks)")}
+        assert task_fks == {("projects", "project_id", "id", "RESTRICT"), ("captures", "source_capture_id", "id", "RESTRICT")}
+
+
+def test_failed_migration_3_rolls_back_schema_and_preserves_all_v2_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "failed-v3.db"
+    create_populated_v2(path)
+    original = read_v2_data(path)
+
+    def failing_migration(connection: sqlite3.Connection) -> None:
+        connection.execute("CREATE TABLE partial_v3 (value TEXT)")
+        connection.execute("ALTER TABLE projects ADD COLUMN partial_column TEXT")
+        raise RuntimeError("migration 3 failed")
+
+    monkeypatch.setitem(database.MIGRATIONS, 3, failing_migration)
+    with pytest.raises(RuntimeError, match="migration 3 failed"):
+        initialize_database(path)
+
+    assert read_version(path) == 2
+    assert user_objects(path) == sorted(V2_TABLE_DDL)
+    assert read_v2_data(path) == original
+    with sqlite3.connect(path) as connection:
+        assert [row[1] for row in connection.execute("PRAGMA table_info(projects)")] == ["id", "name", "description", "status", "created_at", "updated_at"]
+        assert connection.execute("SELECT id,name,description,status FROM projects").fetchone() == (11, "College", "Applications", "ACTIVE")
+        assert connection.execute("SELECT id,title,project_id FROM tasks").fetchone() == (21, "Draft essay", 11)
+        assert connection.execute("SELECT id,title FROM fixed_commitments").fetchone() == (31, "Appointment")
+        assert connection.execute("SELECT id,kind FROM rules").fetchone() == (41, "hours")
+        assert connection.execute("SELECT id,raw_text FROM inbox_items").fetchone() == (51, "Maybe Tuesday")
 
 
 def test_repeated_version_3_initialization_is_idempotent(tmp_path: Path) -> None:

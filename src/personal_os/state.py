@@ -191,6 +191,57 @@ class SQLiteStateStore:
             "inbox item",
         )
 
+    def _insert_project(
+        self, connection: sqlite3.Connection, *, name: str,
+        description: str | None, status: ProjectStatus,
+        source_capture_id: int | None = None,
+    ) -> Project:
+        now = serialize_instant(self._now())
+        cursor = connection.execute(
+            "INSERT INTO projects (name, description, status, created_at, updated_at, source_capture_id) VALUES (?, ?, ?, ?, ?, ?)",
+            (name, description, status.value, now, now, source_capture_id),
+        )
+        return self._project_from_row(self._row_or_missing(connection, "projects", cursor.lastrowid, "project"))
+
+    def _insert_task(
+        self, connection: sqlite3.Connection, *, values: dict[str, object],
+        source_capture_id: int | None = None,
+    ) -> Task:
+        self._require_project(connection, values["project_id"])
+        now = serialize_instant(self._now())
+        cursor = connection.execute(
+            """INSERT INTO tasks (
+                title, project_id, status, importance, schedule_mode, day_date,
+                window_start, window_end, deadline_date, deadline_at,
+                estimated_minutes, created_at, updated_at, source_capture_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            self._task_sql_values(values) + (now, now, source_capture_id),
+        )
+        return self._task_from_row(self._row_or_missing(connection, "tasks", cursor.lastrowid, "task"))
+
+    def _insert_fixed_commitment(
+        self, connection: sqlite3.Connection, *, title: str, start_at: datetime,
+        end_at: datetime | None, hardness: CommitmentHardness,
+        source_capture_id: int | None = None,
+    ) -> FixedCommitment:
+        now = serialize_instant(self._now())
+        cursor = connection.execute(
+            "INSERT INTO fixed_commitments (title, start_at, end_at, hardness, created_at, updated_at, source_capture_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (title, serialize_instant(start_at), None if end_at is None else serialize_instant(end_at), hardness.value, now, now, source_capture_id),
+        )
+        return self._commitment_from_row(self._row_or_missing(connection, "fixed_commitments", cursor.lastrowid, "fixed commitment"))
+
+    def _insert_inbox_item(
+        self, connection: sqlite3.Connection, *, raw_text: str,
+        unresolved_reason: str, source_capture_id: int | None = None,
+    ) -> InboxItem:
+        now = serialize_instant(self._now())
+        cursor = connection.execute(
+            "INSERT INTO inbox_items (raw_text, unresolved_reason, resolved_at, created_at, updated_at, source_capture_id) VALUES (?, ?, NULL, ?, ?, ?)",
+            (raw_text, unresolved_reason, now, now, source_capture_id),
+        )
+        return self._inbox_from_row(self._row_or_missing(connection, "inbox_items", cursor.lastrowid, "inbox item"))
+
     def create_project(
         self, name: str, description: str | None = None,
         status: ProjectStatus = ProjectStatus.ACTIVE,
@@ -199,12 +250,7 @@ class SQLiteStateStore:
         description = optional_text(description, "description")
         status = require_enum(status, ProjectStatus, "status")  # type: ignore[assignment]
         with self._transaction() as connection:
-            now = serialize_instant(self._now())
-            cursor = connection.execute(
-                "INSERT INTO projects (name, description, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-                (name, description, status.value, now, now),
-            )
-            return self._project_from_row(self._row_or_missing(connection, "projects", cursor.lastrowid, "project"))
+            return self._insert_project(connection, name=name, description=description, status=status)
 
     def get_project(self, project_id: int) -> Project:
         with self._connection() as connection:
@@ -265,17 +311,7 @@ class SQLiteStateStore:
             estimated_minutes=estimated_minutes,
         )
         with self._transaction() as connection:
-            self._require_project(connection, values["project_id"])
-            now = serialize_instant(self._now())
-            cursor = connection.execute(
-                """INSERT INTO tasks (
-                    title, project_id, status, importance, schedule_mode, day_date,
-                    window_start, window_end, deadline_date, deadline_at,
-                    estimated_minutes, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                self._task_sql_values(values) + (now, now),
-            )
-            return self._task_from_row(self._row_or_missing(connection, "tasks", cursor.lastrowid, "task"))
+            return self._insert_task(connection, values=values)
 
     def get_task(self, task_id: int) -> Task:
         with self._connection() as connection:
@@ -331,12 +367,7 @@ class SQLiteStateStore:
         if end is not None and start >= end:
             raise DomainValidationError("start_at must be before end_at")
         with self._transaction() as connection:
-            now = serialize_instant(self._now())
-            cursor = connection.execute(
-                "INSERT INTO fixed_commitments (title, start_at, end_at, hardness, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (title, serialize_instant(start), None if end is None else serialize_instant(end), hardness.value, now, now),
-            )
-            return self._commitment_from_row(self._row_or_missing(connection, "fixed_commitments", cursor.lastrowid, "fixed commitment"))
+            return self._insert_fixed_commitment(connection, title=title, start_at=start, end_at=end, hardness=hardness)
 
     def get_fixed_commitment(self, commitment_id: int) -> FixedCommitment:
         with self._connection() as connection:
@@ -407,12 +438,7 @@ class SQLiteStateStore:
         raw_text = require_text(raw_text, "raw_text", preserve=True)
         unresolved_reason = require_text(unresolved_reason, "unresolved_reason")
         with self._transaction() as connection:
-            now = serialize_instant(self._now())
-            cursor = connection.execute(
-                "INSERT INTO inbox_items (raw_text, unresolved_reason, resolved_at, created_at, updated_at) VALUES (?, ?, NULL, ?, ?)",
-                (raw_text, unresolved_reason, now, now),
-            )
-            return self._inbox_from_row(self._row_or_missing(connection, "inbox_items", cursor.lastrowid, "inbox item"))
+            return self._insert_inbox_item(connection, raw_text=raw_text, unresolved_reason=unresolved_reason)
 
     def get_inbox_item(self, item_id: int) -> InboxItem:
         with self._connection() as connection:
@@ -525,9 +551,9 @@ class SQLiteStateStore:
             row = self._row_or_missing(connection, "captures", capture_id, "capture")
             self._ensure_received(connection, capture_id)
             now = serialize_instant(self._now())
-            cursor = connection.execute(
-                "INSERT INTO inbox_items (raw_text, unresolved_reason, resolved_at, created_at, updated_at, source_capture_id) VALUES (?, ?, NULL, ?, ?, ?)",
-                (row["raw_text"], reason, now, now, capture_id),
+            inbox = self._insert_inbox_item(
+                connection, raw_text=row["raw_text"], unresolved_reason=reason,
+                source_capture_id=capture_id,
             )
             connection.execute(
                 """UPDATE captures SET status='UNRESOLVED', interpretation_json=?, interpretation_version=1,
@@ -536,7 +562,6 @@ class SQLiteStateStore:
                  model_response_id, reason, now, capture_id),
             )
             capture = self._capture_from_row(self._row_or_missing(connection, "captures", capture_id, "capture"))
-            inbox = self._inbox_from_row(self._row_or_missing(connection, "inbox_items", cursor.lastrowid, "inbox item"))
             return capture, inbox
 
     def apply_resolved_capture(
@@ -549,32 +574,22 @@ class SQLiteStateStore:
             now = serialize_instant(self._now())
             created_project = None
             if project is not None:
-                cursor = connection.execute(
-                    "INSERT INTO projects (name, description, status, created_at, updated_at, source_capture_id) VALUES (?, ?, 'ACTIVE', ?, ?, ?)",
-                    (project["name"], project.get("description"), now, now, capture_id),
+                created_project = self._insert_project(
+                    connection, name=project["name"], description=project.get("description"),
+                    status=ProjectStatus.ACTIVE, source_capture_id=capture_id,
                 )
-                created_project = self._project_from_row(self._row_or_missing(connection, "projects", cursor.lastrowid, "project"))
             created_tasks = []
             for item in tasks:
                 project_id = created_project.id if item.get("project_id") == "NEW" else item.get("project_id")
                 values = validate_task_fields(**{**item, "project_id": project_id})
-                self._require_project(connection, values["project_id"])
-                cursor = connection.execute(
-                    """INSERT INTO tasks (title, project_id, status, importance, schedule_mode, day_date,
-                    window_start, window_end, deadline_date, deadline_at, estimated_minutes, created_at,
-                    updated_at, source_capture_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    self._task_sql_values(values) + (now, now, capture_id),
-                )
-                created_tasks.append(self._task_from_row(self._row_or_missing(connection, "tasks", cursor.lastrowid, "task")))
+                created_tasks.append(self._insert_task(connection, values=values, source_capture_id=capture_id))
             created_commitments = []
             for item in commitments:
-                cursor = connection.execute(
-                    "INSERT INTO fixed_commitments (title, start_at, end_at, hardness, created_at, updated_at, source_capture_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (item["title"], serialize_instant(item["start_at"]),
-                     None if item.get("end_at") is None else serialize_instant(item["end_at"]),
-                     item.get("hardness", CommitmentHardness.UNKNOWN).value, now, now, capture_id),
-                )
-                created_commitments.append(self._commitment_from_row(self._row_or_missing(connection, "fixed_commitments", cursor.lastrowid, "fixed commitment")))
+                created_commitments.append(self._insert_fixed_commitment(
+                    connection, title=item["title"], start_at=item["start_at"],
+                    end_at=item.get("end_at"), hardness=item.get("hardness", CommitmentHardness.UNKNOWN),
+                    source_capture_id=capture_id,
+                ))
             connection.execute(
                 """UPDATE captures SET status='APPLIED', interpretation_json=?, interpretation_version=1,
                     model_provider=?, model_name=?, model_response_id=?, updated_at=? WHERE id=?""",

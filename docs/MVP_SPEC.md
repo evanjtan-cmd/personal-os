@@ -150,7 +150,8 @@ classified configuration, provider, refusal, or invalid-output failure. Derived
 projects, tasks, fixed commitments, and inbox items retain their immutable
 source-capture relationship, and resolved output is applied atomically.
 
-AI interpretation is constrained to a versioned semantic JSON contract. It may
+AI interpretation is constrained to a versioned semantic JSON contract that is
+validated into frozen typed intents before application logic consumes it. It may
 extract explicit facts, including a bare clock hour, but it may not resolve a
 bare `at 4` to AM or PM, infer a missing year, invent importance or duration,
 silently choose a project, or express recurrence. A bare clock and an explicit
@@ -163,6 +164,13 @@ facts remain dates. Exact local times become UTC only when the local time is
 unambiguous and exists; daylight-saving gaps and folds remain unresolved. A
 fixed commitment that resolves into the past is unresolved, while a past
 deadline remains a valid fact.
+
+The interpreter receives only raw text and a bounded deterministic list of
+active project IDs and names. It never receives the trusted reference instant
+or timezone; only deterministic application code uses that context. One DAY
+task intent may contain multiple date expressions, which resolve, deduplicate,
+and expand into independently completable task rows. POS-003 commitment intents
+contain a start but no end, so captured commitments retain an unknown end.
 
 The production interpreter uses the OpenAI 3.x Responses API with an explicitly
 configured `PERSONAL_OS_CAPTURE_MODEL`, strict JSON Schema structured output,

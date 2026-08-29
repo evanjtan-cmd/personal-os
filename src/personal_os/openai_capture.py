@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
 from typing import Any
 
-from personal_os.capture import InterpretationError, InterpretationResponse
-from personal_os.models import CaptureFailureKind, serialize_instant
+from personal_os.capture import InterpretationError
+from personal_os.capture_types import InterpretationResponse, InterpretationValidationError, parse_interpretation
+from personal_os.models import CaptureFailureKind
 
 
 def _nullable(schema: dict[str, Any]) -> dict[str, Any]:
@@ -42,10 +42,10 @@ CAPTURE_SCHEMA: dict[str, Any] = {
             "title": {"type": "string"}, "project_id": _nullable({"anyOf": [{"type": "integer"}, {"type": "string", "enum": ["NEW"]}]}),
             "importance": {"type": "string", "enum": ["UNSPECIFIED", "MUST", "SHOULD", "COULD"]},
             "estimated_minutes": _nullable({"type": "integer", "minimum": 1}),
-            "schedule": _nullable({"type": "object", "additionalProperties": False, "properties": {"kind": {"type": "string", "enum": ["DAY", "THIS_WEEKEND"]}, "value": _nullable(DATE_IR)}, "required": ["kind", "value"]}),
+            "schedule": _nullable({"type": "object", "additionalProperties": False, "properties": {"kind": {"type": "string", "enum": ["DAY", "THIS_WEEKEND"]}, "dates": {"type": "array", "items": DATE_IR}}, "required": ["kind", "dates"]}),
             "deadline": _nullable({"type": "object", "additionalProperties": False, "properties": {"kind": {"type": "string", "enum": ["DATE", "INSTANT"]}, "value": {"anyOf": [DATE_IR, INSTANT_IR]}}, "required": ["kind", "value"]}),
         }, "required": ["title", "project_id", "importance", "estimated_minutes", "schedule", "deadline"]}},
-        "commitments": {"type": "array", "items": {"type": "object", "additionalProperties": False, "properties": {"title": {"type": "string"}, "start": INSTANT_IR, "end": _nullable(INSTANT_IR), "hardness": {"type": "string", "enum": ["UNKNOWN", "HARD", "SOFT"]}}, "required": ["title", "start", "end", "hardness"]}},
+        "commitments": {"type": "array", "items": {"type": "object", "additionalProperties": False, "properties": {"title": {"type": "string"}, "start": INSTANT_IR, "hardness": {"type": "string", "enum": ["UNKNOWN", "HARD", "SOFT"]}}, "required": ["title", "start", "hardness"]}},
         "unresolved_reason": _nullable({"type": "string"}),
     },
     "required": ["kind", "new_project", "tasks", "commitments", "unresolved_reason"],
@@ -59,7 +59,7 @@ class OpenAIResponsesCaptureInterpreter:
         self._client = client
         self._model = model
 
-    def interpret(self, raw_text: str, *, projects: list[dict[str, object]], reference_time: datetime, timezone_name: str) -> InterpretationResponse:
+    def interpret(self, raw_text: str, *, projects: list[dict[str, object]]) -> InterpretationResponse:
         model = self._model or os.environ.get("PERSONAL_OS_CAPTURE_MODEL")
         if not model:
             raise InterpretationError(CaptureFailureKind.CONFIGURATION_ERROR, "PERSONAL_OS_CAPTURE_MODEL is not configured")
@@ -72,10 +72,7 @@ class OpenAIResponsesCaptureInterpreter:
                 client = OpenAI()
             except Exception as exc:
                 raise InterpretationError(CaptureFailureKind.CONFIGURATION_ERROR, f"OpenAI client configuration failed: {exc}") from exc
-        prompt = {
-            "raw_text": raw_text, "reference_time_utc": serialize_instant(reference_time),
-            "timezone_name": timezone_name, "active_projects": projects,
-        }
+        prompt = {"raw_text": raw_text, "active_projects": projects}
         instructions = (
             "Extract only explicit Personal OS capture semantics. Never infer AM/PM, a missing year, "
             "importance, duration, project identity, or recurrence. Use BARE_HOUR for a bare clock hour, "
@@ -109,4 +106,8 @@ class OpenAIResponsesCaptureInterpreter:
             raise InterpretationError(CaptureFailureKind.INVALID_OUTPUT, "OpenAI response was malformed JSON", provider="openai", model=str(response_model), response_id=None if response_id is None else str(response_id)) from exc
         if not isinstance(payload, dict):
             raise InterpretationError(CaptureFailureKind.INVALID_OUTPUT, "OpenAI response was not a JSON object", provider="openai", model=str(response_model), response_id=None if response_id is None else str(response_id))
-        return InterpretationResponse(payload, "openai", str(response_model), None if response_id is None else str(response_id))
+        try:
+            interpretation = parse_interpretation(payload)
+        except InterpretationValidationError as exc:
+            raise InterpretationError(CaptureFailureKind.INVALID_OUTPUT, str(exc), provider="openai", model=str(response_model), response_id=None if response_id is None else str(response_id)) from exc
+        return InterpretationResponse(interpretation, "openai", str(response_model), None if response_id is None else str(response_id))
