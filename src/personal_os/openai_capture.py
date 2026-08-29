@@ -75,7 +75,9 @@ class OpenAIResponsesCaptureInterpreter:
         prompt = {"raw_text": raw_text, "active_projects": projects}
         instructions = (
             "Extract only explicit Personal OS capture semantics. Never infer AM/PM, a missing year, "
-            "importance, duration, project identity, or recurrence. Use BARE_HOUR for a bare clock hour, "
+            "importance, duration, project identity, recurrence, or commitment hardness. Use UNKNOWN "
+            "commitment hardness unless the user's language explicitly establishes HARD or SOFT semantics. "
+            "Use BARE_HOUR for a bare clock hour, "
             "MISSING_YEAR for a date without a year, and UNRESOLVED for unsupported or uncertain meaning."
         )
         try:

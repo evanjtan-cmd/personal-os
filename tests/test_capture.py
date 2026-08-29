@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from personal_os.capture import CaptureService, InterpretationError
-from personal_os.capture_types import InterpretationResponse, parse_interpretation
+from personal_os.capture_types import InterpretationResponse, InterpretationValidationError, parse_interpretation
 from personal_os.database import initialize_database
 from personal_os.errors import DomainValidationError, PersistenceError
 from personal_os.models import CaptureFailureKind, CaptureStatus, ProjectStatus
@@ -29,7 +29,11 @@ class FakeInterpreter:
             self.observed_received = self.store.list_captures()[0].status is CaptureStatus.RECEIVED
         if self.error:
             raise self.error
-        return InterpretationResponse(parse_interpretation(self.payload), "fake", "fake-model", "response-1")
+        try:
+            interpretation = parse_interpretation(self.payload)
+        except InterpretationValidationError as exc:
+            raise InterpretationError(CaptureFailureKind.INVALID_OUTPUT, str(exc)) from exc
+        return InterpretationResponse(interpretation, "fake", "fake-model", "response-1")
 
 
 @pytest.fixture
@@ -237,6 +241,24 @@ def test_task_failure_after_new_project_rolls_back_and_propagates(store: SQLiteS
     assert store.list_projects() == []
     assert store.list_tasks() == []
     assert store.list_captures()[0].status is CaptureStatus.RECEIVED
+
+
+def test_unexpected_deterministic_application_error_propagates_without_provider_classification(
+    store: SQLiteStateStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = CaptureService(store, FakeInterpreter(apply_payload(tasks=[task("Task")])))
+
+    def fail_application(*args, **kwargs):
+        raise RuntimeError("internal application defect")
+
+    monkeypatch.setattr(service, "_apply", fail_application)
+    with pytest.raises(RuntimeError, match="internal application defect"):
+        service.capture_text("task", reference_time=REFERENCE, timezone_name="UTC")
+
+    captures = store.list_captures()
+    assert len(captures) == 1
+    assert captures[0].status is CaptureStatus.RECEIVED
+    assert captures[0].failure_kind is None
 
 
 @pytest.mark.parametrize("importance", ["MUST", "SHOULD", "COULD", "UNSPECIFIED"])

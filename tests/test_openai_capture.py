@@ -42,6 +42,9 @@ def test_adapter_uses_responses_strict_schema_and_disables_storage() -> None:
     assert responses.kwargs["text"]["format"]["type"] == "json_schema"
     assert responses.kwargs["text"]["format"]["strict"] is True
     assert set(json.loads(responses.kwargs["input"])) == {"raw_text", "active_projects"}
+    assert "never infer" in responses.kwargs["instructions"].lower()
+    assert "commitment hardness" in responses.kwargs["instructions"].lower()
+    assert "use unknown" in responses.kwargs["instructions"].lower()
     commitment = responses.kwargs["text"]["format"]["schema"]["properties"]["commitments"]["items"]
     assert "end" not in commitment["properties"]
 

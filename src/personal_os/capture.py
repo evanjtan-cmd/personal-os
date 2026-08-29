@@ -127,20 +127,37 @@ class CaptureService:
         all_projects = self.store.list_projects()
         active = sorted((item for item in all_projects if item.status is ProjectStatus.ACTIVE), key=lambda item: (item.updated_at, item.id), reverse=True)
         candidates = [{"id": item.id, "name": item.name} for item in active[:self.project_candidate_limit]]
-        response: InterpretationResponse | None = None
         try:
             response = self.interpreter.interpret(raw, projects=candidates)
+        except PersistenceError:
+            raise
+        except InterpretationError as exc:
+            failed = self.store.mark_capture_failed(
+                capture.id, exc.kind, str(exc), model_provider=exc.provider,
+                model_name=exc.model, model_response_id=exc.response_id,
+            )
+            return CaptureResult(failed)
+        except Exception as exc:
+            failed = self.store.mark_capture_failed(capture.id, CaptureFailureKind.PROVIDER_ERROR, str(exc) or type(exc).__name__)
+            return CaptureResult(failed)
+
+        try:
             return self._apply(capture, response, zone, candidates, all_projects)
         except PersistenceError:
             raise
         except InterpretationError as exc:
-            failed = self.store.mark_capture_failed(capture.id, exc.kind, str(exc), model_provider=exc.provider or (None if response is None else response.provider), model_name=exc.model or (None if response is None else response.model), model_response_id=exc.response_id or (None if response is None else response.response_id))
+            failed = self.store.mark_capture_failed(
+                capture.id, CaptureFailureKind.INVALID_OUTPUT, str(exc),
+                model_provider=response.provider, model_name=response.model,
+                model_response_id=response.response_id,
+            )
             return CaptureResult(failed)
         except (DomainValidationError, ValueError, TypeError, KeyError) as exc:
-            failed = self.store.mark_capture_failed(capture.id, CaptureFailureKind.INVALID_OUTPUT, str(exc) or type(exc).__name__, model_provider=None if response is None else response.provider, model_name=None if response is None else response.model, model_response_id=None if response is None else response.response_id)
-            return CaptureResult(failed)
-        except Exception as exc:
-            failed = self.store.mark_capture_failed(capture.id, CaptureFailureKind.PROVIDER_ERROR, str(exc) or type(exc).__name__)
+            failed = self.store.mark_capture_failed(
+                capture.id, CaptureFailureKind.INVALID_OUTPUT,
+                str(exc) or type(exc).__name__, model_provider=response.provider,
+                model_name=response.model, model_response_id=response.response_id,
+            )
             return CaptureResult(failed)
 
     def _apply(self, capture: Capture, response: InterpretationResponse, zone: ZoneInfo, candidates: list[dict[str, object]], all_projects: list) -> CaptureResult:
