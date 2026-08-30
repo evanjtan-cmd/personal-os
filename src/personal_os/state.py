@@ -377,6 +377,28 @@ class SQLiteStateStore:
         with self._connection() as connection:
             return [self._commitment_from_row(row) for row in connection.execute("SELECT * FROM fixed_commitments ORDER BY id")]
 
+    def read_recommendation_snapshot(
+        self,
+    ) -> tuple[list[Project], list[Task], list[FixedCommitment]]:
+        """Read recommendation inputs through one validated connection."""
+
+        with self._connection() as connection:
+            projects = [
+                self._project_from_row(row)
+                for row in connection.execute("SELECT * FROM projects ORDER BY id")
+            ]
+            tasks = [
+                self._task_from_row(row)
+                for row in connection.execute("SELECT * FROM tasks ORDER BY id")
+            ]
+            commitments = [
+                self._commitment_from_row(row)
+                for row in connection.execute(
+                    "SELECT * FROM fixed_commitments ORDER BY id"
+                )
+            ]
+            return projects, tasks, commitments
+
     def update_fixed_commitment(
         self, commitment_id: int, *, title: object = _OMITTED,
         start_at: object = _OMITTED, end_at: object = _OMITTED,

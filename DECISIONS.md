@@ -77,3 +77,25 @@ The interpreter receives neither the trusted reference instant nor timezone;
 decoded JSON is validated into frozen typed intents before deterministic
 resolution. Active project context is deterministic and bounded, and a single
 multi-date task intent expands atomically into independent canonical task rows.
+
+## 2026-08-29 — Deterministic recommendation boundary
+
+Recommendation is ephemeral and read-only: it takes one coherent snapshot of
+projects, tasks, and fixed commitments and mutates none of the six canonical
+tables. Missed open DAY tasks remain eligible with days-late metadata; expired
+WINDOW tasks remain open but are ineligible. Date-only deadlines use the
+trusted local calendar date, while exact deadlines compare UTC instants, and
+deadlines affect ranking metadata rather than eligibility.
+
+Only HARD fixed commitments constrain deterministic availability. SOFT and
+UNKNOWN commitments neither constrain availability nor enter AI context. The
+normal duration ladder is 5, 10, 15, 20, 25, 30, 35, 45, and 60 minutes, with
+an exact-duration exception for explicitly estimated 1–4 minute tasks. A
+duration-feasible MUST task deterministically excludes lower-importance tasks
+before candidate bounding.
+
+The ranker receives at most 50 eligible, duration-feasible task candidates and
+only derived availability, schedule, deadline, importance, and duration facts.
+It receives no raw reference time, timezone, clock/daypart, rules, or canonical
+state access. Its selected task and duration are validated exactly against the
+supplied set.

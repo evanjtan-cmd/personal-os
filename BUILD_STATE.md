@@ -1,6 +1,6 @@
 # Build State
 
-Last updated: 2026-08-29 for POS-003.
+Last updated: 2026-08-29 for POS-004.
 
 ## Implemented
 
@@ -36,10 +36,17 @@ Last updated: 2026-08-29 for POS-003.
 - Natural-language capture application flow with a constrained OpenAI Responses
   API adapter, deterministic relative-date and local-time resolution, atomic
   multi-record application, and unresolved inbox routing.
+- Read-only deterministic eligibility and availability evaluation, including
+  missed-DAY metadata, half-open WINDOW handling, deadline classification, and
+  HARD-only fixed-commitment bounds.
+- Duration-feasible recommendation candidates with the fixed 5–60 minute
+  ladder, explicit short-task support, deterministic feasible-MUST gating,
+  stable 50-candidate bounding, and strict selected-task/duration validation.
+- A separate lazy OpenAI Responses API recommendation ranker that receives only
+  derived facts and returns an ephemeral recommendation or valid no-work result.
 
 ## Not implemented
 
-- Eligibility, prioritization, or recommendations
 - Work sessions or Finished/Progress/Blocked session handling
 - Additional AI providers or AI behavior beyond capture interpretation
 - Calendar or Google Sheets integration
@@ -52,7 +59,7 @@ Last updated: 2026-08-29 for POS-003.
 
 Run on 2026-08-29 with Python 3.12.4 and pytest 8.4.2:
 
-- `python -m pytest` — passed: 109 passed, 0 failed.
+- `python -m pytest` — passed: 162 passed, 0 failed.
 - `python -m compileall -q src tests` — passed with exit code 0.
 - `python -m personal_os --help` — passed with exit code 0.
 - `personal-os --help` — passed with exit code 0.
@@ -65,4 +72,8 @@ Run on 2026-08-29 with Python 3.12.4 and pytest 8.4.2:
 - Capture tests use fake interpreters/clients and confirmed raw persistence
   precedes configuration, authentication, provider, or output processing. No
   live OpenAI request was made.
+- Recommendation tests use fake rankers/clients and confirm coherent read-only
+  snapshots, unchanged schema and table contents, HARD-only availability,
+  feasible-MUST gating before bounding, short-task feasibility, derived-only AI
+  input, and no live OpenAI request.
 - `git diff --check` — passed with exit code 0.

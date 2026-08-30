@@ -8,11 +8,11 @@ work session, and update that state. The product direction is described in
 
 ## Current boundary
 
-POS-003 provides durable natural-language capture, constrained OpenAI Responses
-API interpretation, deterministic temporal resolution, and atomic application
-to the canonical SQLite-backed state. These operations are currently a Python
-API; the CLI remains limited to database initialization. Recommendations,
-eligibility, sessions, calendar behavior, additional integrations, and user
+POS-004 provides deterministic task eligibility and availability, duration
+feasibility, feasible-MUST protection, and a constrained AI ranking boundary
+that returns one ephemeral recommendation or no work. Capture and recommendation
+operations are currently Python APIs; the CLI remains limited to database
+initialization. Sessions, calendar behavior, additional integrations, and user
 interfaces are not implemented. See `BUILD_STATE.md` for the exact state.
 
 ## Requirements and setup
@@ -32,6 +32,10 @@ To use the production capture interpreter, set `PERSONAL_OS_CAPTURE_MODEL` to
 an OpenAI model that supports strict structured output and provide
 `OPENAI_API_KEY` through the standard SDK environment. No model is assumed and
 no secret or `.env` file belongs in the repository.
+
+The production recommendation ranker separately requires
+`PERSONAL_OS_RECOMMEND_MODEL`; it never falls back to the capture model. It uses
+the same standard `OPENAI_API_KEY` configuration.
 
 ## Initialize the database
 

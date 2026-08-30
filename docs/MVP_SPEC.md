@@ -178,3 +178,28 @@ and `store=False`. `OPENAI_API_KEY` is read by the standard SDK. Client creation
 and all network activity are lazy, and no live request is part of automated
 validation. POS-003 adds no capture CLI, recurrence, rule capture, calendar
 integration, recommendation, eligibility, session, or HTTP behavior.
+
+## Deterministic recommendation
+
+POS-004 adds a read-only Python recommendation service over one coherent state
+snapshot. OPEN standalone tasks and tasks under ACTIVE projects can qualify;
+BLOCKED or COMPLETED tasks and tasks under COMPLETED projects cannot. FLEXIBLE
+tasks qualify, future DAY tasks do not, missed DAY tasks remain eligible with
+days-late metadata, and WINDOW eligibility is half-open at
+`start <= now < end`. Date deadlines are classified against the trusted local
+date and exact deadlines against their UTC instant, but neither removes a task.
+
+Only HARD commitments constrain availability. An active HARD commitment yields
+deterministic no-work; the earliest future HARD start and an optional trusted
+caller cap form the finite bound. SOFT and UNKNOWN commitments are ignored and
+omitted from ranking. Candidate durations use the fixed 5–60 minute ladder,
+bounded by availability and task estimate, while an explicit 1–4 minute
+estimate remains usable exactly when it fits.
+
+After eligibility and duration feasibility, any feasible MUST task excludes all
+lower importance candidates. Stable urgency preselection bounds the ranker to
+50 tasks. The OpenAI ranker sees only derived availability and supplied
+candidate facts—never raw time, timezone, clock/daypart, rules, commitments, or
+mutation access—and strict validation rejects unknown tasks, unsupplied
+durations, contradictory fields, and NO_WORK during MUST gating. POS-004 adds no
+schema, mutation, CLI, session, history, rule evaluation, calendar, or UI.
