@@ -1,6 +1,7 @@
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 import sqlite3
+import threading
 
 import pytest
 
@@ -170,6 +171,22 @@ def test_invalid_ai_choices_are_rejected_without_writes(store, choice) -> None:
     assert _database_dump(store.database_path) == before
 
 
+@pytest.mark.parametrize("task_id", [True, 1.0, "1", 0, -1])
+def test_malformed_task_ids_cannot_alias_integer_candidate(store, task_id) -> None:
+    task = store.create_task("Task")
+    assert task.id == 1
+    before = _database_dump(store.database_path)
+    choice = RecommendationChoice(
+        RecommendationChoiceKind.RECOMMEND, task_id, 5, "Choose it"
+    )
+    with pytest.raises(RecommendationError) as error:
+        RecommendationService(store, Ranker(choice)).recommend(
+            RecommendationContext(NOW, "UTC")
+        )
+    assert error.value.kind is RecommendationFailureKind.INVALID_OUTPUT
+    assert _database_dump(store.database_path) == before
+
+
 def test_provider_failure_is_classified_but_persistence_and_deterministic_bugs_propagate(store, monkeypatch) -> None:
     store.create_task("Task")
     before = _database_dump(store.database_path)
@@ -200,6 +217,44 @@ def test_candidate_filtering_sort_and_bound_happen_before_ai(store) -> None:
     assert len(supplied) == 2
 
 
+def test_bounding_preserves_missed_day_severity_over_task_id(store) -> None:
+    less_late_ids = [
+        store.create_task(
+            f"Two days late {index}", schedule_mode=TaskScheduleMode.DAY,
+            day_date=date(2026, 8, 31),
+        ).id
+        for index in range(3)
+    ]
+    most_late = store.create_task(
+        "Twenty days late", schedule_mode=TaskScheduleMode.DAY,
+        day_date=date(2026, 8, 13),
+    )
+    ranker = Ranker()
+    RecommendationService(store, ranker, candidate_limit=3).recommend(
+        RecommendationContext(NOW, "UTC")
+    )
+    supplied_ids = [item.task_id for item in ranker.calls[0][1]]
+    assert supplied_ids[0] == most_late.id
+    assert less_late_ids[-1] not in supplied_ids
+
+
+def test_bounding_preserves_comparable_deadline_severity_over_task_id(store) -> None:
+    newer_ids = [
+        store.create_task(
+            f"Recently overdue {index}", deadline_date=date(2026, 9, 1)
+        ).id
+        for index in range(3)
+    ]
+    oldest = store.create_task("Oldest deadline", deadline_date=date(2026, 8, 1))
+    ranker = Ranker()
+    RecommendationService(store, ranker, candidate_limit=3).recommend(
+        RecommendationContext(NOW, "UTC")
+    )
+    supplied_ids = [item.task_id for item in ranker.calls[0][1]]
+    assert supplied_ids[0] == oldest.id
+    assert newer_ids[-1] not in supplied_ids
+
+
 def test_snapshot_is_coherent_and_schema_remains_version_three(store) -> None:
     project = store.create_project("P")
     task = store.create_task("T", project_id=project.id)
@@ -210,6 +265,47 @@ def test_snapshot_is_coherent_and_schema_remains_version_three(store) -> None:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
     assert tables == set(TABLE_DDL)
+
+
+def test_snapshot_remains_stable_across_concurrent_commit(
+    store, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with sqlite3.connect(store.database_path) as connection:
+        assert connection.execute("PRAGMA journal_mode = WAL").fetchone()[0] == "wal"
+    store.create_project("Initial project")
+    initial = store.create_task("Initial task")
+    first_read = threading.Event()
+    continue_read = threading.Event()
+    original = store._project_from_row
+
+    def pause_after_snapshot_begins(row):
+        decoded = original(row)
+        first_read.set()
+        assert continue_read.wait(timeout=5), "reader was not released"
+        return decoded
+
+    monkeypatch.setattr(store, "_project_from_row", pause_after_snapshot_begins)
+    results = []
+    failures = []
+
+    def read_snapshot() -> None:
+        try:
+            results.append(store.read_recommendation_snapshot())
+        except Exception as exc:  # pragma: no cover - asserted below
+            failures.append(exc)
+
+    reader = threading.Thread(target=read_snapshot)
+    reader.start()
+    assert first_read.wait(timeout=5), "reader did not establish its snapshot"
+    committed_later = SQLiteStateStore(store.database_path).create_task("Later task")
+    continue_read.set()
+    reader.join(timeout=5)
+    assert not reader.is_alive()
+    assert not failures
+    assert [item.id for item in results[0][1]] == [initial.id]
+    assert [item.id for item in store.read_recommendation_snapshot()[1]] == [
+        initial.id, committed_later.id,
+    ]
 
 
 def _database_dump(path: Path) -> tuple:

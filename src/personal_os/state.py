@@ -383,20 +383,26 @@ class SQLiteStateStore:
         """Read recommendation inputs through one validated connection."""
 
         with self._connection() as connection:
-            projects = [
-                self._project_from_row(row)
-                for row in connection.execute("SELECT * FROM projects ORDER BY id")
-            ]
-            tasks = [
-                self._task_from_row(row)
-                for row in connection.execute("SELECT * FROM tasks ORDER BY id")
-            ]
-            commitments = [
-                self._commitment_from_row(row)
-                for row in connection.execute(
-                    "SELECT * FROM fixed_commitments ORDER BY id"
-                )
-            ]
+            connection.execute("BEGIN")
+            try:
+                projects = [
+                    self._project_from_row(row)
+                    for row in connection.execute("SELECT * FROM projects ORDER BY id")
+                ]
+                tasks = [
+                    self._task_from_row(row)
+                    for row in connection.execute("SELECT * FROM tasks ORDER BY id")
+                ]
+                commitments = [
+                    self._commitment_from_row(row)
+                    for row in connection.execute(
+                        "SELECT * FROM fixed_commitments ORDER BY id"
+                    )
+                ]
+            except Exception:
+                connection.rollback()
+                raise
+            connection.commit()
             return projects, tasks, commitments
 
     def update_fixed_commitment(

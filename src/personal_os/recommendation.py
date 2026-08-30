@@ -48,7 +48,9 @@ def allowed_durations(
     return tuple(sorted(values))
 
 
-def _candidate_sort_key(candidate: EligibleTaskCandidate) -> tuple[int, int, int, int]:
+def _candidate_sort_key(
+    candidate: EligibleTaskCandidate,
+) -> tuple[int, int, int, int, str, int, int]:
     schedule = {
         ScheduleState.DAY_MISSED: 0,
         ScheduleState.DAY_TODAY: 1,
@@ -59,13 +61,30 @@ def _candidate_sort_key(candidate: EligibleTaskCandidate) -> tuple[int, int, int
         DeadlineState.FUTURE: 2,
         DeadlineState.NONE: 3,
     }[candidate.deadline_state]
+    missed_severity = (
+        -(candidate.days_late or 0)
+        if candidate.schedule_state is ScheduleState.DAY_MISSED
+        else 0
+    )
+    # Date-only and exact deadlines are ordered within their own forms. The
+    # form rank is the stable fallback for mixed forms; it invents no clock
+    # precision for a calendar date.
+    if candidate.deadline_date is not None:
+        deadline_form, deadline_value = 0, candidate.deadline_date
+    elif candidate.deadline_at is not None:
+        deadline_form, deadline_value = 1, candidate.deadline_at
+    else:
+        deadline_form, deadline_value = 2, ""
     importance = {
         TaskImportance.MUST: 0,
         TaskImportance.SHOULD: 1,
         TaskImportance.UNSPECIFIED: 2,
         TaskImportance.COULD: 3,
     }[candidate.importance]
-    return schedule, deadline, importance, candidate.task_id
+    return (
+        schedule, missed_severity, deadline, deadline_form, deadline_value,
+        importance, candidate.task_id,
+    )
 
 
 class RecommendationService:
@@ -181,6 +200,11 @@ class RecommendationService:
             )
         if choice.kind is not RecommendationChoiceKind.RECOMMEND:
             raise RecommendationError(RecommendationFailureKind.INVALID_OUTPUT, "unknown recommendation choice")
+        if type(choice.task_id) is not int or choice.task_id <= 0:
+            raise RecommendationError(
+                RecommendationFailureKind.INVALID_OUTPUT,
+                "selected task ID must be a positive integer",
+            )
         candidate = candidate_map.get(choice.task_id)
         if candidate is None:
             raise RecommendationError(RecommendationFailureKind.INVALID_OUTPUT, "selected task was not supplied")

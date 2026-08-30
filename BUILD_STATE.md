@@ -59,7 +59,7 @@ Last updated: 2026-08-29 for POS-004.
 
 Run on 2026-08-29 with Python 3.12.4 and pytest 8.4.2:
 
-- `python -m pytest` — passed: 162 passed, 0 failed.
+- `python -m pytest` — passed: 170 passed, 0 failed.
 - `python -m compileall -q src tests` — passed with exit code 0.
 - `python -m personal_os --help` — passed with exit code 0.
 - `personal-os --help` — passed with exit code 0.
