@@ -119,3 +119,17 @@ timestamp, and BLOCKED blocks it. Closure and any Task transition are atomic.
 An already matching COMPLETED or BLOCKED Task permits the corresponding close;
 conflicting newer Task state is never overwritten. Closed sessions cannot be
 reopened, edited, or deleted through the POS-005 API.
+
+## 2026-08-30 — Human dogfood CLI boundary
+
+The POS-006 CLI is a human-readable dogfood adapter, not a stable machine API.
+It delegates capture, recommendation, start revalidation, and feedback entirely
+to existing application services and intentionally offers no JSON contract.
+Future Shortcut, NFC, HTTP, or native interfaces must consume typed application
+boundaries rather than scrape CLI output.
+
+Database initialization remains explicit: only `init-db` may create or migrate
+storage, and product commands do not auto-bootstrap or repair it. Commands that
+depend on local calendar meaning require an explicit IANA timezone supplied by
+`--timezone` or `PERSONAL_OS_TIMEZONE`; the CLI does not infer machine-local
+timezone configuration.

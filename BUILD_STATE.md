@@ -1,11 +1,11 @@
 # Build State
 
-Last updated: 2026-08-30 for POS-005.
+Last updated: 2026-08-30 for POS-006.
 
 ## Implemented
 
-- Python 3.12+ package with side-effect-free imports and an infrastructure-only
-  `init-db` CLI.
+- Python 3.12+ package with side-effect-free imports and a thin human-facing
+  dogfood CLI over the completed application services.
 - External runtime data at `~/.personal-os/personal_os.db`, overrideable through
   `PERSONAL_OS_DATA_DIR`.
 - Standard-library SQLite schema version 4 with explicit ordered migrations,
@@ -50,12 +50,17 @@ Last updated: 2026-08-30 for POS-005.
 - Atomic FINISHED, PROGRESS, and BLOCKED feedback that respectively completes,
   preserves, or blocks the selected Task while retaining immutable session
   history. The internal Python APIs now demonstrate the complete minimal loop.
+- Explicit-initialization CLI commands for capture, recommendation, session
+  start, FINISHED/PROGRESS/BLOCKED feedback, and active-session display. The
+  adapter uses explicit IANA timezone configuration, fresh trusted instants,
+  human-readable output, and no implicit database bootstrap or duplicated
+  domain policy.
 
 ## Not implemented
 
 - Additional AI providers or feedback/session AI behavior
 - Calendar or Google Sheets integration
-- Product CRUD CLI commands, HTTP endpoints, Shortcuts, NFC, voice, or UI
+- Product CRUD commands, HTTP endpoints, Shortcuts, NFC, voice, or UI
 - Notifications, background work, deletion, import/export, or duration learning
 - Routines, goals, waiting-for items, decisions, open questions, dependencies,
   preferences, or temporary context
@@ -64,7 +69,7 @@ Last updated: 2026-08-30 for POS-005.
 
 Run on 2026-08-30 with Python 3.12.4 and pytest 8.4.2:
 
-- `python -m pytest` — passed: 216 passed, 0 failed.
+- `python -m pytest` — passed: 258 passed, 0 failed.
 - `python -m compileall -q src tests` — passed with exit code 0.
 - `python -m personal_os --help` — passed with exit code 0.
 - `personal-os --help` — passed with exit code 0.
@@ -84,4 +89,9 @@ Run on 2026-08-30 with Python 3.12.4 and pytest 8.4.2:
 - Session tests confirm strict v4 migration and storage constraints, one-active
   concurrency, deterministic start rejection precedence, atomic feedback
   rollback, and the complete capture-to-updated-state loop without network use.
+- CLI tests confirm all eight command/help paths, explicit timezone resolution,
+  no product-command auto-bootstrap, advisory recommendation hints,
+  service-authoritative start and feedback behavior, exact elapsed display, and
+  a complete dogfood loop using real services with fake AI boundaries. No live
+  OpenAI request was made.
 - `git diff --check` — passed with exit code 0.

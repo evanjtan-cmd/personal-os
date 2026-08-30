@@ -90,6 +90,25 @@ over centralized application logic.
 The existing Google Sheet is prototype and reference data. It is not the
 architectural source of truth and does not define the persistence model.
 
+## POS-006 thin dogfood interface
+
+POS-006 exposes explicit database initialization, capture, recommendation,
+session start, FINISHED/PROGRESS/BLOCKED feedback, and active-session display
+through a human-readable CLI. It performs parsing, runtime configuration,
+trusted-clock acquisition, service construction, typed display reads, output
+formatting, and expected-error translation only. Domain eligibility,
+availability, duration, MUST gating, capture interpretation, and session state
+transitions remain centralized behind application services.
+
+Capture, recommendation, and start require an explicitly supplied IANA
+timezone, resolved from a command option before `PERSONAL_OS_TIMEZONE` without
+machine-local inference. Recommendations are advisory and ephemeral; start uses
+a fresh context and authoritative current-state revalidation. Starting a
+session does not imply a timer or background process. The CLI has no JSON
+contract and is not the integration boundary for future interfaces. Only
+`init-db` may initialize or migrate storage; other commands fail cleanly when
+storage is missing or stale.
+
 ## POS-001 executable boundary
 
 POS-001 implements only the repository and persistence foundation:

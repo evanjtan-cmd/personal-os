@@ -5,9 +5,11 @@ import pytest
 from personal_os.config import (
     DATA_DIR_ENV_VAR,
     DEFAULT_DATABASE_FILENAME,
+    TIMEZONE_ENV_VAR,
     ConfigurationError,
     get_data_dir,
     get_database_path,
+    get_timezone_name,
 )
 
 
@@ -43,3 +45,38 @@ def test_empty_environment_override_fails() -> None:
     with pytest.raises(ConfigurationError, match="must not be empty"):
         get_data_dir({DATA_DIR_ENV_VAR: "  "})
 
+
+def test_explicit_timezone_is_validated_and_returned_unchanged() -> None:
+    assert get_timezone_name("America/New_York", {}) == "America/New_York"
+
+
+def test_environment_timezone_is_used() -> None:
+    assert get_timezone_name(None, {TIMEZONE_ENV_VAR: "Europe/London"}) == "Europe/London"
+
+
+def test_explicit_timezone_overrides_environment() -> None:
+    assert get_timezone_name(
+        "America/Chicago", {TIMEZONE_ENV_VAR: "Europe/London"}
+    ) == "America/Chicago"
+
+
+@pytest.mark.parametrize("explicit,environ", [(None, {}), ("", {}), ("  ", {}), (None, {TIMEZONE_ENV_VAR: " "})])
+def test_missing_or_blank_timezone_fails(
+    explicit: str | None, environ: dict[str, str]
+) -> None:
+    with pytest.raises(ConfigurationError, match="timezone"):
+        get_timezone_name(explicit, environ)
+
+
+def test_invalid_timezone_is_normalized_to_configuration_error() -> None:
+    with pytest.raises(ConfigurationError, match="Not/A_Real_Zone"):
+        get_timezone_name("Not/A_Real_Zone", {})
+
+
+def test_zoneinfo_library_failure_does_not_leak(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail(_key: str) -> None:
+        raise KeyError("unavailable zone data")
+
+    monkeypatch.setattr("personal_os.config.ZoneInfo", fail)
+    with pytest.raises(ConfigurationError, match="invalid IANA timezone"):
+        get_timezone_name("America/New_York", {})
