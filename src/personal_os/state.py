@@ -47,6 +47,12 @@ from personal_os.models import (
     serialize_parameters,
     validate_task_fields,
 )
+from personal_os.session_types import (
+    SessionConflictError,
+    SessionConflictKind,
+    SessionOutcome,
+    WorkSession,
+)
 
 _OMITTED = object()
 
@@ -189,6 +195,34 @@ class SQLiteStateStore:
                 source_capture_id=row["source_capture_id"],
             ),
             "inbox item",
+        )
+
+    def _session_from_row(self, row: sqlite3.Row) -> WorkSession:
+        def decode() -> WorkSession:
+            active_slot = row["active_slot"]
+            if active_slot is not None and (
+                type(active_slot) is not int or active_slot != 1
+            ):
+                raise DomainValidationError(
+                    "stored session active_slot must be integer 1 or null"
+                )
+            active_fields = row["ended_at"] is None and row["outcome"] is None
+            if (active_slot == 1) != active_fields:
+                raise DomainValidationError(
+                    "stored session active_slot conflicts with lifecycle fields"
+                )
+            return WorkSession(
+                id=row["id"], task_id=row["task_id"],
+                planned_minutes=row["planned_minutes"],
+                started_at=parse_instant(row["started_at"], "started_at"),
+                ended_at=None if row["ended_at"] is None else parse_instant(row["ended_at"], "ended_at"),
+                outcome=None if row["outcome"] is None else SessionOutcome(row["outcome"]),
+                start_reason=row["start_reason"], result_note=row["result_note"],
+            )
+
+        return self._decode(
+            decode,
+            "session",
         )
 
     def _insert_project(
@@ -404,6 +438,150 @@ class SQLiteStateStore:
                 raise
             connection.commit()
             return projects, tasks, commitments
+
+    def get_session(self, session_id: int) -> WorkSession:
+        with self._connection() as connection:
+            return self._session_from_row(
+                self._row_or_missing(connection, "sessions", session_id, "session")
+            )
+
+    def list_sessions(self) -> list[WorkSession]:
+        with self._connection() as connection:
+            return [
+                self._session_from_row(row)
+                for row in connection.execute("SELECT * FROM sessions ORDER BY id")
+            ]
+
+    def get_active_session(self) -> WorkSession | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM sessions WHERE active_slot = 1"
+            ).fetchone()
+            return None if row is None else self._session_from_row(row)
+
+    def start_session_atomically(
+        self, *, task_id: int, planned_minutes: int, context,
+        start_reason: str | None,
+    ) -> WorkSession:
+        """Revalidate current state and insert one active session atomically."""
+
+        from personal_os.session import validate_session_start
+
+        with self._transaction() as connection:
+            selected = self._task_from_row(
+                self._row_or_missing(connection, "tasks", task_id, "task")
+            )
+            active = connection.execute(
+                "SELECT id FROM sessions WHERE active_slot = 1"
+            ).fetchone()
+            if active is not None:
+                raise SessionConflictError(
+                    SessionConflictKind.ACTIVE_SESSION_EXISTS,
+                    f"session {active['id']} is already active",
+                )
+            projects = [
+                self._project_from_row(row)
+                for row in connection.execute("SELECT * FROM projects ORDER BY id")
+            ]
+            tasks = [
+                self._task_from_row(row)
+                for row in connection.execute("SELECT * FROM tasks ORDER BY id")
+            ]
+            commitments = [
+                self._commitment_from_row(row)
+                for row in connection.execute(
+                    "SELECT * FROM fixed_commitments ORDER BY id"
+                )
+            ]
+            validate_session_start(
+                selected=selected, planned_minutes=planned_minutes,
+                context=context, projects=projects, tasks=tasks,
+                commitments=commitments,
+            )
+            try:
+                cursor = connection.execute(
+                    """INSERT INTO sessions (
+                        task_id, planned_minutes, started_at, ended_at, outcome,
+                        start_reason, result_note, active_slot
+                    ) VALUES (?, ?, ?, NULL, NULL, ?, NULL, 1)""",
+                    (selected.id, planned_minutes,
+                     serialize_instant(context.reference_time), start_reason),
+                )
+            except sqlite3.IntegrityError as exc:
+                if "UNIQUE constraint failed: sessions.active_slot" in str(exc):
+                    raise SessionConflictError(
+                        SessionConflictKind.ACTIVE_SESSION_EXISTS,
+                        "another session is already active",
+                    ) from exc
+                raise
+            return self._session_from_row(
+                self._row_or_missing(
+                    connection, "sessions", cursor.lastrowid, "session"
+                )
+            )
+
+    @staticmethod
+    def _close_session_row(
+        connection: sqlite3.Connection, *, session_id: int,
+        outcome: SessionOutcome, ended_at: datetime, result_note: str | None,
+    ) -> None:
+        cursor = connection.execute(
+            """UPDATE sessions
+               SET ended_at = ?, outcome = ?, result_note = ?, active_slot = NULL
+               WHERE id = ? AND active_slot = 1""",
+            (serialize_instant(ended_at), outcome.value, result_note, session_id),
+        )
+        if cursor.rowcount != 1:
+            raise SessionConflictError(
+                SessionConflictKind.SESSION_ALREADY_CLOSED,
+                f"session {session_id} is already closed",
+            )
+
+    def close_session_atomically(
+        self, *, session_id: int, outcome: SessionOutcome,
+        ended_at: datetime, result_note: str | None,
+    ) -> WorkSession:
+        """Close a session and apply its task outcome atomically."""
+
+        with self._transaction() as connection:
+            session = self._session_from_row(
+                self._row_or_missing(connection, "sessions", session_id, "session")
+            )
+            if not session.is_active:
+                raise SessionConflictError(
+                    SessionConflictKind.SESSION_ALREADY_CLOSED,
+                    f"session {session_id} is already closed",
+                )
+            if ended_at < session.started_at:
+                raise DomainValidationError(
+                    "ended_at must not be before session started_at"
+                )
+            task = self._task_from_row(
+                self._row_or_missing(connection, "tasks", session.task_id, "task")
+            )
+            target = {
+                SessionOutcome.FINISHED: TaskStatus.COMPLETED,
+                SessionOutcome.PROGRESS: TaskStatus.OPEN,
+                SessionOutcome.BLOCKED: TaskStatus.BLOCKED,
+            }[outcome]
+            if task.status is not TaskStatus.OPEN and task.status is not target:
+                raise SessionConflictError(
+                    SessionConflictKind.TASK_STATE_CONFLICT,
+                    f"task {task.id} status {task.status.value} conflicts with "
+                    f"session outcome {outcome.value}",
+                )
+            if task.status is not target:
+                connection.execute(
+                    "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
+                    (target.value, serialize_instant(self._now()), task.id),
+                )
+            self._close_session_row(
+                connection, session_id=session.id, outcome=outcome,
+                ended_at=ended_at, result_note=result_note,
+            )
+            return self._session_from_row(
+                self._row_or_missing(connection, "sessions", session.id, "session")
+            )
 
     def update_fixed_commitment(
         self, commitment_id: int, *, title: object = _OMITTED,

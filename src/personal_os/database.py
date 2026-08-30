@@ -8,7 +8,7 @@ from pathlib import Path
 
 from personal_os.errors import PersonalOSError
 
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 
 
 class DatabaseInitializationError(PersonalOSError):
@@ -116,7 +116,7 @@ def _ddl_after_add_source_column(name: str, ddl: str) -> str:
     return ddl.replace("        )\n    ", f"            , {column.strip()}\n        )\n    ", 1)
 
 
-TABLE_DDL: dict[str, str] = {
+V3_TABLE_DDL: dict[str, str] = {
     **{
         name: _ddl_after_add_source_column(name, ddl)
         if name in {"projects", "tasks", "fixed_commitments", "inbox_items"}
@@ -150,6 +150,36 @@ TABLE_DDL: dict[str, str] = {
     """,
 }
 
+SESSIONS_DDL = f"""
+    CREATE TABLE sessions (
+        id INTEGER PRIMARY KEY,
+        task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE RESTRICT,
+        planned_minutes INTEGER NOT NULL
+            CHECK(typeof(planned_minutes) = 'integer' AND planned_minutes > 0),
+        started_at TEXT NOT NULL {_utc_check('started_at')},
+        ended_at TEXT {_utc_check('ended_at')},
+        outcome TEXT CHECK(outcome IN ('FINISHED', 'PROGRESS', 'BLOCKED')),
+        start_reason TEXT
+            CHECK(start_reason IS NULL OR length(trim(start_reason)) > 0),
+        result_note TEXT
+            CHECK(result_note IS NULL OR length(trim(result_note)) > 0),
+        active_slot INTEGER UNIQUE
+            CHECK(active_slot IS NULL OR
+                (typeof(active_slot) = 'integer' AND active_slot = 1)),
+        CHECK(
+            (active_slot IS NOT NULL AND ended_at IS NULL AND outcome IS NULL
+                AND result_note IS NULL)
+            OR
+            (active_slot IS NULL AND ended_at IS NOT NULL
+                AND outcome IS NOT NULL
+                AND outcome IN ('FINISHED', 'PROGRESS', 'BLOCKED'))
+        ),
+        CHECK(ended_at IS NULL OR ended_at >= started_at)
+    )
+"""
+
+TABLE_DDL: dict[str, str] = {**V3_TABLE_DDL, "sessions": SESSIONS_DDL}
+
 Migration = Callable[[sqlite3.Connection], None]
 
 
@@ -169,7 +199,7 @@ def _migration_2(connection: sqlite3.Connection) -> None:
 def _migration_3(connection: sqlite3.Connection) -> None:
     """Add durable natural-language captures and source traceability."""
 
-    connection.execute(TABLE_DDL["captures"])
+    connection.execute(V3_TABLE_DDL["captures"])
     for table in ("projects", "tasks", "fixed_commitments", "inbox_items"):
         connection.execute(
             f"ALTER TABLE {table} ADD COLUMN source_capture_id INTEGER "
@@ -177,7 +207,18 @@ def _migration_3(connection: sqlite3.Connection) -> None:
         )
 
 
-MIGRATIONS: dict[int, Migration] = {1: _migration_1, 2: _migration_2, 3: _migration_3}
+def _migration_4(connection: sqlite3.Connection) -> None:
+    """Add durable work-session history."""
+
+    connection.execute(SESSIONS_DDL)
+
+
+MIGRATIONS: dict[int, Migration] = {
+    1: _migration_1,
+    2: _migration_2,
+    3: _migration_3,
+    4: _migration_4,
+}
 
 
 def open_database(path: Path, *, require_existing: bool = False) -> sqlite3.Connection:
@@ -238,9 +279,13 @@ def validate_schema(connection: sqlite3.Connection, version: int) -> None:
                 f"schema version {version} contains unexpected objects: {names}"
             )
         return
-    if version not in (2, 3):
+    if version not in (2, 3, 4):
         raise DatabaseInitializationError(f"unsupported schema version {version}")
-    expected_tables = V2_TABLE_DDL if version == 2 else TABLE_DDL
+    expected_tables = {
+        2: V2_TABLE_DDL,
+        3: V3_TABLE_DDL,
+        4: TABLE_DDL,
+    }[version]
     if set(objects) != set(expected_tables):
         expected = ", ".join(sorted(expected_tables))
         actual = ", ".join(sorted(objects)) or "none"
@@ -260,6 +305,10 @@ def validate_schema(connection: sqlite3.Connection, version: int) -> None:
         "fixed_commitments": [] if version == 2 else [("captures", "source_capture_id", "id", "NO ACTION", "RESTRICT")],
         "inbox_items": [] if version == 2 else [("captures", "source_capture_id", "id", "NO ACTION", "RESTRICT")],
     }
+    if version == 4:
+        expected_fks["sessions"] = [
+            ("tasks", "task_id", "id", "NO ACTION", "RESTRICT")
+        ]
     for table, expected in expected_fks.items():
         actual = sorted(
             (row["table"], row["from"], row["to"], row["on_update"], row["on_delete"])
@@ -267,6 +316,24 @@ def validate_schema(connection: sqlite3.Connection, version: int) -> None:
         )
         if actual != sorted(expected):
             raise DatabaseInitializationError(f"{table} has incompatible foreign-key metadata")
+    if version == 4:
+        unique_active_slot = False
+        for index in connection.execute("PRAGMA index_list(sessions)"):
+            if int(index["unique"]) != 1:
+                continue
+            columns = [
+                row["name"]
+                for row in connection.execute(
+                    f"PRAGMA index_info({index['name']})"
+                )
+            ]
+            if columns == ["active_slot"]:
+                unique_active_slot = True
+                break
+        if not unique_active_slot:
+            raise DatabaseInitializationError(
+                "sessions lacks a unique active_slot constraint"
+            )
 
 
 def initialize_database(database_path: Path) -> int:

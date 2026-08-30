@@ -255,14 +255,14 @@ def test_bounding_preserves_comparable_deadline_severity_over_task_id(store) -> 
     assert newer_ids[-1] not in supplied_ids
 
 
-def test_snapshot_is_coherent_and_schema_remains_version_three(store) -> None:
+def test_snapshot_is_coherent_and_schema_remains_version_four(store) -> None:
     project = store.create_project("P")
     task = store.create_task("T", project_id=project.id)
     commitment = store.create_fixed_commitment("C", NOW + timedelta(hours=1))
     projects, tasks, commitments = store.read_recommendation_snapshot()
     assert (projects, tasks, commitments) == ([project], [task], [commitment])
     with sqlite3.connect(store.database_path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
     assert tables == set(TABLE_DDL)
 

@@ -56,8 +56,8 @@ or unresolved until they are supplied or deterministically established.
 - A valid recommendation may be "no additional work." The system must not
   fabricate activity.
 - Availability and recommended work duration are distinct concepts.
-- The initial recommendation-duration policy is deliberately unresolved and
-  must be decided before POS-004.
+- Recommendation durations use the POS-004 fixed ladder and explicit short-task
+  exception described below.
 
 ## Session semantics
 
@@ -67,6 +67,20 @@ The MVP permits at most one active work session.
 - **Progress:** the session completes while the work item remains open.
 - **Blocked:** the session completes and the item becomes ineligible until it is
   unblocked.
+
+POS-005 persists session history with exact UTC start/end facts and derives
+actual elapsed duration without rounding. At most one session may be active,
+enforced by SQLite as well as application checks. A session start revalidates
+current Task/project eligibility, HARD availability, exact allowed duration,
+and feasible-MUST protection atomically with insertion. Recommendation ranking,
+urgency sorting, and the 50-candidate AI bound do not constrain session start.
+
+FINISHED atomically closes the session and completes its Task. PROGRESS closes
+the session while leaving the Task OPEN and does not touch its update timestamp.
+BLOCKED closes the session and blocks the Task. Matching preexisting COMPLETED
+or BLOCKED state is accepted for its corresponding outcome, while conflicting
+state is not overwritten. Result text remains uninterpreted session history;
+POS-005 adds no feedback AI, automatic next action, or project mutation.
 
 ## Interfaces and reference data
 

@@ -8,12 +8,12 @@ work session, and update that state. The product direction is described in
 
 ## Current boundary
 
-POS-004 provides deterministic task eligibility and availability, duration
-feasibility, feasible-MUST protection, and a constrained AI ranking boundary
-that returns one ephemeral recommendation or no work. Capture and recommendation
-operations are currently Python APIs; the CLI remains limited to database
-initialization. Sessions, calendar behavior, additional integrations, and user
-interfaces are not implemented. See `BUILD_STATE.md` for the exact state.
+POS-005 completes the minimal internal loop through Python APIs: constrained
+capture, deterministic eligibility, ephemeral recommendation, atomic session
+start, and FINISHED/PROGRESS/BLOCKED feedback with durable session history.
+The CLI remains limited to database initialization. Calendar integrations,
+product-facing interfaces, and post-MVP automation are not implemented. See
+`BUILD_STATE.md` for the exact state.
 
 ## Requirements and setup
 

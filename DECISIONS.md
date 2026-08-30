@@ -99,3 +99,23 @@ only derived availability, schedule, deadline, importance, and duration facts.
 It receives no raw reference time, timezone, clock/daypart, rules, or canonical
 state access. Its selected task and duration are validated exactly against the
 supplied set.
+
+## 2026-08-30 — Durable work-session lifecycle
+
+Schema version 4 adds immutable work-session history without changing the six
+existing tables. A nullable unique `active_slot` permits many closed sessions
+but enforces at most one active session under concurrency. Start revalidation
+and insertion share one immediate SQLite transaction and reuse the current
+deterministic eligibility, HARD availability, duration, and feasible-MUST
+policies; AI ranking and candidate bounds are not session-start constraints.
+
+Sessions store exact UTC start and end instants, and actual elapsed duration is
+derived without rounding or redundant storage. Zero-duration closure is valid.
+Optional start reasons and result notes are preserved verbatim as user-provided
+history and are not interpreted by AI.
+
+FINISHED completes the Task, PROGRESS leaves it OPEN without touching its
+timestamp, and BLOCKED blocks it. Closure and any Task transition are atomic.
+An already matching COMPLETED or BLOCKED Task permits the corresponding close;
+conflicting newer Task state is never overwritten. Closed sessions cannot be
+reopened, edited, or deleted through the POS-005 API.
