@@ -50,11 +50,47 @@ def test_adapter_uses_strict_responses_without_raw_temporal_context() -> None:
 
 
 def test_adapter_configuration_is_lazy(monkeypatch) -> None:
+    monkeypatch.delenv("PERSONAL_OS_RECOMMEND_PROVIDER", raising=False)
     monkeypatch.delenv("PERSONAL_OS_RECOMMEND_MODEL", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     with pytest.raises(RecommendationError) as error:
         OpenAIResponsesRecommendationRanker().recommend(RecommendationRankingContext(AvailabilityKind.NO_KNOWN_HARD_BOUND, None, False), (candidate(),))
     assert error.value.kind is RecommendationFailureKind.CONFIGURATION_ERROR
+
+
+def test_openai_environment_builds_client_lazily(monkeypatch) -> None:
+    response = SimpleNamespace(
+        status="completed", output=[],
+        output_text=json.dumps({
+            "kind": "RECOMMEND", "task_id": 1,
+            "duration_minutes": 10, "reason": "Important",
+        }),
+    )
+    fake, responses = setup(response)
+    built = []
+
+    def build(config):
+        built.append(config)
+        return fake
+
+    monkeypatch.setenv("PERSONAL_OS_RECOMMEND_PROVIDER", "openai")
+    monkeypatch.setenv("PERSONAL_OS_RECOMMEND_MODEL", "gpt-test")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(
+        "personal_os.openai_recommendation.build_responses_client", build
+    )
+    ranker = OpenAIResponsesRecommendationRanker()
+    assert built == []
+
+    result = ranker.recommend(
+        RecommendationRankingContext(AvailabilityKind.FINITE, 20, False),
+        (candidate(),),
+    )
+
+    assert result.task_id == 1
+    assert built[0].provider.value == "openai"
+    assert built[0].base_url is None
+    assert responses.kwargs["model"] == "gpt-test"
 
 
 @pytest.mark.parametrize("response,kind", [

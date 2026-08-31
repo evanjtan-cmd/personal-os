@@ -1,6 +1,6 @@
 # Build State
 
-Last updated: 2026-08-30 for POS-006.
+Last updated: 2026-08-31 for provider-independent AI inference.
 
 ## Implemented
 
@@ -55,10 +55,19 @@ Last updated: 2026-08-30 for POS-006.
   adapter uses explicit IANA timezone configuration, fresh trusted instants,
   human-readable output, and no implicit database bootstrap or duplicated
   domain policy.
+- Explicit per-boundary OpenAI/Groq provider selection for capture and
+  recommendation. Both hosts use lazy OpenAI SDK Responses clients, the
+  existing strict JSON schemas, provider-specific API keys, accurate provider
+  metadata, and unchanged fail-closed typed validation. Groq uses its official
+  OpenAI-compatible base URL by default and supports an explicit base-URL
+  override.
+- An explicitly gated manual live smoke script for capture or recommendation;
+  it is not collected or invoked by pytest and performs no request without
+  `PERSONAL_OS_LIVE_AI_SMOKE=1`.
 
 ## Not implemented
 
-- Additional AI providers or feedback/session AI behavior
+- Ollama/local inference, additional AI providers, or feedback/session AI behavior
 - Calendar or Google Sheets integration
 - Product CRUD commands, HTTP endpoints, Shortcuts, NFC, voice, or UI
 - Notifications, background work, deletion, import/export, or duration learning
@@ -67,9 +76,9 @@ Last updated: 2026-08-30 for POS-006.
 
 ## Validation
 
-Run on 2026-08-30 with Python 3.12.4 and pytest 8.4.2:
+Run on 2026-08-31 with Python 3.12.4 and pytest 8.4.2:
 
-- `python -m pytest` — passed: 258 passed, 0 failed.
+- `python -m pytest` — passed: 298 passed, 0 failed.
 - `python -m compileall -q src tests` — passed with exit code 0.
 - `python -m personal_os --help` — passed with exit code 0.
 - `personal-os --help` — passed with exit code 0.
@@ -94,4 +103,20 @@ Run on 2026-08-30 with Python 3.12.4 and pytest 8.4.2:
   service-authoritative start and feedback behavior, exact elapsed display, and
   a complete dogfood loop using real services with fake AI boundaries. No live
   OpenAI request was made.
+- Provider tests confirm OpenAI and Groq configuration, provider-specific key
+  requirements, official and overridden Groq base URLs, lazy client
+  construction, structured parsing, refusals, malformed output, provider
+  failures, CLI runtime wiring, durable Groq provider/model metadata, and a
+  canonical capture schema with neither nested `anyOf` constructs nor
+  structurally ambiguous object unions. The unified strict clock wire shape
+  preserves every date/project/clock/deadline alternative, while typed parsing
+  continues to reject invalid kind/hour/period combinations. The capture
+  adapter narrowly maps only an APPLY wire response with
+  `unresolved_reason=""` to canonical null; UNRESOLVED and all other empty text
+  remain fail-closed. The project-reference wire field uses a simple
+  integer/string/null type list; canonical parsing still admits only a positive
+  integer, exact `NEW`, or null, and deterministic application still requires
+  `NEW` to correspond to a supplied new project. The only remaining schema
+  `anyOf` is the necessary, structurally distinct deadline date/instant union.
+  No live provider request was made by automated validation.
 - `git diff --check` — passed with exit code 0.

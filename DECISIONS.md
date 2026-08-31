@@ -133,3 +133,21 @@ storage, and product commands do not auto-bootstrap or repair it. Commands that
 depend on local calendar meaning require an explicit IANA timezone supplied by
 `--timezone` or `PERSONAL_OS_TIMEZONE`; the CLI does not infer machine-local
 timezone configuration.
+
+## 2026-08-31 — Explicit provider-independent AI inference
+
+Capture interpretation and recommendation ranking remain provider-agnostic
+application boundaries. Their production Responses adapters select either
+OpenAI-hosted inference or Groq-hosted inference through explicit per-boundary
+provider and model configuration. Both use the existing OpenAI Python SDK,
+strict JSON-schema output, `store=False`, and the same fail-closed typed
+validation; provider selection does not alter deterministic resolution,
+eligibility, candidate, persistence, or session semantics.
+
+Provider configuration is intentionally narrow rather than a general plugin
+framework. OpenAI uses `OPENAI_API_KEY`; Groq uses `GROQ_API_KEY` and the
+official `https://api.groq.com/openai/v1` base URL unless
+`PERSONAL_OS_GROQ_BASE_URL` is explicitly supplied. Durable capture metadata
+records the actual host provider (`openai` or `groq`) and model. Client creation
+and network access remain lazy. Ollama and other local/provider abstractions are
+not part of this decision.

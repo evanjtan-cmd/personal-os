@@ -1,9 +1,15 @@
-"""OpenAI Responses API adapter for recommendation ranking."""
+"""Strict Responses API adapter for recommendation ranking."""
 
 from __future__ import annotations
 
 import json
-import os
+
+from personal_os.ai_provider import (
+    InferenceProvider,
+    build_responses_client,
+    resolve_recommendation_provider,
+)
+from personal_os.config import ConfigurationError
 
 from personal_os.recommendation_types import (
     EligibleTaskCandidate,
@@ -31,39 +37,45 @@ RECOMMENDATION_SCHEMA = {
 
 
 class OpenAIResponsesRecommendationRanker:
-    """Rank eligible tasks through a lazily constructed OpenAI client."""
+    """Rank eligible tasks through a lazily configured Responses client."""
 
-    def __init__(self, *, client: object | None = None, model: str | None = None) -> None:
+    def __init__(
+        self, *, client: object | None = None, model: str | None = None,
+        provider: InferenceProvider | str = InferenceProvider.OPENAI,
+    ) -> None:
         self._client = client
         self._model = model
+        self._provider = provider
 
     def recommend(
         self,
         context: RecommendationRankingContext,
         candidates: tuple[EligibleTaskCandidate, ...],
     ) -> RecommendationChoice:
-        model = self._model or os.environ.get("PERSONAL_OS_RECOMMEND_MODEL")
-        if not model:
-            raise RecommendationError(
-                RecommendationFailureKind.CONFIGURATION_ERROR,
-                "PERSONAL_OS_RECOMMEND_MODEL is not configured",
-            )
         client = self._client
-        if client is None:
-            if not os.environ.get("OPENAI_API_KEY"):
+        if client is not None:
+            model = self._model
+            provider = str(self._provider)
+            if not model:
                 raise RecommendationError(
                     RecommendationFailureKind.CONFIGURATION_ERROR,
-                    "OPENAI_API_KEY is not configured",
+                    "PERSONAL_OS_RECOMMEND_MODEL is not configured",
                 )
+        else:
             try:
-                from openai import OpenAI
-
-                client = OpenAI()
+                config = resolve_recommendation_provider()
+                client = build_responses_client(config)
+            except ConfigurationError as exc:
+                raise RecommendationError(
+                    RecommendationFailureKind.CONFIGURATION_ERROR, str(exc)
+                ) from exc
             except Exception as exc:
                 raise RecommendationError(
                     RecommendationFailureKind.CONFIGURATION_ERROR,
-                    f"OpenAI client configuration failed: {exc}",
+                    f"Responses client configuration failed: {exc}",
                 ) from exc
+            model = config.model
+            provider = config.provider.value
 
         payload = {
             "availability": {
@@ -115,14 +127,14 @@ class OpenAIResponsesRecommendationRanker:
         except Exception as exc:
             raise RecommendationError(
                 RecommendationFailureKind.PROVIDER_ERROR,
-                f"OpenAI request failed: {exc}",
+                f"{provider} request failed: {exc}",
             ) from exc
 
         status = getattr(response, "status", None)
         if status in {"failed", "incomplete"}:
             raise RecommendationError(
                 RecommendationFailureKind.PROVIDER_ERROR,
-                f"OpenAI response status was {status}",
+                f"{provider} response status was {status}",
             )
         for item in getattr(response, "output", []) or []:
             for content in getattr(item, "content", []) or []:
@@ -135,28 +147,28 @@ class OpenAIResponsesRecommendationRanker:
         if not isinstance(output_text, str) or not output_text:
             raise RecommendationError(
                 RecommendationFailureKind.INVALID_OUTPUT,
-                "OpenAI response contained no structured text",
+                f"{provider} response contained no structured text",
             )
         try:
             decoded = json.loads(output_text)
         except json.JSONDecodeError as exc:
             raise RecommendationError(
                 RecommendationFailureKind.INVALID_OUTPUT,
-                "OpenAI response was malformed JSON",
+                f"{provider} response was malformed JSON",
             ) from exc
         if not isinstance(decoded, dict) or set(decoded) != {
             "kind", "task_id", "duration_minutes", "reason"
         }:
             raise RecommendationError(
                 RecommendationFailureKind.INVALID_OUTPUT,
-                "OpenAI response did not match the recommendation contract",
+                f"{provider} response did not match the recommendation contract",
             )
         try:
             kind = RecommendationChoiceKind(decoded["kind"])
         except (TypeError, ValueError) as exc:
             raise RecommendationError(
                 RecommendationFailureKind.INVALID_OUTPUT,
-                "OpenAI response contained an invalid choice kind",
+                f"{provider} response contained an invalid choice kind",
             ) from exc
         return RecommendationChoice(
             kind,

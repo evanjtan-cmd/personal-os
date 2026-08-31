@@ -28,27 +28,62 @@ python -m pip install -e ".[dev]"
 
 Importing `personal_os` has no filesystem side effects.
 
-To use the production capture interpreter, set `PERSONAL_OS_CAPTURE_MODEL` to
-an OpenAI model that supports strict structured output and provide
-`OPENAI_API_KEY` through the standard SDK environment. No model is assumed and
-no secret or `.env` file belongs in the repository.
-
-The production recommendation ranker separately requires
-`PERSONAL_OS_RECOMMEND_MODEL`; it never falls back to the capture model. It uses
-the same standard `OPENAI_API_KEY` configuration.
+Capture and recommendation each select an explicit inference provider and
+model. Supported providers are `openai` and `groq`; both use the OpenAI Python
+SDK's Responses interface with the same strict JSON schemas and fail-closed
+application validation. The recommendation model never falls back to the
+capture model. No provider or model is assumed, and no secret or `.env` file
+belongs in the repository.
 
 Capture, recommendation, and session start also require an explicit IANA
 timezone, supplied either per command with `--timezone` or through
 `PERSONAL_OS_TIMEZONE`. Personal OS does not infer the machine timezone.
 
-For a normal production dogfood run, configure:
+For an OpenAI-hosted dogfood run, configure:
 
 ```bash
+export PERSONAL_OS_CAPTURE_PROVIDER=openai
+export PERSONAL_OS_RECOMMEND_PROVIDER=openai
 export OPENAI_API_KEY=...
 export PERSONAL_OS_CAPTURE_MODEL=...
 export PERSONAL_OS_RECOMMEND_MODEL=...
 export PERSONAL_OS_TIMEZONE=America/New_York
 ```
+
+For Groq-hosted GPT-OSS inference, configure:
+
+```bash
+export PERSONAL_OS_CAPTURE_PROVIDER=groq
+export PERSONAL_OS_RECOMMEND_PROVIDER=groq
+export GROQ_API_KEY=...
+export PERSONAL_OS_CAPTURE_MODEL=openai/gpt-oss-20b
+export PERSONAL_OS_RECOMMEND_MODEL=openai/gpt-oss-120b
+export PERSONAL_OS_TIMEZONE=America/New_York
+```
+
+Groq defaults to its official OpenAI-compatible base URL,
+`https://api.groq.com/openai/v1`. A proxy or compatible Groq gateway can be
+selected explicitly with `PERSONAL_OS_GROQ_BASE_URL`. Capture and recommendation
+may use different supported providers. Provider API keys are read only when an
+AI request is actually needed; `init-db`, session feedback, and active-session
+display do not require them.
+
+Groq currently describes its Responses API as beta. A configured model must
+support Responses and strict JSON-schema output; GPT-OSS 20B and 120B satisfy
+that requirement. Automated tests exercise the complete protocol with fake
+clients but intentionally do not certify live provider availability, quotas, or
+model-specific behavior.
+
+An explicitly live, non-pytest smoke check is available for manual provider
+verification:
+
+```bash
+PERSONAL_OS_LIVE_AI_SMOKE=1 python scripts/live_ai_smoke.py capture
+PERSONAL_OS_LIVE_AI_SMOKE=1 python scripts/live_ai_smoke.py recommend
+```
+
+These commands make billable external requests. Without the exact opt-in value
+`1`, the script exits before constructing a provider client.
 
 ## Initialize the database
 

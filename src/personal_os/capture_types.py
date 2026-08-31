@@ -176,8 +176,12 @@ def _clock(value: object) -> ClockExpression:
         kind = ClockExpressionKind(value.get("kind"))
     except (ValueError, TypeError) as exc:
         raise InterpretationValidationError("unsupported clock expression") from exc
-    keys = {"kind", "hour", "minute", "period"} if kind is ClockExpressionKind.CLOCK_12 else {"kind", "hour", "minute"}
-    data = _object(value, keys, "clock expression")
+    common_keys = {"kind", "hour", "minute", "period"}
+    legacy_keys = {"kind", "hour", "minute"}
+    if kind is ClockExpressionKind.CLOCK_12 or set(value) == common_keys:
+        data = _object(value, common_keys, "clock expression")
+    else:
+        data = _object(value, legacy_keys, "clock expression")
     hour, minute = data["hour"], data["minute"]
     if type(hour) is not int or type(minute) is not int or minute not in range(60):
         raise InterpretationValidationError("clock components are invalid")
@@ -185,8 +189,8 @@ def _clock(value: object) -> ClockExpression:
     if kind is ClockExpressionKind.CLOCK_12:
         if hour not in range(1, 13) or period not in {"AM", "PM"}:
             raise InterpretationValidationError("12-hour clock is invalid")
-    elif hour not in range(24):
-        raise InterpretationValidationError("24-hour clock is invalid")
+    elif hour not in range(24) or period is not None:
+        raise InterpretationValidationError("24-hour or bare clock is invalid")
     return ClockExpression(kind, hour, minute, period)
 
 

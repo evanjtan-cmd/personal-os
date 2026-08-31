@@ -1,5 +1,7 @@
 from datetime import UTC, datetime
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -68,6 +70,32 @@ def test_capture_is_durable_before_interpretation(store: SQLiteStateStore) -> No
     assert fake.observed_received
     assert result.capture.status is CaptureStatus.APPLIED
     assert store.get_task(result.task_ids[0]).source_capture_id == result.capture.id
+
+
+def test_groq_adapter_metadata_is_persisted_as_groq(store: SQLiteStateStore) -> None:
+    payload = {
+        "kind": "UNRESOLVED", "new_project": None, "tasks": [],
+        "commitments": [], "unresolved_reason": "uncertain",
+    }
+    response = SimpleNamespace(
+        id="groq-response", model="openai/gpt-oss-20b", status="completed",
+        output=[], output_text=json.dumps(payload),
+    )
+    client = SimpleNamespace(
+        responses=SimpleNamespace(create=lambda **_kwargs: response)
+    )
+    adapter = OpenAIResponsesCaptureInterpreter(
+        client=client, model="openai/gpt-oss-20b", provider="groq"
+    )
+
+    result = CaptureService(store, adapter).capture_text(
+        "uncertain item", reference_time=REFERENCE, timezone_name="UTC"
+    )
+
+    persisted = store.get_capture(result.capture.id)
+    assert persisted.model_provider == "groq"
+    assert persisted.model_name == "openai/gpt-oss-20b"
+    assert persisted.model_response_id == "groq-response"
 
 
 def test_multi_task_and_new_project_are_atomic_and_traceable(store: SQLiteStateStore) -> None:
@@ -172,6 +200,19 @@ def test_duplicate_project_name_is_unresolved_across_completed_projects(store: S
     result = CaptureService(store, FakeInterpreter(payload)).capture_text("college essay", reference_time=REFERENCE, timezone_name="UTC")
     assert result.capture.status is CaptureStatus.UNRESOLVED
     assert len(store.list_projects()) == 1
+
+
+def test_new_project_reference_without_new_project_fails_closed(
+    store: SQLiteStateStore,
+) -> None:
+    payload = apply_payload(tasks=[task("Buy milk", project_id="NEW")])
+    result = CaptureService(store, FakeInterpreter(payload)).capture_text(
+        "Buy milk", reference_time=REFERENCE, timezone_name="UTC"
+    )
+    assert result.capture.status is CaptureStatus.FAILED
+    assert result.capture.failure_kind is CaptureFailureKind.INVALID_OUTPUT
+    assert result.capture.failure_reason == "task references an absent new project"
+    assert store.list_tasks() == []
 
 
 def test_missing_model_configuration_fails_only_after_raw_is_persisted(store: SQLiteStateStore, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -205,12 +205,13 @@ task intent may contain multiple date expressions, which resolve, deduplicate,
 and expand into independently completable task rows. POS-003 commitment intents
 contain a start but no end, so captured commitments retain an unknown end.
 
-The production interpreter uses the OpenAI 3.x Responses API with an explicitly
-configured `PERSONAL_OS_CAPTURE_MODEL`, strict JSON Schema structured output,
-and `store=False`. `OPENAI_API_KEY` is read by the standard SDK. Client creation
-and all network activity are lazy, and no live request is part of automated
-validation. POS-003 adds no capture CLI, recurrence, rule capture, calendar
-integration, recommendation, eligibility, session, or HTTP behavior.
+The production interpreter uses the OpenAI 3.x SDK's Responses interface with
+an explicitly configured provider and `PERSONAL_OS_CAPTURE_MODEL`, strict JSON
+Schema structured output, and `store=False`. OpenAI-hosted and Groq-hosted
+inference are supported with distinct provider keys and accurate provider
+metadata. Client creation and all network activity are lazy, and no live
+request is part of automated validation. POS-003 adds no recurrence, rule
+capture, calendar integration, or HTTP behavior.
 
 ## Deterministic recommendation
 

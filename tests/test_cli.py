@@ -48,6 +48,19 @@ def install_runtime(monkeypatch: pytest.MonkeyPatch, value: object) -> None:
     monkeypatch.setattr(cli, "_utc_now", lambda: NOW)
 
 
+def test_runtime_wires_provider_capable_capture_and_recommendation_adapters(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv(DATA_DIR_ENV_VAR, str(tmp_path))
+    value = cli._build_runtime()
+    assert value.capture_service.interpreter.__class__.__name__ == (
+        "OpenAIResponsesCaptureInterpreter"
+    )
+    assert value.recommendation_service.ranker.__class__.__name__ == (
+        "OpenAIResponsesRecommendationRanker"
+    )
+
+
 def test_module_help_succeeds() -> None:
     result = subprocess.run(
         [sys.executable, "-m", "personal_os", "--help"],
