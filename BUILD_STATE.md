@@ -1,6 +1,6 @@
 # Build State
 
-Last updated: 2026-08-31 for provider-independent AI inference.
+Last updated: 2026-08-31 for POS-007 read-only state inspection.
 
 ## Implemented
 
@@ -55,6 +55,11 @@ Last updated: 2026-08-31 for provider-independent AI inference.
   adapter uses explicit IANA timezone configuration, fresh trusted instants,
   human-readable output, and no implicit database bootstrap or duplicated
   domain policy.
+- Read-only full-state CLI inspection over one validated SQLite connection and
+  explicit read transaction. All seven canonical entity groups are shown in
+  deterministic ID order without initialization, migration, mutation,
+  timezone/provider configuration, or disclosure of interpretation/provider
+  internals.
 - Explicit per-boundary OpenAI/Groq provider selection for capture and
   recommendation. Both hosts use lazy OpenAI SDK Responses clients, the
   existing strict JSON schemas, provider-specific API keys, accurate provider
@@ -78,7 +83,7 @@ Last updated: 2026-08-31 for provider-independent AI inference.
 
 Run on 2026-08-31 with Python 3.12.4 and pytest 8.4.2:
 
-- `python -m pytest` — passed: 298 passed, 0 failed.
+- `python -m pytest` — passed: 306 passed, 0 failed.
 - `python -m compileall -q src tests` — passed with exit code 0.
 - `python -m personal_os --help` — passed with exit code 0.
 - `personal-os --help` — passed with exit code 0.
@@ -98,7 +103,7 @@ Run on 2026-08-31 with Python 3.12.4 and pytest 8.4.2:
 - Session tests confirm strict v4 migration and storage constraints, one-active
   concurrency, deterministic start rejection precedence, atomic feedback
   rollback, and the complete capture-to-updated-state loop without network use.
-- CLI tests confirm all eight command/help paths, explicit timezone resolution,
+- CLI tests confirm all nine command/help paths, explicit timezone resolution,
   no product-command auto-bootstrap, advisory recommendation hints,
   service-authoritative start and feedback behavior, exact elapsed display, and
   a complete dogfood loop using real services with fake AI boundaries. No live

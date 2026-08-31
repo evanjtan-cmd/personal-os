@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -12,7 +13,7 @@ from personal_os.capture import CaptureService
 from personal_os.config import get_database_path, get_timezone_name
 from personal_os.database import initialize_database
 from personal_os.errors import PersonalOSError
-from personal_os.models import CaptureStatus, serialize_instant
+from personal_os.models import CaptureStatus, TaskScheduleMode, serialize_instant
 from personal_os.openai_capture import OpenAIResponsesCaptureInterpreter
 from personal_os.openai_recommendation import OpenAIResponsesRecommendationRanker
 from personal_os.recommendation import RecommendationService
@@ -22,7 +23,7 @@ from personal_os.recommendation_types import (
 )
 from personal_os.session import SessionService
 from personal_os.session_types import SessionOutcome
-from personal_os.state import SQLiteStateStore
+from personal_os.state import SQLiteStateStore, StateSnapshot
 
 
 def _positive_integer(value: str) -> int:
@@ -75,6 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
         feedback = subparsers.add_parser(command, help=help_text)
         feedback.add_argument("--note")
     subparsers.add_parser("active", help="show the active work session")
+    subparsers.add_parser("state", help="show all canonical persisted state")
     return parser
 
 
@@ -233,6 +235,122 @@ def _handle_active(runtime: _CLIRuntime) -> int:
     return 0
 
 
+def _source(capture_id: int | None) -> str:
+    return "none" if capture_id is None else f"#{capture_id}"
+
+
+def _print_state(snapshot: StateSnapshot) -> None:
+    def section(name: str, items: tuple[object, ...]) -> None:
+        if name != "Projects":
+            print()
+        print(f"{name} ({len(items)})")
+        if not items:
+            print("  (none)")
+
+    section("Projects", snapshot.projects)
+    for project in snapshot.projects:
+        print(f"  #{project.id} [{project.status.value}] {project.name}")
+        print(f"    Description: {project.description if project.description is not None else 'none'}")
+        print(f"    Source capture: {_source(project.source_capture_id)}")
+
+    section("Tasks", snapshot.tasks)
+    for task in snapshot.tasks:
+        print(
+            f"  #{task.id} [{task.status.value}/{task.importance.value}] {task.title}"
+        )
+        print(f"    Project: {'none' if task.project_id is None else f'#{task.project_id}'}")
+        if task.schedule_mode is TaskScheduleMode.FLEXIBLE:
+            schedule = "FLEXIBLE"
+        elif task.schedule_mode is TaskScheduleMode.DAY:
+            assert task.day_date is not None
+            schedule = f"DAY {task.day_date.isoformat()}"
+        else:
+            assert task.window_start is not None and task.window_end is not None
+            schedule = (
+                f"WINDOW {serialize_instant(task.window_start)} to "
+                f"{serialize_instant(task.window_end)}"
+            )
+        print(f"    Schedule: {schedule}")
+        if task.deadline_date is not None:
+            deadline = f"DATE {task.deadline_date.isoformat()}"
+        elif task.deadline_at is not None:
+            deadline = f"INSTANT {serialize_instant(task.deadline_at)}"
+        else:
+            deadline = "none"
+        print(f"    Deadline: {deadline}")
+        print(
+            "    Estimate: "
+            + ("none" if task.estimated_minutes is None else f"{task.estimated_minutes} minutes")
+        )
+        print(f"    Source capture: {_source(task.source_capture_id)}")
+
+    section("Commitments", snapshot.fixed_commitments)
+    for commitment in snapshot.fixed_commitments:
+        print(f"  #{commitment.id} [{commitment.hardness.value}] {commitment.title}")
+        print(f"    Start: {serialize_instant(commitment.start_at)}")
+        print(
+            "    End: "
+            + ("unknown" if commitment.end_at is None else serialize_instant(commitment.end_at))
+        )
+        print(f"    Source capture: {_source(commitment.source_capture_id)}")
+
+    section("Rules", snapshot.rules)
+    for rule in snapshot.rules:
+        enabled = "enabled" if rule.enabled else "disabled"
+        parameters = json.dumps(
+            rule.parameters, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        print(f"  #{rule.id} [{enabled}] {rule.kind}")
+        print(f"    Parameters: {parameters}")
+
+    section("Inbox", snapshot.inbox_items)
+    for item in snapshot.inbox_items:
+        state = "RESOLVED" if item.is_resolved else "UNRESOLVED"
+        print(f"  #{item.id} [{state}] {item.raw_text}")
+        print(f"    Reason: {item.unresolved_reason}")
+        print(
+            "    Resolved: "
+            + ("none" if item.resolved_at is None else serialize_instant(item.resolved_at))
+        )
+        print(f"    Source capture: {_source(item.source_capture_id)}")
+
+    section("Captures", snapshot.captures)
+    for capture in snapshot.captures:
+        print(f"  #{capture.id} [{capture.status.value}] {capture.raw_text}")
+        print(f"    Reference: {serialize_instant(capture.reference_time)}")
+        print(f"    Timezone: {capture.timezone_name}")
+        if capture.unresolved_reason is not None:
+            print(f"    Unresolved reason: {capture.unresolved_reason}")
+        if capture.failure_kind is not None:
+            print(f"    Failure: {capture.failure_kind.value}: {capture.failure_reason}")
+
+    section("Sessions", snapshot.sessions)
+    for session in snapshot.sessions:
+        state = "ACTIVE" if session.is_active else session.outcome.value
+        print(f"  #{session.id} [{state}] Task #{session.task_id}")
+        print(f"    Planned: {session.planned_minutes} minutes")
+        print(f"    Started: {serialize_instant(session.started_at)}")
+        print(
+            "    Ended: "
+            + ("none" if session.ended_at is None else serialize_instant(session.ended_at))
+        )
+        if session.actual_duration is not None:
+            print(f"    Elapsed: {_format_elapsed(session.actual_duration)}")
+        print(
+            "    Start reason: "
+            + ("none" if session.start_reason is None else session.start_reason)
+        )
+        print(
+            "    Result note: "
+            + ("none" if session.result_note is None else session.result_note)
+        )
+
+
+def _handle_state(runtime: _CLIRuntime) -> int:
+    _print_state(runtime.store.read_state_snapshot())
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the CLI and return a process exit status."""
 
@@ -259,6 +377,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _handle_feedback(args, runtime, SessionOutcome.BLOCKED)
         if args.command == "active":
             return _handle_active(runtime)
+        if args.command == "state":
+            return _handle_state(runtime)
     except (PersonalOSError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

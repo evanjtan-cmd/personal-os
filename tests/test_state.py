@@ -5,6 +5,7 @@ import sqlite3
 
 import pytest
 
+import personal_os.state as state_module
 from personal_os.database import initialize_database
 from personal_os.errors import DomainValidationError, EntityNotFoundError, PersistenceError
 from personal_os.models import (
@@ -63,6 +64,76 @@ def test_state_operation_rejects_outdated_database(tmp_path: Path) -> None:
 
     with sqlite3.connect(path) as connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+
+
+def test_state_snapshot_reads_all_tables_in_id_order_without_mutation(
+    store: SQLiteStateStore,
+) -> None:
+    second_project = store.create_project("Second")
+    first_project = store.create_project("First")
+    task = store.create_task("Task", project_id=first_project.id)
+    commitment = store.create_fixed_commitment(
+        "Commitment", datetime(2026, 9, 1, 13, tzinfo=UTC)
+    )
+    rule = store.create_rule("duration", {"minutes": 25})
+    inbox = store.create_inbox_item("unclear", "needs a date")
+    capture = store.create_capture(
+        "raw", datetime(2026, 9, 1, 12, tzinfo=UTC), "UTC"
+    )
+
+    before = store.database_path.read_bytes()
+    snapshot = store.read_state_snapshot()
+
+    assert [item.id for item in snapshot.projects] == sorted(
+        (second_project.id, first_project.id)
+    )
+    assert snapshot.tasks == (task,)
+    assert snapshot.fixed_commitments == (commitment,)
+    assert snapshot.rules == (rule,)
+    assert snapshot.inbox_items == (inbox,)
+    assert snapshot.captures == (capture,)
+    assert snapshot.sessions == ()
+    assert store.database_path.read_bytes() == before
+
+
+def test_state_snapshot_uses_one_connection_and_explicit_read_transaction(
+    store: SQLiteStateStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_open = state_module.open_database
+    opened = 0
+    statements: list[str] = []
+
+    def traced_open(*args: object, **kwargs: object) -> sqlite3.Connection:
+        nonlocal opened
+        opened += 1
+        connection = original_open(*args, **kwargs)
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(state_module, "open_database", traced_open)
+
+    store.read_state_snapshot()
+
+    assert opened == 1
+    assert "BEGIN" in statements
+    assert "COMMIT" in statements
+    for table in (
+        "projects", "tasks", "fixed_commitments", "rules", "inbox_items",
+        "captures", "sessions",
+    ):
+        assert statements.count(f"SELECT * FROM {table} ORDER BY id") == 1
+
+
+def test_state_snapshot_fails_closed_on_malformed_persisted_row(
+    store: SQLiteStateStore,
+) -> None:
+    rule = store.create_rule("duration", {})
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute("UPDATE rules SET enabled = 2 WHERE id = ?", (rule.id,))
+
+    with pytest.raises(PersistenceError, match="stored rule is malformed"):
+        store.read_state_snapshot()
 
 
 def test_project_create_get_list_update_round_trip(store: SQLiteStateStore) -> None:

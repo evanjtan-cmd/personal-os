@@ -109,6 +109,21 @@ contract and is not the integration boundary for future interfaces. Only
 `init-db` may initialize or migrate storage; other commands fail cleanly when
 storage is missing or stale.
 
+## POS-007 read-only state inspection
+
+POS-007 adds `personal-os state` as a human-readable inspection adapter over a
+single coherent snapshot of Projects, Tasks, Commitments, Rules, Inbox items,
+Captures, and Sessions. The state store performs all seven ordered reads using
+one validated connection and one explicit read transaction, decoding every row
+through the existing fail-closed typed boundaries.
+
+The command does not initialize or migrate storage, mutate state, invoke AI, or
+require timezone/provider configuration. It displays canonical state and exact
+derived session elapsed time while excluding capture interpretation JSON,
+provider response internals, hidden reasoning, and secrets. Its output is for
+human dogfooding rather than a stable machine-readable API.
+It is not an export or synchronization interface.
+
 ## POS-001 executable boundary
 
 POS-001 implements only the repository and persistence foundation:

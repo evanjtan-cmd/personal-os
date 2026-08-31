@@ -6,6 +6,7 @@ import sqlite3
 import json
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -55,6 +56,19 @@ from personal_os.session_types import (
 )
 
 _OMITTED = object()
+
+
+@dataclass(frozen=True, slots=True)
+class StateSnapshot:
+    """One coherent, immutable view of all canonical persisted state."""
+
+    projects: tuple[Project, ...]
+    tasks: tuple[Task, ...]
+    fixed_commitments: tuple[FixedCommitment, ...]
+    rules: tuple[Rule, ...]
+    inbox_items: tuple[InboxItem, ...]
+    captures: tuple[Capture, ...]
+    sessions: tuple[WorkSession, ...]
 
 
 class SQLiteStateStore:
@@ -717,6 +731,52 @@ class SQLiteStateStore:
     def list_captures(self) -> list[Capture]:
         with self._connection() as connection:
             return [self._capture_from_row(row) for row in connection.execute("SELECT * FROM captures ORDER BY id")]
+
+    def read_state_snapshot(self) -> StateSnapshot:
+        """Read all canonical state in one validated SQLite read transaction."""
+
+        with self._connection() as connection:
+            connection.execute("BEGIN")
+            try:
+                snapshot = StateSnapshot(
+                    projects=tuple(
+                        self._project_from_row(row)
+                        for row in connection.execute("SELECT * FROM projects ORDER BY id")
+                    ),
+                    tasks=tuple(
+                        self._task_from_row(row)
+                        for row in connection.execute("SELECT * FROM tasks ORDER BY id")
+                    ),
+                    fixed_commitments=tuple(
+                        self._commitment_from_row(row)
+                        for row in connection.execute(
+                            "SELECT * FROM fixed_commitments ORDER BY id"
+                        )
+                    ),
+                    rules=tuple(
+                        self._rule_from_row(row)
+                        for row in connection.execute("SELECT * FROM rules ORDER BY id")
+                    ),
+                    inbox_items=tuple(
+                        self._inbox_from_row(row)
+                        for row in connection.execute(
+                            "SELECT * FROM inbox_items ORDER BY id"
+                        )
+                    ),
+                    captures=tuple(
+                        self._capture_from_row(row)
+                        for row in connection.execute("SELECT * FROM captures ORDER BY id")
+                    ),
+                    sessions=tuple(
+                        self._session_from_row(row)
+                        for row in connection.execute("SELECT * FROM sessions ORDER BY id")
+                    ),
+                )
+            except Exception:
+                connection.rollback()
+                raise
+            connection.commit()
+            return snapshot
 
     @staticmethod
     def _ensure_received(connection: sqlite3.Connection, capture_id: int) -> None:

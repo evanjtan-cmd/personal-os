@@ -11,9 +11,10 @@ work session, and update that state. The product direction is described in
 POS-006 exposes the completed minimal loop through a thin human-facing dogfood
 CLI. Capture, deterministic eligibility, ephemeral recommendation, atomic
 session start, and FINISHED/PROGRESS/BLOCKED feedback remain centralized in the
-application services. The CLI is not a stable machine-readable API and does not
-provide a timer, background process, HTTP endpoint, Shortcut, NFC action, or UI.
-See `BUILD_STATE.md` for the exact state.
+application services. POS-007 adds a read-only `state` inspection command over
+one coherent snapshot of all canonical tables. The CLI is not a stable
+machine-readable API and does not provide a timer, background process, HTTP
+endpoint, Shortcut, NFC action, or UI. See `BUILD_STATE.md` for the exact state.
 
 ## Requirements and setup
 
@@ -126,6 +127,30 @@ personal-os finish [--note TEXT]
 personal-os progress [--note TEXT]
 personal-os block [--note TEXT]
 personal-os active
+personal-os state
+```
+
+`personal-os state` prints Projects, Tasks, Commitments, Rules, Inbox,
+Captures, and Sessions in deterministic ID order. It requires an already-current
+database, performs no migration or mutation, needs no timezone or AI provider
+configuration, and intentionally omits interpretation payloads and provider
+internals.
+
+For example:
+
+```text
+Projects (1)
+  #1 [ACTIVE] MVP
+    Description: none
+    Source capture: #1
+
+Tasks (1)
+  #1 [COMPLETED/MUST] Finish loop
+    Project: #1
+    Schedule: FLEXIBLE
+    Deadline: none
+    Estimate: 10 minutes
+    Source capture: #1
 ```
 
 A manual loop looks like:

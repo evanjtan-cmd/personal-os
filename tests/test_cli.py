@@ -1,5 +1,5 @@
 import subprocess
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 import sqlite3
 import sys
@@ -16,10 +16,17 @@ from personal_os.config import (
     TIMEZONE_ENV_VAR,
 )
 from personal_os.database import CURRENT_SCHEMA_VERSION
+from personal_os.database import initialize_database
 from personal_os.capture import CaptureService
 from personal_os.capture_types import InterpretationResponse, parse_interpretation
 from personal_os.errors import PersistenceError
-from personal_os.models import CaptureFailureKind, CaptureStatus
+from personal_os.models import (
+    CaptureFailureKind,
+    CaptureStatus,
+    CommitmentHardness,
+    TaskImportance,
+    TaskScheduleMode,
+)
 from personal_os.recommendation import RecommendationService
 from personal_os.recommendation_types import (
     RecommendationChoice,
@@ -28,7 +35,7 @@ from personal_os.recommendation_types import (
 )
 from personal_os.session import SessionService
 from personal_os.session_types import SessionConflictError, SessionConflictKind, SessionOutcome
-from personal_os.state import SQLiteStateStore
+from personal_os.state import SQLiteStateStore, StateSnapshot
 
 
 NOW = datetime(2026, 8, 30, 16, 0, tzinfo=UTC)
@@ -72,11 +79,11 @@ def test_module_help_succeeds() -> None:
     assert result.returncode == 0, result.stderr
     assert "usage: personal-os" in result.stdout
     assert "init-db" in result.stdout
-    for command in ("capture", "recommend", "start", "finish", "progress", "block", "active"):
+    for command in ("capture", "recommend", "start", "finish", "progress", "block", "active", "state"):
         assert command in result.stdout
 
 
-@pytest.mark.parametrize("command", ["init-db", "capture", "recommend", "start", "finish", "progress", "block", "active"])
+@pytest.mark.parametrize("command", ["init-db", "capture", "recommend", "start", "finish", "progress", "block", "active", "state"])
 def test_each_command_help_succeeds(command: str) -> None:
     result = subprocess.run(
         [sys.executable, "-m", "personal_os", command, "--help"],
@@ -135,13 +142,15 @@ def test_init_db_command_reports_incompatible_schema(
     assert "newer than supported" in captured.err
 
 
+@pytest.mark.parametrize("command", ["active", "state"])
 def test_product_command_does_not_initialize_missing_database(
+    command: str,
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     data_dir = tmp_path / "not-created"
     monkeypatch.setenv(DATA_DIR_ENV_VAR, str(data_dir))
 
-    assert main(["active"]) == 1
+    assert main([command]) == 1
 
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -149,7 +158,9 @@ def test_product_command_does_not_initialize_missing_database(
     assert not data_dir.exists()
 
 
+@pytest.mark.parametrize("command", ["active", "state"])
 def test_product_command_does_not_migrate_stale_database(
+    command: str,
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     database_path = tmp_path / DEFAULT_DATABASE_FILENAME
@@ -157,11 +168,98 @@ def test_product_command_does_not_migrate_stale_database(
         connection.execute("PRAGMA user_version = 3")
     monkeypatch.setenv(DATA_DIR_ENV_VAR, str(tmp_path))
 
-    assert main(["active"]) == 1
+    assert main([command]) == 1
 
     assert "not current version 4" in capsys.readouterr().err
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+
+
+def test_state_command_prints_all_empty_sections_without_services(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    value = runtime()
+    value.store.read_state_snapshot.return_value = StateSnapshot(
+        projects=(), tasks=(), fixed_commitments=(), rules=(), inbox_items=(),
+        captures=(), sessions=(),
+    )
+    install_runtime(monkeypatch, value)
+
+    assert main(["state"]) == 0
+
+    assert capsys.readouterr().out == (
+        "Projects (0)\n  (none)\n\nTasks (0)\n  (none)\n\n"
+        "Commitments (0)\n  (none)\n\nRules (0)\n  (none)\n\n"
+        "Inbox (0)\n  (none)\n\nCaptures (0)\n  (none)\n\n"
+        "Sessions (0)\n  (none)\n"
+    )
+    value.capture_service.capture_text.assert_not_called()
+    value.recommendation_service.recommend.assert_not_called()
+    value.session_service.start_session.assert_not_called()
+    value.session_service.close_session.assert_not_called()
+
+
+def test_state_command_formats_complete_persisted_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database_path = tmp_path / DEFAULT_DATABASE_FILENAME
+    initialize_database(database_path)
+    store = SQLiteStateStore(database_path, clock=lambda: NOW)
+    project = store.create_project("College", "Applications")
+    task = store.create_task(
+        "Submit essay", project_id=project.id, importance=TaskImportance.MUST,
+        schedule_mode=TaskScheduleMode.WINDOW,
+        window_start=NOW + timedelta(hours=1),
+        window_end=NOW + timedelta(hours=2),
+        deadline_date=date(2026, 9, 1), estimated_minutes=25,
+    )
+    store.create_fixed_commitment(
+        "Call", NOW + timedelta(hours=3), hardness=CommitmentHardness.HARD
+    )
+    store.create_rule("duration", {"minutes": [10, 25]}, enabled=False)
+    store.create_inbox_item("essay sometime", "date is unclear")
+    store.create_capture("Buy milk", NOW, "UTC")
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """INSERT INTO sessions
+               (task_id, planned_minutes, started_at, ended_at, outcome,
+                start_reason, result_note, active_slot)
+               VALUES (?, 25, ?, ?, 'PROGRESS', ?, ?, NULL)""",
+            (
+                task.id, "2026-08-30T12:00:00.000000Z",
+                "2026-08-30T13:02:03.000004Z", "Focus now", "Drafted intro",
+            ),
+        )
+        connection.execute(
+            """INSERT INTO sessions
+               (task_id, planned_minutes, started_at, ended_at, outcome,
+                start_reason, result_note, active_slot)
+               VALUES (?, 10, ?, NULL, NULL, NULL, NULL, 1)""",
+            (task.id, "2026-08-30T14:00:00.000000Z"),
+        )
+    value = runtime(store=store)
+    install_runtime(monkeypatch, value)
+
+    assert main(["state"]) == 0
+
+    output = capsys.readouterr().out
+    assert "Projects (1)\n  #1 [ACTIVE] College" in output
+    assert "Tasks (1)\n  #1 [OPEN/MUST] Submit essay" in output
+    assert "Schedule: WINDOW 2026-08-30T17:00:00.000000Z to 2026-08-30T18:00:00.000000Z" in output
+    assert "Deadline: DATE 2026-09-01" in output
+    assert "Commitments (1)\n  #1 [HARD] Call" in output
+    assert "Rules (1)\n  #1 [disabled] duration" in output
+    assert 'Parameters: {"minutes":[10,25]}' in output
+    assert "Inbox (1)\n  #1 [UNRESOLVED] essay sometime" in output
+    assert "Captures (1)\n  #1 [RECEIVED] Buy milk" in output
+    assert "Sessions (2)\n  #1 [PROGRESS] Task #1" in output
+    assert "Elapsed: 1h 2m 3.000004s" in output
+    assert "Start reason: Focus now" in output
+    assert "Result note: Drafted intro" in output
+    assert "#2 [ACTIVE] Task #1" in output
+    assert "Ended: none" in output
+    assert "interpretation" not in output.lower()
+    assert "model_provider" not in output
 
 
 def test_capture_applied_prints_only_created_records(
@@ -517,6 +615,12 @@ def test_complete_dogfood_cli_loop_uses_real_services_without_network(
 
     assert main(["finish", "--note", "Done"]) == 0
     assert "Elapsed: 8m 0s" in capsys.readouterr().out
+
+    assert main(["state"]) == 0
+    state_output = capsys.readouterr().out
+    assert "Tasks (1)\n  #1 [COMPLETED/MUST] Finish loop" in state_output
+    assert "Sessions (1)\n  #1 [FINISHED] Task #1" in state_output
+    assert "Result note: Done" in state_output
 
     assert main(["recommend"]) == 0
     assert "No work recommended:" in capsys.readouterr().out
