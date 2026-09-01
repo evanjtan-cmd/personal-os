@@ -18,6 +18,7 @@ from personal_os.recommendation_types import (
     AvailabilityKind,
     DeadlineState,
     EligibleTaskCandidate,
+    RecommendationChoiceKind,
     RecommendationRankingContext,
     ScheduleState,
 )
@@ -67,16 +68,29 @@ def main() -> int:
         return 0
 
     candidate = EligibleTaskCandidate(
-        1, "Write smoke-test note", None, TaskImportance.SHOULD,
+        1, "Write smoke-test note", None, TaskImportance.MUST,
         ScheduleState.FLEXIBLE, None, DeadlineState.NONE, None, None,
         10, (5, 10),
     )
     choice = OpenAIResponsesRecommendationRanker().recommend(
         RecommendationRankingContext(
-            AvailabilityKind.FINITE, 10, False
+            AvailabilityKind.FINITE, 10, True
         ),
         (candidate,),
     )
+    if choice.kind is not RecommendationChoiceKind.RECOMMEND:
+        raise RuntimeError(
+            f"recommendation smoke expected RECOMMEND, got {choice.kind.value}"
+        )
+    if choice.task_id != candidate.task_id or candidate.task_id <= 0:
+        raise RuntimeError(
+            f"recommendation smoke expected task {candidate.task_id}, "
+            f"got {choice.task_id}"
+        )
+    if choice.duration_minutes not in candidate.allowed_durations:
+        raise RuntimeError(
+            "recommendation smoke selected a duration outside allowed_durations"
+        )
     if not isinstance(choice.action, str) or not choice.action.strip():
         raise RuntimeError("recommendation smoke expected a non-empty concrete action")
     print(
