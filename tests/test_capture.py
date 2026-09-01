@@ -104,6 +104,36 @@ def test_scheduleless_action_applies_as_standalone_flexible_task(
     assert store.list_inbox_items() == []
 
 
+def test_explicit_friday_survives_without_inventing_optional_task_facts(
+    store: SQLiteStateStore,
+) -> None:
+    thursday = datetime(2026, 8, 27, 16, tzinfo=UTC)
+    payload = apply_payload(tasks=[task(
+        "Submit essay",
+        schedule={"kind": "DAY", "dates": [date_ir("WEEKDAY", 5)]},
+    )])
+
+    result = CaptureService(store, FakeInterpreter(payload)).capture_text(
+        "Submit essay Friday", reference_time=thursday, timezone_name="UTC"
+    )
+
+    assert result.capture.status is CaptureStatus.APPLIED
+    assert result.inbox_item_id is None
+    assert len(result.task_ids) == 1
+    captured = store.get_task(result.task_ids[0])
+    assert captured.title == "Submit essay"
+    assert captured.schedule_mode is TaskScheduleMode.DAY
+    assert captured.day_date.isoformat() == "2026-08-28"
+    assert captured.window_start is None
+    assert captured.window_end is None
+    assert captured.deadline_date is None
+    assert captured.deadline_at is None
+    assert captured.project_id is None
+    assert captured.importance is TaskImportance.UNSPECIFIED
+    assert captured.estimated_minutes is None
+    assert store.list_inbox_items() == []
+
+
 def test_groq_adapter_metadata_is_persisted_as_groq(store: SQLiteStateStore) -> None:
     payload = {
         "kind": "UNRESOLVED", "new_project": None, "tasks": [],

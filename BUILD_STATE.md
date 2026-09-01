@@ -87,7 +87,7 @@ Last updated: 2026-08-31 for POS-008 flexible-task capture semantics.
 
 Run on 2026-08-31 with Python 3.12.4 and pytest 8.4.2:
 
-- `python -m pytest` — passed: 307 passed, 0 failed.
+- `python -m pytest` — passed: 308 passed, 0 failed.
 - `python -m compileall -q src tests` — passed with exit code 0.
 - `python -m personal_os --help` — passed with exit code 0.
 - `personal-os --help` — passed with exit code 0.

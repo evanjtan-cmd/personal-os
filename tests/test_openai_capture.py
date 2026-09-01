@@ -68,8 +68,10 @@ def test_adapter_uses_responses_strict_schema_and_disables_storage() -> None:
     assert "no duration is explicit, use estimated_minutes null" in instructions
     assert "no project relationship is explicit, use project_id null" in instructions
     assert "do not return unresolved solely because" in instructions
-    assert "preserve explicit temporal facts" in instructions
-    assert "retains a day friday schedule without inventing a clock time" in instructions
+    assert "preserve an explicitly supplied temporal fact" in instructions
+    assert "rather than dropping it because other optional fields are absent" in instructions
+    assert "do not invent an exact clock time or deadline semantics" in instructions
+    assert "do not discard scheduling or deadline semantics" in instructions
     assert "genuinely ambiguous, missing, or unsupported fact" in instructions
     assert "meet sam at 4 is unresolved" in instructions
     assert "never invent a date, time, deadline" in instructions
