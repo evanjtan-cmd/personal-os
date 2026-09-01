@@ -153,6 +153,8 @@ def _handle_recommend(args: argparse.Namespace, runtime: _CLIRuntime) -> int:
         print(f"No work recommended: {result.explanation}")
         return 0
     assert result.task is not None and result.duration_minutes is not None
+    assert result.action is not None
+    print(f"Action: {result.action}")
     print(f"Task #{result.task.id}: {result.task.title}")
     if result.project_name is not None:
         print(f"Project: {result.project_name}")

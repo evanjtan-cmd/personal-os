@@ -33,12 +33,30 @@ def candidate():
 
 
 def test_adapter_uses_strict_responses_without_raw_temporal_context() -> None:
-    response = SimpleNamespace(status="completed", output=[], output_text=json.dumps({"kind": "RECOMMEND", "task_id": 1, "duration_minutes": 10, "reason": "Important"}))
+    response = SimpleNamespace(status="completed", output=[], output_text=json.dumps({
+        "kind": "RECOMMEND", "task_id": 1, "duration_minutes": 10,
+        "action": "Write the opening paragraph.", "reason": "Important",
+    }))
     client, responses = setup(response)
     result = OpenAIResponsesRecommendationRanker(client=client, model="gpt-test").recommend(RecommendationRankingContext(AvailabilityKind.FINITE, 20, False), (candidate(),))
     assert result.task_id == 1
+    assert result.action == "Write the opening paragraph."
     assert responses.kwargs["store"] is False
     assert responses.kwargs["text"]["format"]["strict"] is True
+    schema = responses.kwargs["text"]["format"]["schema"]
+    assert responses.kwargs["text"]["format"]["name"] == (
+        "personal_os_recommendation_v2"
+    )
+    assert schema["properties"]["action"] == {"type": ["string", "null"]}
+    assert "action" in schema["required"]
+    instructions = responses.kwargs["instructions"].lower()
+    assert "only one supplied eligible task" in instructions
+    assert "exactly one of its allowed_durations" in instructions
+    assert "one concise concrete action" in instructions
+    assert "decompose a broad task title" in instructions
+    assert "already executable" in instructions
+    assert "do not claim unknown facts" in instructions
+    assert "not a substitute for the action" in instructions
     payload = json.loads(responses.kwargs["input"])
     serialized = json.dumps(payload).lower()
     assert set(payload) == {"availability", "must_gated", "candidates"}
@@ -63,7 +81,8 @@ def test_openai_environment_builds_client_lazily(monkeypatch) -> None:
         status="completed", output=[],
         output_text=json.dumps({
             "kind": "RECOMMEND", "task_id": 1,
-            "duration_minutes": 10, "reason": "Important",
+            "duration_minutes": 10, "action": "Write one paragraph.",
+            "reason": "Important",
         }),
     )
     fake, responses = setup(response)
@@ -98,7 +117,7 @@ def test_openai_environment_builds_client_lazily(monkeypatch) -> None:
     (SimpleNamespace(status="incomplete", output=[], output_text=""), RecommendationFailureKind.PROVIDER_ERROR),
     (SimpleNamespace(status="completed", output=[SimpleNamespace(content=[SimpleNamespace(refusal="no")])], output_text=""), RecommendationFailureKind.REFUSAL),
     (SimpleNamespace(status="completed", output=[], output_text="{"), RecommendationFailureKind.INVALID_OUTPUT),
-    (SimpleNamespace(status="completed", output=[], output_text=json.dumps({"kind": "BAD", "task_id": None, "duration_minutes": None, "reason": "x"})), RecommendationFailureKind.INVALID_OUTPUT),
+    (SimpleNamespace(status="completed", output=[], output_text=json.dumps({"kind": "BAD", "task_id": None, "duration_minutes": None, "action": None, "reason": "x"})), RecommendationFailureKind.INVALID_OUTPUT),
 ])
 def test_adapter_classifies_failures(response, kind) -> None:
     client, _ = setup(response)

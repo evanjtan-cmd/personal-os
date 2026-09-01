@@ -191,8 +191,15 @@ class RecommendationService:
             )
         candidate_map = {item.task_id: item for item in candidates}
         if choice.kind is RecommendationChoiceKind.NO_WORK:
-            if choice.task_id is not None or choice.duration_minutes is not None:
-                raise RecommendationError(RecommendationFailureKind.INVALID_OUTPUT, "NO_WORK cannot contain task or duration")
+            if (
+                choice.task_id is not None
+                or choice.duration_minutes is not None
+                or choice.action is not None
+            ):
+                raise RecommendationError(
+                    RecommendationFailureKind.INVALID_OUTPUT,
+                    "NO_WORK cannot contain task, duration, or action",
+                )
             if must_gated:
                 raise RecommendationError(RecommendationFailureKind.INVALID_OUTPUT, "NO_WORK is invalid while feasible MUST tasks exist")
             return RecommendationResult(
@@ -200,6 +207,11 @@ class RecommendationService:
             )
         if choice.kind is not RecommendationChoiceKind.RECOMMEND:
             raise RecommendationError(RecommendationFailureKind.INVALID_OUTPUT, "unknown recommendation choice")
+        if not isinstance(choice.action, str) or not choice.action.strip():
+            raise RecommendationError(
+                RecommendationFailureKind.INVALID_OUTPUT,
+                "action must be non-empty",
+            )
         if type(choice.task_id) is not int or choice.task_id <= 0:
             raise RecommendationError(
                 RecommendationFailureKind.INVALID_OUTPUT,
@@ -216,4 +228,5 @@ class RecommendationService:
             RecommendationResultKind.RECOMMEND, availability, choice.reason,
             task=task, project_name=project_name,
             duration_minutes=choice.duration_minutes,
+            action=choice.action,
         )

@@ -39,7 +39,11 @@ class Ranker:
         self.calls.append((context, candidates))
         if self.error:
             raise self.error
-        return self.choice or RecommendationChoice(RecommendationChoiceKind.RECOMMEND, candidates[0].task_id, candidates[0].allowed_durations[0], "Best fit")
+        return self.choice or RecommendationChoice(
+            RecommendationChoiceKind.RECOMMEND, candidates[0].task_id,
+            candidates[0].allowed_durations[0], "Do the next concrete step.",
+            "Best fit",
+        )
 
 
 @pytest.mark.parametrize(
@@ -62,11 +66,16 @@ def test_success_returns_ephemeral_recommendation_and_does_not_write(store) -> N
     project = store.create_project("Launch")
     task = store.create_task("Draft", project_id=project.id, estimated_minutes=28)
     before = _database_dump(store.database_path)
-    ranker = Ranker(RecommendationChoice(RecommendationChoiceKind.RECOMMEND, task.id, 28, "Finish the draft"))
+    ranker = Ranker(RecommendationChoice(
+        RecommendationChoiceKind.RECOMMEND, task.id, 28,
+        "Complete the draft's next section.", "Finish the draft",
+    ))
     result = RecommendationService(store, ranker).recommend(RecommendationContext(NOW, "America/New_York", 30))
     assert result.kind is RecommendationResultKind.RECOMMEND
     assert result.task == task and result.project_name == "Launch"
     assert result.duration_minutes == 28
+    assert result.action == "Complete the draft's next section."
+    assert result.explanation == "Finish the draft"
     assert _database_dump(store.database_path) == before
 
 
@@ -137,9 +146,14 @@ def test_infeasible_must_does_not_gate_lower_importance(store, kind) -> None:
 def test_multiple_must_tasks_are_ranked_and_no_work_is_invalid(store) -> None:
     first = store.create_task("Must one", importance=TaskImportance.MUST)
     second = store.create_task("Must two", importance=TaskImportance.MUST)
-    ranker = Ranker(RecommendationChoice(RecommendationChoiceKind.RECOMMEND, second.id, 10, "Second"))
+    ranker = Ranker(RecommendationChoice(
+        RecommendationChoiceKind.RECOMMEND, second.id, 10,
+        "Work on Must two.", "Second",
+    ))
     assert RecommendationService(store, ranker).recommend(RecommendationContext(NOW, "UTC")).task.id == second.id
-    no_work = Ranker(RecommendationChoice(RecommendationChoiceKind.NO_WORK, None, None, "Nothing useful"))
+    no_work = Ranker(RecommendationChoice(
+        RecommendationChoiceKind.NO_WORK, None, None, None, "Nothing useful",
+    ))
     with pytest.raises(RecommendationError) as error:
         RecommendationService(store, no_work).recommend(RecommendationContext(NOW, "UTC"))
     assert error.value.kind is RecommendationFailureKind.INVALID_OUTPUT
@@ -149,7 +163,9 @@ def test_multiple_must_tasks_are_ranked_and_no_work_is_invalid(store) -> None:
 def test_ai_no_work_without_must_is_valid_and_read_only(store) -> None:
     store.create_task("Could", importance=TaskImportance.COULD)
     before = _database_dump(store.database_path)
-    ranker = Ranker(RecommendationChoice(RecommendationChoiceKind.NO_WORK, None, None, "No useful choice"))
+    ranker = Ranker(RecommendationChoice(
+        RecommendationChoiceKind.NO_WORK, None, None, None, "No useful choice",
+    ))
     result = RecommendationService(store, ranker).recommend(RecommendationContext(NOW, "UTC"))
     assert result.kind is RecommendationResultKind.NO_WORK
     assert result.deterministic_reason is None
@@ -157,10 +173,15 @@ def test_ai_no_work_without_must_is_valid_and_read_only(store) -> None:
 
 
 @pytest.mark.parametrize("choice", [
-    RecommendationChoice(RecommendationChoiceKind.RECOMMEND, 999, 5, "x"),
-    RecommendationChoice(RecommendationChoiceKind.RECOMMEND, 1, 7, "x"),
-    RecommendationChoice(RecommendationChoiceKind.NO_WORK, 1, None, "x"),
-    RecommendationChoice(RecommendationChoiceKind.RECOMMEND, 1, 5, " "),
+    RecommendationChoice(RecommendationChoiceKind.RECOMMEND, 999, 5, "Act", "x"),
+    RecommendationChoice(RecommendationChoiceKind.RECOMMEND, 1, 7, "Act", "x"),
+    RecommendationChoice(RecommendationChoiceKind.NO_WORK, 1, None, None, "x"),
+    RecommendationChoice(RecommendationChoiceKind.RECOMMEND, 1, 5, "Act", " "),
+    RecommendationChoice(RecommendationChoiceKind.RECOMMEND, 1, 5, None, "x"),
+    RecommendationChoice(RecommendationChoiceKind.RECOMMEND, 1, 5, "", "x"),
+    RecommendationChoice(RecommendationChoiceKind.RECOMMEND, 1, 5, "   ", "x"),
+    RecommendationChoice(RecommendationChoiceKind.RECOMMEND, 1, 5, 123, "x"),
+    RecommendationChoice(RecommendationChoiceKind.NO_WORK, None, None, "Act", "x"),
 ])
 def test_invalid_ai_choices_are_rejected_without_writes(store, choice) -> None:
     store.create_task("Task")
@@ -177,7 +198,7 @@ def test_malformed_task_ids_cannot_alias_integer_candidate(store, task_id) -> No
     assert task.id == 1
     before = _database_dump(store.database_path)
     choice = RecommendationChoice(
-        RecommendationChoiceKind.RECOMMEND, task_id, 5, "Choose it"
+        RecommendationChoiceKind.RECOMMEND, task_id, 5, "Do it.", "Choose it"
     )
     with pytest.raises(RecommendationError) as error:
         RecommendationService(store, Ranker(choice)).recommend(

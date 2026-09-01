@@ -30,9 +30,10 @@ RECOMMENDATION_SCHEMA = {
         "duration_minutes": {
             "anyOf": [{"type": "integer"}, {"type": "null"}]
         },
+        "action": {"type": ["string", "null"]},
         "reason": {"type": "string"},
     },
-    "required": ["kind", "task_id", "duration_minutes", "reason"],
+    "required": ["kind", "task_id", "duration_minutes", "action", "reason"],
 }
 
 
@@ -101,11 +102,15 @@ class OpenAIResponsesRecommendationRanker:
             ],
         }
         instructions = (
-            "Select one supplied eligible task and exactly one of its allowed_durations, "
+            "Select only one supplied eligible task and exactly one of its allowed_durations, "
             "or return NO_WORK only when must_gated is false. Treat importance, schedule "
             "state, missed days, and deadline state as supplied ranking facts. Do not invent "
             "hard conflicts, rule evaluation, business hours, energy constraints, schedule "
-            "facts, or availability. Give a concise qualitative reason."
+            "facts, dependencies, or availability, and do not claim unknown facts. For RECOMMEND, "
+            "produce one concise concrete action that is executable for the selected task within "
+            "the selected duration. Normally decompose a broad task title into a reasonable practical "
+            "step; do not artificially decompose a task that is already executable. The reason is a "
+            "short ranking explanation, not a substitute for the action. For NO_WORK, action must be null."
         )
         try:
             response = client.responses.create(
@@ -115,7 +120,7 @@ class OpenAIResponsesRecommendationRanker:
                 text={
                     "format": {
                         "type": "json_schema",
-                        "name": "personal_os_recommendation_v1",
+                        "name": "personal_os_recommendation_v2",
                         "strict": True,
                         "schema": RECOMMENDATION_SCHEMA,
                     }
@@ -157,7 +162,7 @@ class OpenAIResponsesRecommendationRanker:
                 f"{provider} response was malformed JSON",
             ) from exc
         if not isinstance(decoded, dict) or set(decoded) != {
-            "kind", "task_id", "duration_minutes", "reason"
+            "kind", "task_id", "duration_minutes", "action", "reason"
         }:
             raise RecommendationError(
                 RecommendationFailureKind.INVALID_OUTPUT,
@@ -174,5 +179,6 @@ class OpenAIResponsesRecommendationRanker:
             kind,
             decoded["task_id"],
             decoded["duration_minutes"],
+            decoded["action"],
             decoded["reason"],
         )

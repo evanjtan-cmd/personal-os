@@ -139,6 +139,7 @@ class RecommendationChoice:
     kind: RecommendationChoiceKind
     task_id: int | None
     duration_minutes: int | None
+    action: str | None
     reason: str
 
 
@@ -150,13 +151,19 @@ class RecommendationResult:
     task: Task | None = None
     project_name: str | None = None
     duration_minutes: int | None = None
+    action: str | None = None
     deterministic_reason: DeterministicNoWorkReason | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "explanation", require_text(self.explanation, "explanation"))
         if self.kind is RecommendationResultKind.RECOMMEND:
-            if self.task is None or self.duration_minutes is None:
-                raise DomainValidationError("recommendation result requires task and duration")
+            if self.task is None or self.duration_minutes is None or self.action is None:
+                raise DomainValidationError(
+                    "recommendation result requires task, duration, and action"
+                )
             require_identifier(self.task.id, "task_id")
-        elif any(value is not None for value in (self.task, self.project_name, self.duration_minutes)):
+            object.__setattr__(self, "action", require_text(self.action, "action"))
+        elif any(value is not None for value in (
+            self.task, self.project_name, self.duration_minutes, self.action,
+        )):
             raise DomainValidationError("no-work result cannot contain recommendation fields")

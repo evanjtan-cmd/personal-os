@@ -1,6 +1,6 @@
 # Build State
 
-Last updated: 2026-08-31 for POS-008 flexible-task capture semantics.
+Last updated: 2026-09-01 for POS-009 concrete recommendation actions.
 
 ## Implemented
 
@@ -47,7 +47,9 @@ Last updated: 2026-08-31 for POS-008 flexible-task capture semantics.
   ladder, explicit short-task support, deterministic feasible-MUST gating,
   stable 50-candidate bounding, and strict selected-task/duration validation.
 - A separate lazy OpenAI Responses API recommendation ranker that receives only
-  derived facts and returns an ephemeral recommendation or valid no-work result.
+  derived facts and returns an ephemeral recommendation with a concise concrete
+  execution action, or a valid no-work result. The action is validated
+  separately from its ranking explanation and is not persisted.
 - Durable work-session history with a database-enforced single active session,
   exact start/end timestamps, derived elapsed duration, planned-duration and
   current-state revalidation, and optional verbatim start/result context.
@@ -85,9 +87,15 @@ Last updated: 2026-08-31 for POS-008 flexible-task capture semantics.
 
 ## Validation
 
-Run on 2026-08-31 with Python 3.12.4 and pytest 8.4.2:
+After POS-008, the configured real provider passed the full dogfood loop for a
+schedule-less FLEXIBLE `Study for ACT` task: capture, structured state,
+recommendation, session start, PROGRESS feedback, and updated durable state.
+That manual run motivated POS-009's concrete action output. POS-009 validation
+itself uses fake providers and makes no live request.
 
-- `python -m pytest` — passed: 308 passed, 0 failed.
+Run on 2026-09-01 with Python 3.12.4 and pytest 8.4.2:
+
+- `python -m pytest` — passed: 313 passed, 0 failed.
 - `python -m compileall -q src tests` — passed with exit code 0.
 - `python -m personal_os --help` — passed with exit code 0.
 - `personal-os --help` — passed with exit code 0.

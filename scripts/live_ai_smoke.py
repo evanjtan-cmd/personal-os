@@ -77,9 +77,12 @@ def main() -> int:
         ),
         (candidate,),
     )
+    if not isinstance(choice.action, str) or not choice.action.strip():
+        raise RuntimeError("recommendation smoke expected a non-empty concrete action")
     print(
         f"recommendation ok: kind={choice.kind.value} "
-        f"task_id={choice.task_id} duration={choice.duration_minutes}"
+        f"task_id={choice.task_id} duration={choice.duration_minutes} "
+        f"action={choice.action}"
     )
     return 0
 

@@ -388,7 +388,10 @@ class FirstRanker:
     def __init__(self): self.calls = 0
     def recommend(self, context, candidates):
         self.calls += 1
-        return RecommendationChoice(RecommendationChoiceKind.RECOMMEND, candidates[0].task_id, 10, "Complete the loop")
+        return RecommendationChoice(
+            RecommendationChoiceKind.RECOMMEND, candidates[0].task_id, 10,
+            "Complete the loop's next step.", "Complete the loop",
+        )
 
 
 def test_full_capture_recommend_session_finish_loop(store) -> None:

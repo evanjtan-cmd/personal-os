@@ -161,3 +161,12 @@ capture unresolved. Genuine ambiguity in a fact needed to preserve explicit
 user meaning remains UNRESOLVED rather than being invented. This distinction is
 enforced at the interpreter contract; application code does not heuristically
 post-process provider-generated unresolved reasons.
+
+## 2026-09-01 — Ephemeral concrete recommendation actions
+
+Deterministic logic continues to define the eligible candidate set and each
+candidate's allowed durations. The AI ranker may select only within those
+bounds and additionally generate a concise concrete execution action for its
+selected Task. That action is an ephemeral suggestion, not a canonical factual
+constraint, and may not invent unknown state. POS-009 intentionally does not
+persist the generated action in Task or session history.

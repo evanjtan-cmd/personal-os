@@ -361,6 +361,7 @@ def test_recommendation_and_explicit_context_hint(
         task=SimpleNamespace(id=34, title="Finish essay"),
         project_name="College",
         duration_minutes=25,
+        action="Draft the essay introduction.",
         explanation="Due today and currently feasible.",
     )
     install_runtime(monkeypatch, value)
@@ -371,7 +372,12 @@ def test_recommendation_and_explicit_context_hint(
     assert context.reference_time == NOW
     assert context.timezone_name == "America/New_York"
     assert context.available_minutes == 30
-    assert capsys.readouterr().out.endswith(
+    output = capsys.readouterr().out
+    assert output.startswith(
+        "Action: Draft the essay introduction.\nTask #34: Finish essay\n"
+    )
+    assert "Duration: 25 minutes\nWhy: Due today and currently feasible.\n" in output
+    assert output.endswith(
         "Next: personal-os start 34 25 --available-minutes 30 --timezone America/New_York\n"
     )
     value.session_service.start_session.assert_not_called()
@@ -384,7 +390,7 @@ def test_environment_timezone_is_omitted_from_hint(
     value.recommendation_service.recommend.return_value = SimpleNamespace(
         kind=RecommendationResultKind.RECOMMEND,
         task=SimpleNamespace(id=2, title="Task"), project_name=None,
-        duration_minutes=10, explanation="Feasible.",
+        duration_minutes=10, action="Do the task.", explanation="Feasible.",
     )
     install_runtime(monkeypatch, value)
     monkeypatch.setenv(TIMEZONE_ENV_VAR, "UTC")
@@ -582,6 +588,7 @@ def test_complete_dogfood_cli_loop_uses_real_services_without_network(
                 RecommendationChoiceKind.RECOMMEND,
                 candidate.task_id,
                 10,
+                "Complete the loop's next step.",
                 "Complete the loop.",
             )
 
