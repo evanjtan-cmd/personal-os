@@ -8,13 +8,13 @@ work session, and update that state. The product direction is described in
 
 ## Current boundary
 
-POS-006 exposes the completed minimal loop through a thin human-facing dogfood
-CLI. Capture, deterministic eligibility, ephemeral recommendation, atomic
-session start, and FINISHED/PROGRESS/BLOCKED feedback remain centralized in the
-application services. POS-007 adds a read-only `state` inspection command over
-one coherent snapshot of all canonical tables. The CLI is not a stable
-machine-readable API and does not provide a timer, background process, HTTP
-endpoint, Shortcut, NFC action, or UI. See `BUILD_STATE.md` for the exact state.
+The completed minimal loop is exposed through a thin human-facing dogfood CLI.
+POS-007 adds a read-only `state` inspection command over one coherent snapshot
+of all canonical tables. Machine Interface v1 adds a separate one-shot
+`personal-os-bridge` JSON stdin/stdout adapter for trusted local automation.
+Both adapters use the same application services. Neither provides a timer,
+background process, HTTP endpoint, network listener, Shortcut file, NFC action,
+or UI. See `BUILD_STATE.md` for the exact state.
 
 ## Requirements and setup
 
@@ -171,6 +171,29 @@ duration. A generated action stays ephemeral until the recommendation is
 accepted with `start`; `--action` then preserves its exact text as session
 history. Starting a session does not start a countdown, timer, Focus mode, or
 background worker.
+
+## Machine bridge
+
+`personal-os-bridge` reads exactly one versioned JSON request from stdin,
+writes exactly one JSON response to stdout, and exits. Its v1 operations are
+`recommend`, `start`, `feedback`, and `active`. It requires an already
+initialized current-version database and never initializes or migrates state.
+For example:
+
+```bash
+printf '%s\n' '{"version":1,"operation":"recommend","available_minutes":30,"timezone":"America/New_York"}' | personal-os-bridge
+printf '%s\n' '{"version":1,"operation":"start","task_id":1,"planned_minutes":25,"timezone":"America/New_York","selected_action":"Draft the introduction."}' | personal-os-bridge
+printf '%s\n' '{"version":1,"operation":"active"}' | personal-os-bridge
+printf '%s\n' '{"version":1,"operation":"feedback","outcome":"PROGRESS","result_note":"Drafted two paragraphs."}' | personal-os-bridge
+```
+
+Successful responses use
+`{"version":1,"ok":true,"operation":"...","result":{...}}`. Protocol errors
+use exit status 2; expected Personal OS operational errors use exit status 1
+and include a structured error object. The bridge has no authentication or
+remote transport of its own. A trusted transport such as SSH may invoke it.
+The human `personal-os` output remains intentionally human-readable and should
+not be scraped as a machine contract.
 
 ## Tests
 

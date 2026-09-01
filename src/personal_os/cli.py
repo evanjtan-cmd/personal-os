@@ -7,24 +7,19 @@ import json
 import shlex
 import sys
 from collections.abc import Sequence
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from personal_os.capture import CaptureService
 from personal_os.config import get_database_path, get_timezone_name
 from personal_os.database import initialize_database
 from personal_os.errors import PersonalOSError
 from personal_os.models import CaptureStatus, TaskScheduleMode, serialize_instant
-from personal_os.openai_capture import OpenAIResponsesCaptureInterpreter
-from personal_os.openai_recommendation import OpenAIResponsesRecommendationRanker
-from personal_os.recommendation import RecommendationService
 from personal_os.recommendation_types import (
     RecommendationContext,
     RecommendationResultKind,
 )
-from personal_os.session import SessionService
+from personal_os.runtime import PersonalOSRuntime, build_runtime
 from personal_os.session_types import SessionOutcome
-from personal_os.state import SQLiteStateStore, StateSnapshot
+from personal_os.state import StateSnapshot
 
 
 def _positive_integer(value: str) -> int:
@@ -82,24 +77,8 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-@dataclass(frozen=True, slots=True)
-class _CLIRuntime:
-    store: SQLiteStateStore
-    capture_service: CaptureService
-    recommendation_service: RecommendationService
-    session_service: SessionService
-
-
-def _build_runtime() -> _CLIRuntime:
-    store = SQLiteStateStore(get_database_path())
-    return _CLIRuntime(
-        store=store,
-        capture_service=CaptureService(store, OpenAIResponsesCaptureInterpreter()),
-        recommendation_service=RecommendationService(
-            store, OpenAIResponsesRecommendationRanker()
-        ),
-        session_service=SessionService(store),
-    )
+_CLIRuntime = PersonalOSRuntime
+_build_runtime = build_runtime
 
 
 def _utc_now() -> datetime:

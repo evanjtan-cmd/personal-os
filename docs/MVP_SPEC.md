@@ -93,6 +93,16 @@ POS-005 adds no feedback AI, automatic next action, or project mutation.
 NFC, Shortcuts, voice, CLI, and future HTTP interfaces must remain thin adapters
 over centralized application logic.
 
+Machine Interface v1 is a separate, one-request-per-process JSON stdin/stdout
+adapter. Version-1 requests expose only recommendation, session start, session
+feedback, and active-session inspection. The adapter strictly validates one
+JSON object, obtains authoritative current time locally, delegates to the same
+typed services as the human CLI, and returns one versioned JSON object. It does
+not initialize or migrate storage, persist recommendation acceptance before
+session start, listen on a network, or provide authentication. Trusted local
+transports such as SSH may invoke it; a later transport may wrap it without
+moving deterministic or AI policy into that transport.
+
 The existing Google Sheet is prototype and reference data. It is not the
 architectural source of truth and does not define the persistence model.
 
@@ -129,6 +139,19 @@ derived session elapsed time while excluding capture interpretation JSON,
 provider response internals, hidden reasoning, and secrets. Its output is for
 human dogfooding rather than a stable machine-readable API.
 It is not an export or synchronization interface.
+
+## Machine Interface v1
+
+The human CLI remains a dogfood interface rather than a machine-readable API.
+`personal-os-bridge` provides the stable local machine boundary with integer
+protocol version 1 and the operations `recommend`, `start`, `feedback`, and
+`active`. Requests cannot supply authoritative current/reference timestamps.
+Recommendation remains read-only and its concrete action remains ephemeral;
+only a start request that supplies the action persists it in session history.
+Start and feedback reuse the authoritative session service and therefore do not
+duplicate eligibility, availability, duration, MUST-gating, or Task-transition
+policy. Bridge v1 deliberately excludes capture, full-state output, database
+initialization, HTTP, and transport-specific configuration.
 
 ## POS-001 executable boundary
 

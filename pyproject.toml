@@ -15,6 +15,7 @@ dev = ["pytest>=8,<9"]
 
 [project.scripts]
 personal-os = "personal_os.cli:main"
+personal-os-bridge = "personal_os.bridge:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

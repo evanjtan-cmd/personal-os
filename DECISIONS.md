@@ -178,3 +178,19 @@ If the user accepts one by starting work, its exact text is persisted as the
 resulting session's `selected_action`; manual sessions may leave that field
 null. Selected action is historical context only and never affects deterministic
 eligibility, scheduling, availability, duration, or Task state.
+
+## 2026-09-01 — Machine Interface v1 is a one-shot local adapter
+
+The human `personal-os` CLI remains intentionally human-readable and is not a
+machine contract. The first machine interface is the separate
+`personal-os-bridge` console entry point: it consumes exactly one versioned JSON
+object from stdin, delegates to the same centralized application and state
+services, emits exactly one JSON object to stdout, and exits. It performs no
+database initialization, migration, or repair and has no network listener or
+authentication layer.
+
+The bridge is a local process boundary suitable for invocation by a trusted
+transport such as SSH. A future HTTP or platform-specific wrapper may call the
+same application boundaries, but transport concerns and domain intelligence
+must remain separate. Version 1 exposes only recommend, start, feedback, and
+active-session inspection; it adds no hidden recommendation-acceptance state.

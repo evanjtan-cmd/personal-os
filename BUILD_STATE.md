@@ -1,6 +1,6 @@
 # Build State
 
-Last updated: 2026-09-01 for POS-010 accepted action session continuity.
+Last updated: 2026-09-01 for POS-011 Machine Interface v1.
 
 ## Implemented
 
@@ -64,6 +64,12 @@ Last updated: 2026-09-01 for POS-010 accepted action session continuity.
   adapter uses explicit IANA timezone configuration, fresh trusted instants,
   human-readable output, and no implicit database bootstrap or duplicated
   domain policy.
+- A separate one-shot `personal-os-bridge` machine adapter with strict,
+  versioned JSON stdin/stdout requests for recommend, start, feedback, and
+  active-session inspection. It uses shared runtime construction and the same
+  typed services as the human CLI, trusts only its own fresh UTC clock, performs
+  no initialization or migration, and has no network listener or authentication
+  layer.
 - Read-only full-state CLI inspection over one validated SQLite connection and
   explicit read transaction. All seven canonical entity groups are shown in
   deterministic ID order without initialization, migration, mutation,
@@ -96,9 +102,16 @@ recommendation, session start, PROGRESS feedback, and updated durable state.
 That manual run motivated POS-009's concrete action output. POS-009 validation
 itself uses fake providers and makes no live request.
 
+After POS-010, the real runtime database migrated to schema version 5 without
+losing historical sessions. A real provider recommendation returned a concrete
+action, its generated start command was accepted, and the exact selected action
+survived the active session and PROGRESS closure. The Task remained OPEN and no
+stale active session remained. POS-011 did not access that runtime database or
+make a live provider request.
+
 Run on 2026-09-01 with Python 3.12.4 and pytest 8.4.2:
 
-- `python -m pytest` — passed: 321 passed, 0 failed.
+- `python -m pytest` — passed: 386 passed, 0 failed.
 - `python -m compileall -q src tests` — passed with exit code 0.
 - `python -m personal_os --help` — passed with exit code 0.
 - `personal-os --help` — passed with exit code 0.
@@ -124,6 +137,13 @@ Run on 2026-09-01 with Python 3.12.4 and pytest 8.4.2:
   service-authoritative start and feedback behavior, exact elapsed display, and
   a complete dogfood loop using real services with fake AI boundaries. No live
   OpenAI request was made.
+- Bridge tests confirm strict request envelopes and per-operation fields,
+  bool-as-integer rejection, trusted time and timezone handling, stable JSON
+  success/error responses, typed semantic error kinds, read-only recommendation,
+  service-authoritative start/feedback behavior, exact elapsed microseconds,
+  no implicit database initialization, import safety, and the complete
+  recommend-to-PROGRESS loop across independent invocations using canonical
+  persistence. No live provider request was made.
 - Provider tests confirm OpenAI and Groq configuration, provider-specific key
   requirements, official and overridden Groq base URLs, lazy client
   construction, structured parsing, refusals, malformed output, provider
