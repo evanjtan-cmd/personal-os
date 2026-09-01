@@ -151,3 +151,13 @@ official `https://api.groq.com/openai/v1` base URL unless
 records the actual host provider (`openai` or `groq`) and model. Client creation
 and network access remain lazy. Ollama and other local/provider abstractions are
 not part of this decision.
+
+## 2026-08-31 — Optional capture facts are not uncertainty
+
+Absent optional task metadata is represented by canonical defaults and nulls:
+in particular, a task without scheduling information is FLEXIBLE. Missing
+optional schedule, deadline, importance, duration, or project facts do not make
+capture unresolved. Genuine ambiguity in a fact needed to preserve explicit
+user meaning remains UNRESOLVED rather than being invented. This distinction is
+enforced at the interpreter contract; application code does not heuristically
+post-process provider-generated unresolved reasons.

@@ -198,6 +198,14 @@ classified configuration, provider, refusal, or invalid-output failure. Derived
 projects, tasks, fixed commitments, and inbox items retain their immutable
 source-capture relationship, and resolved output is applied atomically.
 
+An ordinary actionable task does not require a schedule or deadline. When no
+scheduling fact is supplied, capture represents it as a FLEXIBLE task. Missing
+optional schedule, deadline, importance, duration, or project facts use their
+canonical null/default representations and do not by themselves make capture
+UNRESOLVED. UNRESOLVED is reserved for uncertainty that must be resolved to
+represent explicit user meaning without inventing facts; explicit temporal
+facts are preserved when supplied.
+
 AI interpretation is constrained to a versioned semantic JSON contract that is
 validated into frozen typed intents before application logic consumes it. It may
 extract explicit facts, including a bare clock hour, but it may not resolve a

@@ -60,6 +60,19 @@ def test_adapter_uses_responses_strict_schema_and_disables_storage() -> None:
     assert "use new only when new_project is non-null" in responses.kwargs["instructions"].lower()
     assert "otherwise use project_id null" in responses.kwargs["instructions"].lower()
     assert "must not invent a project" in responses.kwargs["instructions"].lower()
+    instructions = responses.kwargs["instructions"].lower()
+    assert "ordinary actionable tasks do not require scheduling information" in instructions
+    assert "use schedule null; this means flexible, not unresolved" in instructions
+    assert "no deadline is explicit, use deadline null" in instructions
+    assert "no importance is explicit, use unspecified" in instructions
+    assert "no duration is explicit, use estimated_minutes null" in instructions
+    assert "no project relationship is explicit, use project_id null" in instructions
+    assert "do not return unresolved solely because" in instructions
+    assert "preserve explicit temporal facts" in instructions
+    assert "retains a day friday schedule without inventing a clock time" in instructions
+    assert "genuinely ambiguous, missing, or unsupported fact" in instructions
+    assert "meet sam at 4 is unresolved" in instructions
+    assert "never invent a date, time, deadline" in instructions
     commitment = responses.kwargs["text"]["format"]["schema"]["properties"]["commitments"]["items"]
     assert "end" not in commitment["properties"]
 

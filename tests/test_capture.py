@@ -9,7 +9,13 @@ from personal_os.capture import CaptureService, InterpretationError
 from personal_os.capture_types import InterpretationResponse, InterpretationValidationError, parse_interpretation
 from personal_os.database import initialize_database
 from personal_os.errors import DomainValidationError, PersistenceError
-from personal_os.models import CaptureFailureKind, CaptureStatus, ProjectStatus
+from personal_os.models import (
+    CaptureFailureKind,
+    CaptureStatus,
+    ProjectStatus,
+    TaskImportance,
+    TaskScheduleMode,
+)
 from personal_os.state import SQLiteStateStore
 from personal_os.openai_capture import OpenAIResponsesCaptureInterpreter
 
@@ -70,6 +76,32 @@ def test_capture_is_durable_before_interpretation(store: SQLiteStateStore) -> No
     assert fake.observed_received
     assert result.capture.status is CaptureStatus.APPLIED
     assert store.get_task(result.task_ids[0]).source_capture_id == result.capture.id
+
+
+def test_scheduleless_action_applies_as_standalone_flexible_task(
+    store: SQLiteStateStore,
+) -> None:
+    payload = apply_payload(tasks=[task("Study for ACT")])
+
+    result = CaptureService(store, FakeInterpreter(payload)).capture_text(
+        "Study for ACT", reference_time=REFERENCE, timezone_name="America/New_York"
+    )
+
+    assert result.capture.status is CaptureStatus.APPLIED
+    assert len(result.task_ids) == 1
+    captured = store.get_task(result.task_ids[0])
+    assert captured.title == "Study for ACT"
+    assert captured.project_id is None
+    assert captured.importance is TaskImportance.UNSPECIFIED
+    assert captured.estimated_minutes is None
+    assert captured.schedule_mode is TaskScheduleMode.FLEXIBLE
+    assert captured.day_date is None
+    assert captured.window_start is None
+    assert captured.window_end is None
+    assert captured.deadline_date is None
+    assert captured.deadline_at is None
+    assert result.inbox_item_id is None
+    assert store.list_inbox_items() == []
 
 
 def test_groq_adapter_metadata_is_persisted_as_groq(store: SQLiteStateStore) -> None:

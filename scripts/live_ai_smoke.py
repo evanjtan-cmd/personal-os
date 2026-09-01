@@ -5,6 +5,12 @@ from __future__ import annotations
 import argparse
 import os
 
+from personal_os.capture_types import (
+    DeadlineKind,
+    InterpretationOutcome,
+    ProjectReferenceKind,
+    TaskScheduleKind,
+)
 from personal_os.models import TaskImportance
 from personal_os.openai_capture import OpenAIResponsesCaptureInterpreter
 from personal_os.openai_recommendation import OpenAIResponsesRecommendationRanker
@@ -28,8 +34,32 @@ def main() -> int:
 
     if args.boundary == "capture":
         result = OpenAIResponsesCaptureInterpreter().interpret(
-            "Buy milk", projects=[]
+            "Study for ACT", projects=[]
         )
+        interpretation = result.interpretation
+        if interpretation.outcome is not InterpretationOutcome.APPLY:
+            raise RuntimeError(
+                f"capture smoke expected APPLY, got {interpretation.outcome.value}"
+            )
+        if len(interpretation.tasks) != 1:
+            raise RuntimeError(
+                f"capture smoke expected one task, got {len(interpretation.tasks)}"
+            )
+        task = interpretation.tasks[0]
+        if not (
+            interpretation.new_project is None
+            and not interpretation.commitments
+            and interpretation.unresolved_reason is None
+            and task.title == "Study for ACT"
+            and task.project.kind is ProjectReferenceKind.NONE
+            and task.importance is TaskImportance.UNSPECIFIED
+            and task.estimated_minutes is None
+            and task.schedule.kind is TaskScheduleKind.FLEXIBLE
+            and task.deadline.kind is DeadlineKind.NONE
+        ):
+            raise RuntimeError(
+                "capture smoke did not return the expected standalone flexible task"
+            )
         print(
             f"capture ok: provider={result.provider} model={result.model} "
             f"outcome={result.interpretation.outcome.value}"

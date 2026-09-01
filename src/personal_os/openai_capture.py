@@ -109,8 +109,17 @@ class OpenAIResponsesCaptureInterpreter:
             provider = config.provider.value
         prompt = {"raw_text": raw_text, "active_projects": projects}
         instructions = (
-            "Extract only explicit Personal OS capture semantics. Never infer AM/PM, a missing year, "
-            "importance, duration, project identity, recurrence, or commitment hardness. Use UNKNOWN "
+            "Extract only explicit Personal OS capture semantics. Ordinary actionable tasks do not require "
+            "scheduling information. When no date, time, or window is explicit, use schedule null; this means "
+            "FLEXIBLE, not UNRESOLVED. When no deadline is explicit, use deadline null. When no importance is "
+            "explicit, use UNSPECIFIED. When no duration is explicit, use estimated_minutes null. When no "
+            "project relationship is explicit, use project_id null. Do not return UNRESOLVED solely because "
+            "any of these optional facts are absent. Study for ACT and Buy milk are APPLY standalone FLEXIBLE "
+            "tasks. Preserve explicit temporal facts: for example, a task stated for Friday retains a DAY "
+            "Friday schedule without inventing a clock time. Use UNRESOLVED only when safely representing "
+            "explicit user meaning requires a genuinely ambiguous, missing, or unsupported fact. For example, "
+            "Meet Sam at 4 is UNRESOLVED because AM/PM cannot be inferred. Never infer hard facts. Never invent a date, time, deadline, "
+            "importance, duration, project identity, recurrence, commitment hardness, or other hard fact. Use UNKNOWN "
             "commitment hardness unless the user's language explicitly establishes HARD or SOFT semantics. "
             "Use BARE_HOUR for a bare clock hour, "
             "MISSING_YEAR for a date without a year, and UNRESOLVED for unsupported or uncertain meaning. "

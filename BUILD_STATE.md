@@ -1,6 +1,6 @@
 # Build State
 
-Last updated: 2026-08-31 for POS-007 read-only state inspection.
+Last updated: 2026-08-31 for POS-008 flexible-task capture semantics.
 
 ## Implemented
 
@@ -36,6 +36,10 @@ Last updated: 2026-08-31 for POS-007 read-only state inspection.
 - Natural-language capture application flow with a constrained OpenAI Responses
   API adapter, deterministic relative-date and local-time resolution, atomic
   multi-record application, and unresolved inbox routing.
+- Schedule-less actionable captures use canonical FLEXIBLE task semantics.
+  Missing optional schedule, deadline, importance, duration, or project facts
+  do not cause UNRESOLVED; genuine ambiguity in explicitly supplied meaning
+  remains unresolved without invented facts or reason-string post-processing.
 - Read-only deterministic eligibility and availability evaluation, including
   missed-DAY metadata, half-open WINDOW handling, deadline classification, and
   HARD-only fixed-commitment bounds.
@@ -83,7 +87,7 @@ Last updated: 2026-08-31 for POS-007 read-only state inspection.
 
 Run on 2026-08-31 with Python 3.12.4 and pytest 8.4.2:
 
-- `python -m pytest` — passed: 306 passed, 0 failed.
+- `python -m pytest` — passed: 307 passed, 0 failed.
 - `python -m compileall -q src tests` — passed with exit code 0.
 - `python -m personal_os --help` — passed with exit code 0.
 - `personal-os --help` — passed with exit code 0.
