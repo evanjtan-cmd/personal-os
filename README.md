@@ -122,7 +122,7 @@ The available commands are:
 personal-os init-db
 personal-os capture TEXT [--timezone ZONE]
 personal-os recommend [--available-minutes N] [--timezone ZONE]
-personal-os start TASK_ID MINUTES [--available-minutes N] [--reason TEXT] [--timezone ZONE]
+personal-os start TASK_ID MINUTES [--available-minutes N] [--action TEXT] [--reason TEXT] [--timezone ZONE]
 personal-os finish [--note TEXT]
 personal-os progress [--note TEXT]
 personal-os block [--note TEXT]
@@ -167,8 +167,10 @@ personal-os recommend
 
 A recommendation is advisory. `start` always performs fresh authoritative
 validation against current state and may reject a formerly valid task or
-duration. Starting a session records durable state only; it does not start a
-countdown, timer, Focus mode, or background worker.
+duration. A generated action stays ephemeral until the recommendation is
+accepted with `start`; `--action` then preserves its exact text as session
+history. Starting a session does not start a countdown, timer, Focus mode, or
+background worker.
 
 ## Tests
 

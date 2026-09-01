@@ -46,11 +46,15 @@ def start(store, task_id, minutes=5, **kwargs):
 
 
 def test_work_session_model_derives_exact_duration_and_allows_zero() -> None:
-    active = WorkSession(1, 2, 5, NOW, None, None, " reason ", None)
+    active = WorkSession(1, 2, 5, NOW, None, None, " action ", " reason ", None)
     assert active.is_active and active.actual_duration is None
-    closed = WorkSession(1, 2, 5, NOW, NOW, SessionOutcome.PROGRESS, " reason ", " note ")
+    closed = WorkSession(
+        1, 2, 5, NOW, NOW, SessionOutcome.PROGRESS,
+        " action ", " reason ", " note ",
+    )
     assert not closed.is_active
     assert closed.actual_duration == timedelta(0)
+    assert closed.selected_action == " action "
     assert closed.start_reason == " reason " and closed.result_note == " note "
 
 
@@ -64,14 +68,17 @@ def test_start_rejects_malformed_planned_minutes(store, minutes) -> None:
     assert store.list_sessions() == []
 
 
-@pytest.mark.parametrize("field", ["start_reason", "result_note"])
+@pytest.mark.parametrize("field", ["selected_action", "start_reason", "result_note"])
 def test_optional_session_text_rejects_nontext_and_whitespace(store, field) -> None:
     task = store.create_task("Task")
     service = SessionService(store)
-    if field == "start_reason":
+    if field in {"selected_action", "start_reason"}:
         for value in (1, "   "):
             with pytest.raises(DomainValidationError):
-                service.start_session(task_id=task.id, planned_minutes=5, context=context(), start_reason=value)
+                service.start_session(
+                    task_id=task.id, planned_minutes=5, context=context(),
+                    **{field: value},
+                )
     else:
         session = start(store, task.id)
         for value in (1, "   "):
@@ -83,22 +90,34 @@ def test_valid_start_round_trip_and_single_active_session(store) -> None:
     task = store.create_task("Task", estimated_minutes=25)
     session = SessionService(store).start_session(
         task_id=task.id, planned_minutes=25, context=context(),
+        selected_action=" Draft the next section. ",
         start_reason=" Recommended because it matters. ",
     )
     assert session.started_at == NOW and session.planned_minutes == 25
     assert session.start_reason == " Recommended because it matters. "
+    assert session.selected_action == " Draft the next section. "
     assert session.is_active and store.get_active_session() == session
     assert store.get_task(task.id).status is TaskStatus.OPEN
     assert store.get_session(session.id) == session
     assert store.list_sessions() == [session]
 
 
+def test_manual_start_without_selected_action_stores_null(store) -> None:
+    task = store.create_task("Manual task")
+
+    session = start(store, task.id)
+
+    assert session.selected_action is None
+    assert store.get_session(session.id).selected_action is None
+
+
 @pytest.mark.parametrize("status", [TaskStatus.BLOCKED, TaskStatus.COMPLETED])
 def test_start_rejects_nonopen_task(store, status) -> None:
     task = store.create_task("Task", status=status)
     with pytest.raises(SessionStartError) as error:
-        start(store, task.id)
+        start(store, task.id, selected_action="Accepted action")
     assert error.value.kind is SessionStartFailureKind.TASK_NOT_OPEN
+    assert store.list_sessions() == []
 
 
 def test_start_rejects_completed_project(store) -> None:
@@ -173,7 +192,7 @@ def test_feasible_must_gates_without_candidate_bound(store) -> None:
     for index in range(51):
         store.create_task(f"Must {index}", importance=TaskImportance.MUST)
     with pytest.raises(SessionStartError) as error:
-        start(store, lower.id)
+        start(store, lower.id, selected_action="Work on lower task")
     assert error.value.kind is SessionStartFailureKind.FEASIBLE_MUST_REQUIRED
 
 
@@ -210,7 +229,10 @@ def test_duration_rejection_precedes_feasible_must(store) -> None:
     lower = store.create_task("Lower", importance=TaskImportance.SHOULD)
     store.create_task("Must", importance=TaskImportance.MUST)
     with pytest.raises(SessionStartError) as error:
-        SessionService(store).start_session(task_id=lower.id, planned_minutes=7, context=context())
+        SessionService(store).start_session(
+            task_id=lower.id, planned_minutes=7, context=context(),
+            selected_action="Work on lower task",
+        )
     assert error.value.kind is SessionStartFailureKind.DURATION_NOT_ALLOWED
 
 
@@ -247,13 +269,14 @@ def test_close_outcomes_are_atomic_and_preserve_other_task_fields(store, outcome
     project = store.create_project("Project")
     task = store.create_task("Task", project_id=project.id, importance=TaskImportance.SHOULD, estimated_minutes=25)
     before_updated = task.updated_at
-    session = start(store, task.id, 25)
+    session = start(store, task.id, 25, selected_action="Do the selected step.")
     closed = SessionService(store).close_session(
         session_id=session.id, outcome=outcome,
         ended_at=NOW + timedelta(minutes=12, seconds=3), result_note=" result ",
     )
     current = store.get_task(task.id)
     assert closed.outcome is outcome and closed.result_note == " result "
+    assert closed.selected_action == "Do the selected step."
     assert closed.actual_duration == timedelta(minutes=12, seconds=3)
     assert current.status is target
     assert (current.title, current.importance, current.estimated_minutes, current.project_id) == (task.title, task.importance, task.estimated_minutes, task.project_id)
@@ -319,6 +342,13 @@ def test_direct_database_session_integrity(store) -> None:
         sql = "INSERT INTO sessions (task_id,planned_minutes,started_at,ended_at,outcome,start_reason,result_note,active_slot) VALUES (?,?,?,?,?,?,?,?)"
         for bad in [(999, 5, stamp, None, None, None, None, 1), (task.id, 0, stamp, None, None, None, None, 1), (task.id, -1, stamp, None, None, None, None, 1), (task.id, 2.5, stamp, None, None, None, None, 1)]:
             with pytest.raises(sqlite3.IntegrityError): connection.execute(sql, bad)
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """INSERT INTO sessions
+                   (task_id,planned_minutes,started_at,active_slot,selected_action)
+                   VALUES (?,?,?,1,'   ')""",
+                (task.id, 5, stamp),
+            )
         connection.execute(sql, active)
         for bad in [
             (task.id, 5, stamp, stamp, "BAD", None, None, None),
@@ -359,6 +389,19 @@ def test_malformed_stored_active_slot_fails_typed_read(store) -> None:
         store.get_session(session.id)
 
 
+def test_malformed_stored_selected_action_fails_typed_read(store) -> None:
+    task = store.create_task("Task")
+    session = start(store, task.id, selected_action="Valid action")
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        connection.execute(
+            "UPDATE sessions SET selected_action='   ' WHERE id=?", (session.id,)
+        )
+
+    with pytest.raises(PersistenceError, match="stored session is malformed"):
+        store.get_session(session.id)
+
+
 def test_close_rejects_invalid_outcome_and_naive_end(store) -> None:
     task = store.create_task("Task")
     session = start(store, task.id)
@@ -394,13 +437,72 @@ class FirstRanker:
         )
 
 
+def test_recommendation_action_becomes_durable_only_when_started_and_survives_progress(
+    store,
+) -> None:
+    class BroadTaskInterpreter:
+        def interpret(self, raw_text, *, projects):
+            payload = {
+                "kind": "APPLY", "new_project": None,
+                "tasks": [{
+                    "title": "Study for ACT", "project_id": None,
+                    "importance": "UNSPECIFIED", "estimated_minutes": None,
+                    "schedule": None, "deadline": None,
+                }],
+                "commitments": [], "unresolved_reason": None,
+            }
+            return InterpretationResponse(
+                parse_interpretation(payload), "fake", "fake", "capture-1"
+            )
+
+    captured = CaptureService(store, BroadTaskInterpreter()).capture_text(
+        "Study for ACT", reference_time=NOW, timezone_name="UTC"
+    )
+    task = store.get_task(captured.task_ids[0])
+    with sqlite3.connect(store.database_path) as connection:
+        before_recommendation = tuple(connection.iterdump())
+
+    recommendation = RecommendationService(store, FirstRanker()).recommend(
+        context(30)
+    )
+
+    with sqlite3.connect(store.database_path) as connection:
+        assert tuple(connection.iterdump()) == before_recommendation
+    assert store.list_sessions() == []
+    session = SessionService(store).start_session(
+        task_id=recommendation.task.id,
+        planned_minutes=recommendation.duration_minutes,
+        context=context(30), selected_action=recommendation.action,
+    )
+    assert session.selected_action == "Complete the loop's next step."
+    assert store.get_active_session() == session
+    assert store.get_session(session.id).selected_action == session.selected_action
+    assert store.list_sessions() == [session]
+
+    closed = SessionService(store).close_session(
+        session_id=session.id, outcome=SessionOutcome.PROGRESS,
+        ended_at=NOW + timedelta(minutes=8), result_note="Practiced",
+    )
+
+    assert closed.selected_action == session.selected_action
+    assert store.get_session(session.id).selected_action == session.selected_action
+    assert store.get_task(task.id).status is TaskStatus.OPEN
+    assert store.get_active_session() is None
+
+
 def test_full_capture_recommend_session_finish_loop(store) -> None:
     captured = CaptureService(store, FakeInterpreter()).capture_text("Finish the loop", reference_time=NOW, timezone_name="UTC")
     assert captured.capture.status is CaptureStatus.APPLIED
     task = store.get_task(captured.task_ids[0])
     ranker = FirstRanker()
     recommendation = RecommendationService(store, ranker).recommend(context())
-    session = SessionService(store).start_session(task_id=recommendation.task.id, planned_minutes=recommendation.duration_minutes, context=context(), start_reason=recommendation.explanation)
+    session = SessionService(store).start_session(
+        task_id=recommendation.task.id,
+        planned_minutes=recommendation.duration_minutes,
+        context=context(), selected_action=recommendation.action,
+        start_reason=recommendation.explanation,
+    )
+    assert session.selected_action == recommendation.action
     assert store.get_task(task.id).status is TaskStatus.OPEN
     closed = SessionService(store).close_session(session_id=session.id, outcome=SessionOutcome.FINISHED, ended_at=NOW + timedelta(minutes=8), result_note="Finished")
     assert closed.actual_duration == timedelta(minutes=8)

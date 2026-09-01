@@ -1,6 +1,6 @@
 # Build State
 
-Last updated: 2026-09-01 for POS-009 concrete recommendation actions.
+Last updated: 2026-09-01 for POS-010 accepted action session continuity.
 
 ## Implemented
 
@@ -8,10 +8,11 @@ Last updated: 2026-09-01 for POS-009 concrete recommendation actions.
   dogfood CLI over the completed application services.
 - External runtime data at `~/.personal-os/personal_os.db`, overrideable through
   `PERSONAL_OS_DATA_DIR`.
-- Standard-library SQLite schema version 4 with explicit ordered migrations,
+- Standard-library SQLite schema version 5 with explicit ordered migrations,
   strict version-specific schema validation, transactional rollback, and
   verified foreign-key enforcement.
-- Fresh 0 → 1 → 2 → 3 → 4 initialization, existing version-1/version-2/version-3 migration, and idempotent
+- Fresh 0 → 1 → 2 → 3 → 4 → 5 initialization, existing
+  version-1/version-2/version-3/version-4 migration, and idempotent
   current-version initialization.
 - Typed, validated application records and SQLite create/get/list/update
   operations for:
@@ -52,7 +53,9 @@ Last updated: 2026-09-01 for POS-009 concrete recommendation actions.
   separately from its ranking explanation and is not persisted.
 - Durable work-session history with a database-enforced single active session,
   exact start/end timestamps, derived elapsed duration, planned-duration and
-  current-state revalidation, and optional verbatim start/result context.
+  current-state revalidation, optional verbatim selected action, and distinct
+  optional start/result context. Recommendation actions become durable only
+  when accepted at session start and never affect deterministic policy.
 - Atomic FINISHED, PROGRESS, and BLOCKED feedback that respectively completes,
   preserves, or blocks the selected Task while retaining immutable session
   history. The internal Python APIs now demonstrate the complete minimal loop.
@@ -95,13 +98,13 @@ itself uses fake providers and makes no live request.
 
 Run on 2026-09-01 with Python 3.12.4 and pytest 8.4.2:
 
-- `python -m pytest` — passed: 313 passed, 0 failed.
+- `python -m pytest` — passed: 321 passed, 0 failed.
 - `python -m compileall -q src tests` — passed with exit code 0.
 - `python -m personal_os --help` — passed with exit code 0.
 - `personal-os --help` — passed with exit code 0.
 - `python -m personal_os init-db`, using an isolated temporary
-  `PERSONAL_OS_DATA_DIR` and run twice — passed at schema version 4.
-- Isolated schema inspection confirmed `PRAGMA user_version = 4`, the seven
+  `PERSONAL_OS_DATA_DIR` and run twice — passed at schema version 5.
+- Isolated schema inspection confirmed `PRAGMA user_version = 5`, the seven
   expected tables, all project/capture traceability `ON DELETE RESTRICT`
   foreign keys, and canonical table definitions. A populated version-2 fixture
   migrated without losing data.
@@ -112,8 +115,9 @@ Run on 2026-09-01 with Python 3.12.4 and pytest 8.4.2:
   snapshots, unchanged schema and table contents, HARD-only availability,
   feasible-MUST gating before bounding, short-task feasibility, derived-only AI
   input, and no live OpenAI request.
-- Session tests confirm strict v4 migration and storage constraints, one-active
-  concurrency, deterministic start rejection precedence, atomic feedback
+- Session tests confirm strict v4 history, lossless v4-to-v5 migration, current
+  v5 storage constraints, one-active concurrency, deterministic start rejection
+  precedence, atomic feedback
   rollback, and the complete capture-to-updated-state loop without network use.
 - CLI tests confirm all nine command/help paths, explicit timezone resolution,
   no product-command auto-bootstrap, advisory recommendation hints,

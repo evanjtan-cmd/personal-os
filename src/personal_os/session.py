@@ -91,17 +91,19 @@ class SessionService:
 
     def start_session(
         self, *, task_id: int, planned_minutes: int,
-        context: RecommendationContext, start_reason: str | None = None,
+        context: RecommendationContext, selected_action: str | None = None,
+        start_reason: str | None = None,
     ) -> WorkSession:
         task_id = require_identifier(task_id, "task_id")
         if type(planned_minutes) is not int or planned_minutes <= 0:
             raise DomainValidationError("planned_minutes must be a positive integer")
         if not isinstance(context, RecommendationContext):
             raise DomainValidationError("context must be a RecommendationContext")
+        action = optional_session_text(selected_action, "selected_action")
         reason = optional_session_text(start_reason, "start_reason")
         return self.store.start_session_atomically(
             task_id=task_id, planned_minutes=planned_minutes,
-            context=context, start_reason=reason,
+            context=context, selected_action=action, start_reason=reason,
         )
 
     def close_session(

@@ -170,3 +170,11 @@ bounds and additionally generate a concise concrete execution action for its
 selected Task. That action is an ephemeral suggestion, not a canonical factual
 constraint, and may not invent unknown state. POS-009 intentionally does not
 persist the generated action in Task or session history.
+
+## 2026-09-01 — Accepted action continuity belongs to session history
+
+Generated recommendation actions are not persisted when recommendation occurs.
+If the user accepts one by starting work, its exact text is persisted as the
+resulting session's `selected_action`; manual sessions may leave that field
+null. Selected action is historical context only and never affects deterministic
+eligibility, scheduling, availability, duration, or Task state.

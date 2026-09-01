@@ -7,6 +7,8 @@ from personal_os import database
 from personal_os.database import (
     CURRENT_SCHEMA_VERSION,
     TABLE_DDL,
+    V4_SESSIONS_DDL,
+    V4_TABLE_DDL,
     V2_TABLE_DDL,
     V3_TABLE_DDL,
     DatabaseInitializationError,
@@ -54,31 +56,31 @@ def read_v2_data(path: Path) -> dict[str, dict[str, object]]:
     return result
 
 
-def test_fresh_database_migrates_through_version_4(tmp_path: Path) -> None:
+def test_fresh_database_migrates_through_version_5(tmp_path: Path) -> None:
     path = tmp_path / "runtime" / "personal_os.db"
 
     version = initialize_database(path)
 
-    assert version == CURRENT_SCHEMA_VERSION == 4
-    assert read_version(path) == 4
+    assert version == CURRENT_SCHEMA_VERSION == 5
+    assert read_version(path) == 5
     assert user_objects(path) == sorted(TABLE_DDL)
 
 
-def test_existing_version_1_migrates_to_version_4(tmp_path: Path) -> None:
+def test_existing_version_1_migrates_to_version_5(tmp_path: Path) -> None:
     path = tmp_path / "version1.db"
     with sqlite3.connect(path) as connection:
         connection.execute("PRAGMA user_version = 1")
 
-    assert initialize_database(path) == 4
+    assert initialize_database(path) == 5
     assert user_objects(path) == sorted(TABLE_DDL)
 
 
-def test_populated_version_2_migrates_to_version_4_without_rebuilding(tmp_path: Path) -> None:
+def test_populated_version_2_migrates_to_version_5_without_rebuilding(tmp_path: Path) -> None:
     path = tmp_path / "version2.db"
     create_populated_v2(path)
     original = read_v2_data(path)
 
-    assert initialize_database(path) == 4
+    assert initialize_database(path) == 5
     with sqlite3.connect(path) as connection:
         for table, expected in original.items():
             columns = ", ".join(expected)
@@ -90,7 +92,7 @@ def test_populated_version_2_migrates_to_version_4_without_rebuilding(tmp_path: 
         assert connection.execute("SELECT id,title,start_at,end_at,hardness,source_capture_id FROM fixed_commitments").fetchone() == (31, "Appointment", "2026-09-02T14:00:00.000000Z", None, "HARD", None)
         assert connection.execute("SELECT id,kind,parameters_json,enabled FROM rules").fetchone() == (41, "hours", '{\"start\":9}', 1)
         assert connection.execute("SELECT id,raw_text,unresolved_reason,resolved_at,source_capture_id FROM inbox_items").fetchone() == (51, "Maybe Tuesday", "ambiguous", None, None)
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
         task_fks = {(row[2], row[3], row[4], row[6]) for row in connection.execute("PRAGMA foreign_key_list(tasks)")}
         assert task_fks == {("projects", "project_id", "id", "RESTRICT"), ("captures", "source_capture_id", "id", "RESTRICT")}
 
@@ -121,19 +123,19 @@ def test_failed_migration_3_rolls_back_schema_and_preserves_all_v2_data(tmp_path
         assert connection.execute("SELECT id,raw_text FROM inbox_items").fetchone() == (51, "Maybe Tuesday")
 
 
-def test_repeated_version_4_initialization_is_idempotent(tmp_path: Path) -> None:
+def test_repeated_version_5_initialization_is_idempotent(tmp_path: Path) -> None:
     path = tmp_path / "personal_os.db"
     initialize_database(path)
     first_bytes = path.read_bytes()
 
-    assert initialize_database(path) == 4
+    assert initialize_database(path) == 5
     assert path.read_bytes() == first_bytes
 
 
 def test_newer_schema_version_fails_without_mutation(tmp_path: Path) -> None:
     path = tmp_path / "future.db"
     with sqlite3.connect(path) as connection:
-        connection.execute("PRAGMA user_version = 5")
+        connection.execute("PRAGMA user_version = 6")
     original = path.read_bytes()
 
     with pytest.raises(DatabaseInitializationError, match="newer than supported"):
@@ -168,7 +170,7 @@ def test_malformed_version_2_schema_is_rejected(tmp_path: Path) -> None:
     assert read_version(path) == 2
 
 
-def test_altered_version_4_table_is_rejected(tmp_path: Path) -> None:
+def test_altered_version_5_table_is_rejected(tmp_path: Path) -> None:
     path = tmp_path / "altered.db"
     initialize_database(path)
     with sqlite3.connect(path) as connection:
@@ -236,10 +238,10 @@ def create_populated_v3(path: Path) -> dict[str, tuple]:
     return before
 
 
-def test_populated_version_3_migrates_to_4_without_changing_existing_rows(tmp_path: Path) -> None:
+def test_populated_version_3_migrates_to_5_without_changing_existing_rows(tmp_path: Path) -> None:
     path = tmp_path / "version3.db"
     before = create_populated_v3(path)
-    assert initialize_database(path) == 4
+    assert initialize_database(path) == 5
     with sqlite3.connect(path) as connection:
         assert {
             table: tuple(connection.execute(f"SELECT * FROM {table}"))
@@ -270,3 +272,87 @@ def test_failed_migration_4_rolls_back_to_intact_version_3(tmp_path: Path, monke
     assert user_objects(path) == sorted(V3_TABLE_DDL)
     with sqlite3.connect(path) as connection:
         assert {table: tuple(connection.execute(f"SELECT * FROM {table}")) for table in V3_TABLE_DDL} == before
+
+
+def create_populated_v4(path: Path) -> None:
+    stamp = "2026-09-01T12:00:00.000000Z"
+    ended = "2026-09-01T12:10:00.000000Z"
+    with sqlite3.connect(path) as connection:
+        for ddl in V3_TABLE_DDL.values():
+            connection.execute(ddl)
+        connection.execute(V4_SESSIONS_DDL)
+        connection.execute(
+            """INSERT INTO tasks
+               (id,title,status,importance,schedule_mode,created_at,updated_at)
+               VALUES (7,'Task','OPEN','SHOULD','FLEXIBLE',?,?)""",
+            (stamp, stamp),
+        )
+        connection.execute(
+            """INSERT INTO sessions
+               (id,task_id,planned_minutes,started_at,ended_at,outcome,
+                start_reason,result_note,active_slot)
+               VALUES (11,7,10,?,?,'PROGRESS','because','progressed',NULL)""",
+            (stamp, ended),
+        )
+        connection.execute(
+            """INSERT INTO sessions
+               (id,task_id,planned_minutes,started_at,ended_at,outcome,
+                start_reason,result_note,active_slot)
+               VALUES (12,7,25,?,NULL,NULL,'active reason',NULL,1)""",
+            (ended,),
+        )
+        connection.execute("PRAGMA user_version = 4")
+
+
+def test_valid_v4_schema_is_validated_and_migrates_losslessly_to_v5(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "version4.db"
+    create_populated_v4(path)
+    with open_database(path, require_existing=True) as connection:
+        database.validate_schema(connection, 4)
+
+    assert initialize_database(path) == 5
+
+    with sqlite3.connect(path) as connection:
+        connection.row_factory = sqlite3.Row
+        sessions = connection.execute(
+            "SELECT * FROM sessions ORDER BY id"
+        ).fetchall()
+        assert [row["id"] for row in sessions] == [11, 12]
+        assert [row["selected_action"] for row in sessions] == [None, None]
+        assert sessions[0]["ended_at"] == "2026-09-01T12:10:00.000000Z"
+        assert sessions[0]["outcome"] == "PROGRESS"
+        assert sessions[0]["start_reason"] == "because"
+        assert sessions[0]["result_note"] == "progressed"
+        assert sessions[1]["active_slot"] == 1
+        assert sessions[1]["ended_at"] is None
+        assert tuple(connection.execute(
+            "SELECT id,title FROM tasks"
+        ).fetchone()) == (7, "Task")
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
+
+
+def test_failed_migration_5_rolls_back_to_intact_version_4(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "failed-v5.db"
+    create_populated_v4(path)
+
+    def fail(connection: sqlite3.Connection) -> None:
+        connection.execute("ALTER TABLE sessions ADD COLUMN partial TEXT")
+        raise RuntimeError("migration 5 failed")
+
+    monkeypatch.setitem(database.MIGRATIONS, 5, fail)
+    with pytest.raises(RuntimeError, match="migration 5 failed"):
+        initialize_database(path)
+
+    assert read_version(path) == 4
+    assert user_objects(path) == sorted(V4_TABLE_DDL)
+    with sqlite3.connect(path) as connection:
+        assert "selected_action" not in {
+            row[1] for row in connection.execute("PRAGMA table_info(sessions)")
+        }
+        assert [row[0] for row in connection.execute(
+            "SELECT id FROM sessions ORDER BY id"
+        )] == [11, 12]

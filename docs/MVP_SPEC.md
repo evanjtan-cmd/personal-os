@@ -75,6 +75,12 @@ current Task/project eligibility, HARD availability, exact allowed duration,
 and feasible-MUST protection atomically with insertion. Recommendation ranking,
 urgency sorting, and the 50-candidate AI bound do not constrain session start.
 
+A generated recommendation action remains ephemeral until the user accepts it
+by starting a session. Session start may persist that exact accepted text as
+`selected_action`; manual sessions may omit it. The selected action is durable
+historical context about the session's intended work, not a Task mutation or a
+deterministic eligibility, scheduling, availability, or duration input.
+
 FINISHED atomically closes the session and completes its Task. PROGRESS closes
 the session while leaving the Task OPEN and does not touch its update timestamp.
 BLOCKED closes the session and blocks the Task. Matching preexisting COMPLETED

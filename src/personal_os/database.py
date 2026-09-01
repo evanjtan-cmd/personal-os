@@ -8,7 +8,7 @@ from pathlib import Path
 
 from personal_os.errors import PersonalOSError
 
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 
 
 class DatabaseInitializationError(PersonalOSError):
@@ -150,7 +150,7 @@ V3_TABLE_DDL: dict[str, str] = {
     """,
 }
 
-SESSIONS_DDL = f"""
+V4_SESSIONS_DDL = f"""
     CREATE TABLE sessions (
         id INTEGER PRIMARY KEY,
         task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE RESTRICT,
@@ -178,7 +178,19 @@ SESSIONS_DDL = f"""
     )
 """
 
-TABLE_DDL: dict[str, str] = {**V3_TABLE_DDL, "sessions": SESSIONS_DDL}
+V4_TABLE_DDL: dict[str, str] = {
+    **V3_TABLE_DDL,
+    "sessions": V4_SESSIONS_DDL,
+}
+V5_SESSIONS_DDL = V4_SESSIONS_DDL.replace(
+    "        CHECK(\n            (active_slot",
+    "        selected_action TEXT\n"
+    "            CHECK(selected_action IS NULL OR "
+    "length(trim(selected_action)) > 0),\n"
+    "        CHECK(\n            (active_slot",
+    1,
+)
+TABLE_DDL: dict[str, str] = {**V3_TABLE_DDL, "sessions": V5_SESSIONS_DDL}
 
 Migration = Callable[[sqlite3.Connection], None]
 
@@ -210,7 +222,16 @@ def _migration_3(connection: sqlite3.Connection) -> None:
 def _migration_4(connection: sqlite3.Connection) -> None:
     """Add durable work-session history."""
 
-    connection.execute(SESSIONS_DDL)
+    connection.execute(V4_SESSIONS_DDL)
+
+
+def _migration_5(connection: sqlite3.Connection) -> None:
+    """Add accepted recommendation action history to sessions."""
+
+    connection.execute(
+        "ALTER TABLE sessions ADD COLUMN selected_action TEXT "
+        "CHECK(selected_action IS NULL OR length(trim(selected_action)) > 0)"
+    )
 
 
 MIGRATIONS: dict[int, Migration] = {
@@ -218,6 +239,7 @@ MIGRATIONS: dict[int, Migration] = {
     2: _migration_2,
     3: _migration_3,
     4: _migration_4,
+    5: _migration_5,
 }
 
 
@@ -279,12 +301,13 @@ def validate_schema(connection: sqlite3.Connection, version: int) -> None:
                 f"schema version {version} contains unexpected objects: {names}"
             )
         return
-    if version not in (2, 3, 4):
+    if version not in (2, 3, 4, 5):
         raise DatabaseInitializationError(f"unsupported schema version {version}")
     expected_tables = {
         2: V2_TABLE_DDL,
         3: V3_TABLE_DDL,
-        4: TABLE_DDL,
+        4: V4_TABLE_DDL,
+        5: TABLE_DDL,
     }[version]
     if set(objects) != set(expected_tables):
         expected = ", ".join(sorted(expected_tables))
@@ -305,7 +328,7 @@ def validate_schema(connection: sqlite3.Connection, version: int) -> None:
         "fixed_commitments": [] if version == 2 else [("captures", "source_capture_id", "id", "NO ACTION", "RESTRICT")],
         "inbox_items": [] if version == 2 else [("captures", "source_capture_id", "id", "NO ACTION", "RESTRICT")],
     }
-    if version == 4:
+    if version in (4, 5):
         expected_fks["sessions"] = [
             ("tasks", "task_id", "id", "NO ACTION", "RESTRICT")
         ]
@@ -316,7 +339,7 @@ def validate_schema(connection: sqlite3.Connection, version: int) -> None:
         )
         if actual != sorted(expected):
             raise DatabaseInitializationError(f"{table} has incompatible foreign-key metadata")
-    if version == 4:
+    if version in (4, 5):
         unique_active_slot = False
         for index in connection.execute("PRAGMA index_list(sessions)"):
             if int(index["unique"]) != 1:

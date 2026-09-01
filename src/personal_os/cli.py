@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -65,6 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("task_id", type=_positive_integer)
     start.add_argument("minutes", type=_positive_integer)
     _add_available_minutes(start)
+    start.add_argument("--action")
     start.add_argument("--reason")
     _add_timezone(start)
 
@@ -161,6 +163,7 @@ def _handle_recommend(args: argparse.Namespace, runtime: _CLIRuntime) -> int:
     print(f"Duration: {result.duration_minutes} minutes")
     print(f"Why: {result.explanation}")
     hint = f"Next: personal-os start {result.task.id} {result.duration_minutes}"
+    hint += f" --action {shlex.quote(result.action)}"
     if args.available_minutes is not None:
         hint += f" --available-minutes {args.available_minutes}"
     if args.timezone is not None:
@@ -174,10 +177,13 @@ def _handle_start(args: argparse.Namespace, runtime: _CLIRuntime) -> int:
         task_id=args.task_id,
         planned_minutes=args.minutes,
         context=_context(args),
+        selected_action=args.action,
         start_reason=args.reason,
     )
     print(f"Started session #{session.id}")
     _print_task(runtime, session.task_id)
+    if session.selected_action is not None:
+        print(f"Action: {session.selected_action}")
     print(f"Planned: {session.planned_minutes} minutes")
     print(f"Started: {serialize_instant(session.started_at)}")
     return 0
@@ -232,6 +238,8 @@ def _handle_active(runtime: _CLIRuntime) -> int:
         return 0
     print(f"Active session #{session.id}")
     _print_task(runtime, session.task_id)
+    if session.selected_action is not None:
+        print(f"Action: {session.selected_action}")
     print(f"Planned: {session.planned_minutes} minutes")
     print(f"Started: {serialize_instant(session.started_at)}")
     return 0
@@ -331,6 +339,10 @@ def _print_state(snapshot: StateSnapshot) -> None:
         state = "ACTIVE" if session.is_active else session.outcome.value
         print(f"  #{session.id} [{state}] Task #{session.task_id}")
         print(f"    Planned: {session.planned_minutes} minutes")
+        print(
+            "    Selected action: "
+            + ("none" if session.selected_action is None else session.selected_action)
+        )
         print(f"    Started: {serialize_instant(session.started_at)}")
         print(
             "    Ended: "

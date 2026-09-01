@@ -59,6 +59,7 @@ class WorkSession:
     started_at: datetime
     ended_at: datetime | None
     outcome: SessionOutcome | None
+    selected_action: str | None
     start_reason: str | None
     result_note: str | None
 
@@ -78,6 +79,9 @@ class WorkSession:
             if self.outcome is None
             else require_enum(self.outcome, SessionOutcome, "outcome")
         )
+        selected_action = optional_session_text(
+            self.selected_action, "selected_action"
+        )
         start_reason = optional_session_text(self.start_reason, "start_reason")
         result_note = optional_session_text(self.result_note, "result_note")
         if ended is None:
@@ -93,6 +97,7 @@ class WorkSession:
         object.__setattr__(self, "started_at", started)
         object.__setattr__(self, "ended_at", ended)
         object.__setattr__(self, "outcome", outcome)
+        object.__setattr__(self, "selected_action", selected_action)
         object.__setattr__(self, "start_reason", start_reason)
         object.__setattr__(self, "result_note", result_note)
 

@@ -231,6 +231,7 @@ class SQLiteStateStore:
                 started_at=parse_instant(row["started_at"], "started_at"),
                 ended_at=None if row["ended_at"] is None else parse_instant(row["ended_at"], "ended_at"),
                 outcome=None if row["outcome"] is None else SessionOutcome(row["outcome"]),
+                selected_action=row["selected_action"],
                 start_reason=row["start_reason"], result_note=row["result_note"],
             )
 
@@ -475,7 +476,7 @@ class SQLiteStateStore:
 
     def start_session_atomically(
         self, *, task_id: int, planned_minutes: int, context,
-        start_reason: str | None,
+        selected_action: str | None, start_reason: str | None,
     ) -> WorkSession:
         """Revalidate current state and insert one active session atomically."""
 
@@ -516,10 +517,11 @@ class SQLiteStateStore:
                 cursor = connection.execute(
                     """INSERT INTO sessions (
                         task_id, planned_minutes, started_at, ended_at, outcome,
-                        start_reason, result_note, active_slot
-                    ) VALUES (?, ?, ?, NULL, NULL, ?, NULL, 1)""",
+                        start_reason, result_note, active_slot, selected_action
+                    ) VALUES (?, ?, ?, NULL, NULL, ?, NULL, 1, ?)""",
                     (selected.id, planned_minutes,
-                     serialize_instant(context.reference_time), start_reason),
+                     serialize_instant(context.reference_time), start_reason,
+                     selected_action),
                 )
             except sqlite3.IntegrityError as exc:
                 if "UNIQUE constraint failed: sessions.active_slot" in str(exc):

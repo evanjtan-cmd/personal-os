@@ -2,6 +2,7 @@ import subprocess
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 import sqlite3
+import shlex
 import sys
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -170,7 +171,7 @@ def test_product_command_does_not_migrate_stale_database(
 
     assert main([command]) == 1
 
-    assert "not current version 4" in capsys.readouterr().err
+    assert "not current version 5" in capsys.readouterr().err
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
 
@@ -233,9 +234,9 @@ def test_state_command_formats_complete_persisted_state(
         connection.execute(
             """INSERT INTO sessions
                (task_id, planned_minutes, started_at, ended_at, outcome,
-                start_reason, result_note, active_slot)
-               VALUES (?, 10, ?, NULL, NULL, NULL, NULL, 1)""",
-            (task.id, "2026-08-30T14:00:00.000000Z"),
+                start_reason, result_note, active_slot, selected_action)
+               VALUES (?, 10, ?, NULL, NULL, NULL, NULL, 1, ?)""",
+            (task.id, "2026-08-30T14:00:00.000000Z", "Review questions"),
         )
     value = runtime(store=store)
     install_runtime(monkeypatch, value)
@@ -256,7 +257,9 @@ def test_state_command_formats_complete_persisted_state(
     assert "Elapsed: 1h 2m 3.000004s" in output
     assert "Start reason: Focus now" in output
     assert "Result note: Drafted intro" in output
+    assert "Selected action: none" in output
     assert "#2 [ACTIVE] Task #1" in output
+    assert "Selected action: Review questions" in output
     assert "Ended: none" in output
     assert "interpretation" not in output.lower()
     assert "model_provider" not in output
@@ -378,7 +381,9 @@ def test_recommendation_and_explicit_context_hint(
     )
     assert "Duration: 25 minutes\nWhy: Due today and currently feasible.\n" in output
     assert output.endswith(
-        "Next: personal-os start 34 25 --available-minutes 30 --timezone America/New_York\n"
+        "Next: personal-os start 34 25 --action "
+        f"{shlex.quote('Draft the essay introduction.')} "
+        "--available-minutes 30 --timezone America/New_York\n"
     )
     value.session_service.start_session.assert_not_called()
 
@@ -398,8 +403,32 @@ def test_environment_timezone_is_omitted_from_hint(
     assert main(["recommend"]) == 0
     output = capsys.readouterr().out
     assert "Project:" not in output
-    assert output.endswith("Next: personal-os start 2 10\n")
+    assert output.endswith(
+        f"Next: personal-os start 2 10 --action {shlex.quote('Do the task.')}\n"
+    )
     assert "--timezone" not in output
+
+
+def test_recommendation_hint_shell_quotes_selected_action(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    action = "Review Sam's $HOME; `stop` and \"quote\""
+    value = runtime()
+    value.recommendation_service.recommend.return_value = SimpleNamespace(
+        kind=RecommendationResultKind.RECOMMEND,
+        task=SimpleNamespace(id=9, title="Review"), project_name=None,
+        duration_minutes=10, action=action, explanation="Fits now.",
+    )
+    install_runtime(monkeypatch, value)
+
+    assert main(["recommend", "--timezone", "UTC"]) == 0
+
+    hint = capsys.readouterr().out.splitlines()[-1].removeprefix("Next: ")
+    assert f"--action {shlex.quote(action)}" in hint
+    assert shlex.split(hint) == [
+        "personal-os", "start", "9", "10", "--action", action,
+        "--timezone", "UTC",
+    ]
 
 
 def test_no_work_is_success(
@@ -420,7 +449,8 @@ def test_start_forwards_only_inputs_and_prints_session(
 ) -> None:
     value = runtime()
     value.session_service.start_session.return_value = SimpleNamespace(
-        id=8, task_id=34, planned_minutes=25, started_at=NOW
+        id=8, task_id=34, planned_minutes=25, started_at=NOW,
+        selected_action=None,
     )
     value.store.get_task.return_value = SimpleNamespace(id=34, title="Finish essay")
     install_runtime(monkeypatch, value)
@@ -430,12 +460,35 @@ def test_start_forwards_only_inputs_and_prints_session(
     call = value.session_service.start_session.call_args.kwargs
     assert call["task_id"] == 34
     assert call["planned_minutes"] == 25
+    assert call["selected_action"] is None
     assert call["start_reason"] == "Ready"
     assert call["context"].reference_time == NOW
     assert capsys.readouterr().out == (
         "Started session #8\nTask #34: Finish essay\nPlanned: 25 minutes\n"
         "Started: 2026-08-30T16:00:00.000000Z\n"
     )
+
+
+def test_start_action_is_forwarded_and_confirmed(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    value = runtime()
+    value.session_service.start_session.return_value = SimpleNamespace(
+        id=8, task_id=34, planned_minutes=25, started_at=NOW,
+        selected_action="Draft one section.",
+    )
+    value.store.get_task.return_value = SimpleNamespace(id=34, title="Essay")
+    install_runtime(monkeypatch, value)
+
+    assert main([
+        "start", "34", "25", "--action", "Draft one section.",
+        "--timezone", "UTC",
+    ]) == 0
+
+    call = value.session_service.start_session.call_args.kwargs
+    assert call["selected_action"] == "Draft one section."
+    assert call["start_reason"] is None
+    assert "Action: Draft one section.\n" in capsys.readouterr().out
 
 
 def test_start_service_error_is_not_prechecked_or_reclassified(
@@ -511,14 +564,16 @@ def test_active_display_needs_no_timezone_and_does_not_mutate(
 ) -> None:
     value = runtime()
     value.store.get_active_session.return_value = SimpleNamespace(
-        id=8, task_id=34, planned_minutes=25, started_at=NOW
+        id=8, task_id=34, planned_minutes=25, started_at=NOW,
+        selected_action="Draft one section.",
     )
     value.store.get_task.return_value = SimpleNamespace(id=34, title="Finish essay")
     install_runtime(monkeypatch, value)
 
     assert main(["active"]) == 0
     assert capsys.readouterr().out == (
-        "Active session #8\nTask #34: Finish essay\nPlanned: 25 minutes\n"
+        "Active session #8\nTask #34: Finish essay\nAction: Draft one section.\n"
+        "Planned: 25 minutes\n"
         "Started: 2026-08-30T16:00:00.000000Z\n"
     )
     value.session_service.start_session.assert_not_called()
@@ -615,10 +670,17 @@ def test_complete_dogfood_cli_loop_uses_real_services_without_network(
     assert "Task #1: Finish loop" in capture_output
 
     assert main(["recommend", "--available-minutes", "10"]) == 0
-    assert "Next: personal-os start 1 10 --available-minutes 10" in capsys.readouterr().out
+    recommendation_output = capsys.readouterr().out
+    assert "--action " + shlex.quote("Complete the loop's next step.") in recommendation_output
+    assert "--available-minutes 10" in recommendation_output
 
-    assert main(["start", "1", "10", "--available-minutes", "10"]) == 0
-    assert "Started session #1" in capsys.readouterr().out
+    assert main([
+        "start", "1", "10", "--action", "Complete the loop's next step.",
+        "--available-minutes", "10",
+    ]) == 0
+    start_output = capsys.readouterr().out
+    assert "Started session #1" in start_output
+    assert "Action: Complete the loop's next step." in start_output
 
     assert main(["finish", "--note", "Done"]) == 0
     assert "Elapsed: 8m 0s" in capsys.readouterr().out
