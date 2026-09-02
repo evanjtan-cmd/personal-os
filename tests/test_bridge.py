@@ -132,6 +132,58 @@ def test_unknown_fields_are_rejected_for_every_operation(
 
 
 @pytest.mark.parametrize(
+    "payload",
+    [
+        {"version": 1, "operation": "active", "extra": True},
+        {
+            "version": 1,
+            "operation": "start",
+            "task_id": True,
+            "planned_minutes": 5,
+            "timezone": "UTC",
+        },
+        {
+            "version": 1,
+            "operation": "recommend",
+            "timezone": "Not/A_Zone",
+        },
+    ],
+)
+def test_invalid_request_never_constructs_runtime(payload: dict[str, object]) -> None:
+    runtime_factory = Mock(side_effect=AssertionError("runtime must not be built"))
+    output = io.StringIO()
+
+    status = bridge.run(
+        io.StringIO(json.dumps(payload)),
+        output,
+        runtime_factory=runtime_factory,
+        environ={},
+    )
+
+    assert status == 2
+    assert json.loads(output.getvalue())["error"]["code"] == "INVALID_REQUEST"
+    runtime_factory.assert_not_called()
+
+
+def test_valid_request_constructs_runtime_exactly_once() -> None:
+    runtime = fake_runtime()
+    runtime.store.get_active_session.return_value = None
+    runtime_factory = Mock(return_value=runtime)
+    output = io.StringIO()
+
+    status = bridge.run(
+        io.StringIO('{"version":1,"operation":"active"}'),
+        output,
+        runtime_factory=runtime_factory,
+        environ={},
+    )
+
+    assert status == 0
+    assert json.loads(output.getvalue())["result"] == {"active": False}
+    runtime_factory.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
     ("field", "value"),
     [
         ("task_id", True),

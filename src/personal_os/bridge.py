@@ -6,6 +6,7 @@ import json
 import re
 import sys
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import Enum
 from typing import IO, Any
@@ -29,6 +30,19 @@ class InvalidRequestError(Exception):
 
 class NoActiveSessionError(PersonalOSError):
     """Raised when feedback is requested without an active session."""
+
+
+@dataclass(frozen=True, slots=True)
+class _ValidatedRequest:
+    operation: str
+    available_minutes: int | None = None
+    timezone: str | None = None
+    task_id: int | None = None
+    planned_minutes: int | None = None
+    selected_action: str | None = None
+    start_reason: str | None = None
+    outcome: SessionOutcome | None = None
+    result_note: str | None = None
 
 
 def _utc_now() -> datetime:
@@ -68,29 +82,28 @@ def _optional_text(request: dict[str, object], field: str) -> str | None:
     return value
 
 
-def _optional_timezone(
-    request: dict[str, object], environ: Mapping[str, str] | None
-) -> str:
-    if "timezone" in request and request["timezone"] is None:
-        raise InvalidRequestError("timezone must be text")
-    explicit = request.get("timezone")
-    if explicit is not None and not isinstance(explicit, str):
-        raise InvalidRequestError("timezone must be text")
+def _explicit_timezone(request: dict[str, object]) -> str | None:
+    if "timezone" not in request:
+        return None
+    explicit = request["timezone"]
     if explicit is None:
-        return get_timezone_name(None, environ)
+        raise InvalidRequestError("timezone must be text")
+    if not isinstance(explicit, str):
+        raise InvalidRequestError("timezone must be text")
     try:
-        return get_timezone_name(explicit, environ)
+        return get_timezone_name(explicit, {})
     except PersonalOSError as exc:
         raise InvalidRequestError(str(exc)) from exc
 
 
 def _context(
-    request: dict[str, object], *, now: datetime, environ: Mapping[str, str] | None
+    request: _ValidatedRequest, *, now: datetime,
+    environ: Mapping[str, str] | None,
 ) -> RecommendationContext:
     return RecommendationContext(
         reference_time=now,
-        timezone_name=_optional_timezone(request, environ),
-        available_minutes=_integer(request, "available_minutes"),
+        timezone_name=get_timezone_name(request.timezone, environ),
+        available_minutes=request.available_minutes,
     )
 
 
@@ -103,14 +116,9 @@ def _elapsed_microseconds(value: timedelta) -> int:
 
 
 def _recommend(
-    request: dict[str, object], runtime: PersonalOSRuntime, *, now: datetime,
+    request: _ValidatedRequest, runtime: PersonalOSRuntime, *, now: datetime,
     environ: Mapping[str, str] | None,
 ) -> dict[str, object]:
-    _require_fields(
-        request,
-        required={"version", "operation"},
-        optional={"available_minutes", "timezone"},
-    )
     result = runtime.recommendation_service.recommend(
         _context(request, now=now, environ=environ)
     )
@@ -139,25 +147,16 @@ def _recommend(
 
 
 def _start(
-    request: dict[str, object], runtime: PersonalOSRuntime, *, now: datetime,
+    request: _ValidatedRequest, runtime: PersonalOSRuntime, *, now: datetime,
     environ: Mapping[str, str] | None,
 ) -> dict[str, object]:
-    _require_fields(
-        request,
-        required={"version", "operation", "task_id", "planned_minutes"},
-        optional={
-            "available_minutes", "timezone", "selected_action", "start_reason"
-        },
-    )
-    task_id = _integer(request, "task_id", positive=True)
-    planned_minutes = _integer(request, "planned_minutes", positive=True)
-    assert task_id is not None and planned_minutes is not None
+    assert request.task_id is not None and request.planned_minutes is not None
     session = runtime.session_service.start_session(
-        task_id=task_id,
-        planned_minutes=planned_minutes,
+        task_id=request.task_id,
+        planned_minutes=request.planned_minutes,
         context=_context(request, now=now, environ=environ),
-        selected_action=_optional_text(request, "selected_action"),
-        start_reason=_optional_text(request, "start_reason"),
+        selected_action=request.selected_action,
+        start_reason=request.start_reason,
     )
     task = runtime.store.get_task(session.task_id)
     return {
@@ -171,33 +170,17 @@ def _start(
 
 
 def _feedback(
-    request: dict[str, object], runtime: PersonalOSRuntime, *, now: datetime,
+    request: _ValidatedRequest, runtime: PersonalOSRuntime, *, now: datetime,
 ) -> dict[str, object]:
-    _require_fields(
-        request,
-        required={"version", "operation", "outcome"},
-        optional={"result_note"},
-    )
-    raw_outcome = request["outcome"]
-    if not isinstance(raw_outcome, str):
-        raise InvalidRequestError(
-            "outcome must be FINISHED, PROGRESS, or BLOCKED"
-        )
-    try:
-        outcome = SessionOutcome(raw_outcome)
-    except ValueError as exc:
-        raise InvalidRequestError(
-            "outcome must be FINISHED, PROGRESS, or BLOCKED"
-        ) from exc
-    note = _optional_text(request, "result_note")
+    assert request.outcome is not None
     active = runtime.store.get_active_session()
     if active is None:
         raise NoActiveSessionError("no active session")
     session = runtime.session_service.close_session(
         session_id=active.id,
-        outcome=outcome,
+        outcome=request.outcome,
         ended_at=now,
-        result_note=note,
+        result_note=request.result_note,
     )
     task = runtime.store.get_task(session.task_id)
     assert session.actual_duration is not None
@@ -216,9 +199,8 @@ def _feedback(
 
 
 def _active(
-    request: dict[str, object], runtime: PersonalOSRuntime
+    runtime: PersonalOSRuntime,
 ) -> dict[str, object]:
-    _require_fields(request, required={"version", "operation"}, optional=set())
     session = runtime.store.get_active_session()
     if session is None:
         return {"active": False}
@@ -234,15 +216,8 @@ def _active(
     }
 
 
-def handle_request(
-    request: object,
-    runtime: PersonalOSRuntime,
-    *,
-    clock: Callable[[], datetime] = _utc_now,
-    environ: Mapping[str, str] | None = None,
-) -> tuple[str, dict[str, object]]:
-    """Validate one decoded request and return its operation and result."""
-
+def _validate_request(request: object) -> _ValidatedRequest:
+    """Validate the complete protocol contract without constructing runtime."""
     if not isinstance(request, dict):
         raise InvalidRequestError("request must be a JSON object")
     version = request.get("version")
@@ -256,8 +231,75 @@ def handle_request(
     if operation not in {"recommend", "start", "feedback", "active"}:
         raise InvalidRequestError(f"unknown operation: {operation}")
 
+    if operation == "recommend":
+        _require_fields(
+            request,
+            required={"version", "operation"},
+            optional={"available_minutes", "timezone"},
+        )
+        return _ValidatedRequest(
+            operation=operation,
+            available_minutes=_integer(request, "available_minutes"),
+            timezone=_explicit_timezone(request),
+        )
+    if operation == "start":
+        _require_fields(
+            request,
+            required={"version", "operation", "task_id", "planned_minutes"},
+            optional={
+                "available_minutes", "timezone", "selected_action", "start_reason"
+            },
+        )
+        task_id = _integer(request, "task_id", positive=True)
+        planned_minutes = _integer(request, "planned_minutes", positive=True)
+        assert task_id is not None and planned_minutes is not None
+        return _ValidatedRequest(
+            operation=operation,
+            available_minutes=_integer(request, "available_minutes"),
+            timezone=_explicit_timezone(request),
+            task_id=task_id,
+            planned_minutes=planned_minutes,
+            selected_action=_optional_text(request, "selected_action"),
+            start_reason=_optional_text(request, "start_reason"),
+        )
+    if operation == "feedback":
+        _require_fields(
+            request,
+            required={"version", "operation", "outcome"},
+            optional={"result_note"},
+        )
+        raw_outcome = request["outcome"]
+        if not isinstance(raw_outcome, str):
+            raise InvalidRequestError(
+                "outcome must be FINISHED, PROGRESS, or BLOCKED"
+            )
+        try:
+            outcome = SessionOutcome(raw_outcome)
+        except ValueError as exc:
+            raise InvalidRequestError(
+                "outcome must be FINISHED, PROGRESS, or BLOCKED"
+            ) from exc
+        return _ValidatedRequest(
+            operation=operation,
+            outcome=outcome,
+            result_note=_optional_text(request, "result_note"),
+        )
+    _require_fields(request, required={"version", "operation"}, optional=set())
+    return _ValidatedRequest(operation=operation)
+
+
+def handle_request(
+    request: _ValidatedRequest,
+    runtime: PersonalOSRuntime,
+    *,
+    clock: Callable[[], datetime] = _utc_now,
+    environ: Mapping[str, str] | None = None,
+) -> tuple[str, dict[str, object]]:
+    """Dispatch one fully validated request to application services."""
+
+    operation = request.operation
     if operation == "active":
-        return operation, _active(request, runtime)
+        return operation, _active(runtime)
     now = clock()
     if operation == "recommend":
         return operation, _recommend(request, runtime, now=now, environ=environ)
@@ -317,8 +359,10 @@ def run(
             raise InvalidRequestError("stdin must contain one valid JSON value") from exc
         if isinstance(request, dict) and isinstance(request.get("operation"), str):
             operation = request["operation"]
+        validated = _validate_request(request)
+        operation = validated.operation
         operation, result = handle_request(
-            request, runtime_factory(), clock=clock, environ=environ
+            validated, runtime_factory(), clock=clock, environ=environ
         )
         response = _response(operation=operation, result=result)
         status = 0
