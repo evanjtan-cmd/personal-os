@@ -5,9 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from personal_os.errors import DomainValidationError
-from personal_os.models import Task
+from personal_os.models import Task, normalize_instant, require_text
 from personal_os.recommendation_types import (
     RecommendationContext,
     RecommendationResult,
@@ -25,7 +26,7 @@ class WorkActivationResultKind(StrEnum):
 @dataclass(frozen=True, slots=True)
 class WorkActivationContext:
     reference_time: datetime
-    timezone_name: str
+    timezone_name: str | None = None
     time_cap_minutes: int | None = None
 
     def __post_init__(self) -> None:
@@ -35,14 +36,29 @@ class WorkActivationContext:
             raise DomainValidationError(
                 "time_cap_minutes must be a nonnegative integer or None"
             )
-        validated = self.as_recommendation_context()
-        object.__setattr__(self, "reference_time", validated.reference_time)
-        object.__setattr__(self, "timezone_name", validated.timezone_name)
+        object.__setattr__(
+            self,
+            "reference_time",
+            normalize_instant(self.reference_time, "reference_time"),
+        )
+        if self.timezone_name is not None:
+            timezone_name = require_text(self.timezone_name, "timezone_name")
+            try:
+                ZoneInfo(timezone_name)
+            except (ZoneInfoNotFoundError, ValueError) as exc:
+                raise DomainValidationError(
+                    "timezone_name must identify an IANA timezone"
+                ) from exc
+            object.__setattr__(self, "timezone_name", timezone_name)
 
-    def as_recommendation_context(self) -> RecommendationContext:
+    def as_recommendation_context(
+        self, timezone_name: str | None = None
+    ) -> RecommendationContext:
         return RecommendationContext(
             reference_time=self.reference_time,
-            timezone_name=self.timezone_name,
+            timezone_name=(
+                self.timezone_name if timezone_name is None else timezone_name
+            ),
             available_minutes=self.time_cap_minutes,
         )
 

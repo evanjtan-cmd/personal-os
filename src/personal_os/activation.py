@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from personal_os.activation_types import (
     WorkActivationContext,
     WorkActivationResult,
@@ -22,7 +24,12 @@ class WorkActivationService:
         self.store = store
         self.recommendation_service = recommendation_service
 
-    def activate(self, context: WorkActivationContext) -> WorkActivationResult:
+    def activate(
+        self,
+        context: WorkActivationContext,
+        *,
+        timezone_resolver: Callable[[str | None], str] | None = None,
+    ) -> WorkActivationResult:
         if not isinstance(context, WorkActivationContext):
             raise DomainValidationError(
                 "context must be a WorkActivationContext"
@@ -34,8 +41,13 @@ class WorkActivationService:
                 active_session=active_session,
                 active_task=self.store.get_task(active_session.task_id),
             )
+        timezone_name = (
+            context.timezone_name
+            if timezone_resolver is None
+            else timezone_resolver(context.timezone_name)
+        )
         recommendation = self.recommendation_service.recommend(
-            context.as_recommendation_context()
+            context.as_recommendation_context(timezone_name)
         )
         kind = (
             WorkActivationResultKind.RECOMMEND

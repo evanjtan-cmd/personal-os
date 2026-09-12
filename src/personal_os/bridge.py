@@ -162,11 +162,14 @@ def _activate(
     request: _ValidatedRequest, runtime: PersonalOSRuntime, *, now: datetime,
     environ: Mapping[str, str] | None,
 ) -> dict[str, object]:
-    result = runtime.activation_service.activate(WorkActivationContext(
-        reference_time=now,
-        timezone_name=get_timezone_name(request.timezone, environ),
-        time_cap_minutes=request.time_cap_minutes,
-    ))
+    result = runtime.activation_service.activate(
+        WorkActivationContext(
+            reference_time=now,
+            timezone_name=request.timezone,
+            time_cap_minutes=request.time_cap_minutes,
+        ),
+        timezone_resolver=lambda explicit: get_timezone_name(explicit, environ),
+    )
     if result.kind is WorkActivationResultKind.ACTIVE_SESSION:
         session = result.active_session
         task = result.active_task

@@ -76,8 +76,10 @@ def test_active_session_wins_without_recommendation_or_mutation(store) -> None:
     recommendation_service = Mock()
     before = store.read_state_snapshot()
 
+    timezone_resolver = Mock(side_effect=AssertionError("timezone is not needed"))
     result = WorkActivationService(store, recommendation_service).activate(
-        WorkActivationContext(NOW + timedelta(minutes=2), "UTC")
+        WorkActivationContext(NOW + timedelta(minutes=2)),
+        timezone_resolver=timezone_resolver,
     )
 
     assert result.kind is WorkActivationResultKind.ACTIVE_SESSION
@@ -85,6 +87,7 @@ def test_active_session_wins_without_recommendation_or_mutation(store) -> None:
     assert result.active_task == task
     assert result.recommendation is None
     recommendation_service.recommend.assert_not_called()
+    timezone_resolver.assert_not_called()
     assert store.read_state_snapshot() == before
 
 

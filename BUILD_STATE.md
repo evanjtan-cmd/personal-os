@@ -73,9 +73,10 @@ Last updated: 2026-09-12 for POS-012 Work Activation v1.
 - A canonical read-only work-activation service for availability-now triggers.
   It returns an existing active session without invoking recommendation, or
   delegates to the existing recommendation service and preserves RECOMMEND or
-  NO_WORK. Its optional caller time cap is distinct from HARD availability and
-  selected duration, is not defaulted or persisted, and activation never starts
-  a session.
+  NO_WORK. Recommendation-only timezone configuration is resolved only after
+  confirming no session is active. Its optional caller time cap is distinct
+  from HARD availability and selected duration, is not defaulted or persisted,
+  and activation never starts a session.
 - Machine Interface v1 additionally exposes `activate` with strict request
   validation and ACTIVE_SESSION/RECOMMEND/NO_WORK result kinds while retaining
   all existing version-1 operations unchanged.
@@ -120,7 +121,7 @@ make a live provider request.
 
 Run on 2026-09-12 with Python 3.12.4 and pytest 8.4.2:
 
-- `python -m pytest` — passed: 411 passed, 0 failed.
+- `python -m pytest` — passed: 414 passed, 0 failed.
 - `python -m compileall -q src tests` — passed with exit code 0.
 - `python -m personal_os --help` — passed with exit code 0.
 - `personal-os --help` — passed with exit code 0.

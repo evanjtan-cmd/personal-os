@@ -10,6 +10,7 @@ from unittest.mock import Mock
 import pytest
 
 import personal_os.bridge as bridge
+from personal_os.activation import WorkActivationService
 from personal_os.activation_types import WorkActivationResultKind
 from personal_os.config import DEFAULT_DATABASE_FILENAME, TIMEZONE_ENV_VAR
 from personal_os.database import initialize_database
@@ -464,6 +465,68 @@ def test_activate_active_session_serializes_without_ai_or_start() -> None:
     runtime.session_service.start_session.assert_not_called()
 
 
+def test_activate_active_session_needs_no_timezone_configuration() -> None:
+    runtime = fake_runtime()
+    runtime.store.get_active_session.return_value = SimpleNamespace(
+        id=12,
+        task_id=7,
+        planned_minutes=25,
+        selected_action="Continue the draft.",
+        started_at=NOW,
+        is_active=True,
+    )
+    runtime.store.get_task.return_value = SimpleNamespace(id=7, title="Draft essay")
+    runtime.activation_service = WorkActivationService(
+        runtime.store, runtime.recommendation_service
+    )
+
+    status, response, _ = invoke(
+        {"version": 1, "operation": "activate"}, runtime, environ={}
+    )
+
+    assert status == 0
+    assert response["result"]["kind"] == "ACTIVE_SESSION"
+    assert response["result"]["task_title"] == "Draft essay"
+    runtime.recommendation_service.recommend.assert_not_called()
+    runtime.session_service.start_session.assert_not_called()
+
+
+def test_activate_without_session_still_requires_timezone_configuration() -> None:
+    runtime = fake_runtime()
+    runtime.store.get_active_session.return_value = None
+    runtime.activation_service = WorkActivationService(
+        runtime.store, runtime.recommendation_service
+    )
+
+    status, response, _ = invoke(
+        {"version": 1, "operation": "activate"}, runtime, environ={}
+    )
+
+    assert status == 1
+    assert response["error"]["code"] == "CONFIGURATION"
+    runtime.recommendation_service.recommend.assert_not_called()
+
+
+def test_activate_explicit_invalid_timezone_fails_before_runtime() -> None:
+    runtime_factory = Mock(side_effect=AssertionError("runtime must not be built"))
+    output = io.StringIO()
+
+    status = bridge.run(
+        io.StringIO(json.dumps({
+            "version": 1,
+            "operation": "activate",
+            "timezone": "Not/A_Zone",
+        })),
+        output,
+        runtime_factory=runtime_factory,
+        environ={},
+    )
+
+    assert status == 2
+    assert json.loads(output.getvalue())["error"]["code"] == "INVALID_REQUEST"
+    runtime_factory.assert_not_called()
+
+
 def test_activate_recommend_serializes_existing_recommendation_shape() -> None:
     runtime = fake_runtime()
     runtime.activation_service.activate.return_value = SimpleNamespace(
@@ -522,9 +585,11 @@ def test_activate_no_work_serializes_reason_and_environment_timezone() -> None:
         "explanation": "No task fits.",
         "reason": "NO_FEASIBLE_TASKS",
     }
-    context = runtime.activation_service.activate.call_args.args[0]
-    assert context.timezone_name == "America/New_York"
+    call = runtime.activation_service.activate.call_args
+    context = call.args[0]
+    assert context.timezone_name is None
     assert context.time_cap_minutes == 0
+    assert call.kwargs["timezone_resolver"](None) == "America/New_York"
     runtime.session_service.start_session.assert_not_called()
 
 
