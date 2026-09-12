@@ -176,11 +176,14 @@ background worker.
 
 `personal-os-bridge` reads exactly one versioned JSON request from stdin,
 writes exactly one JSON response to stdout, and exits. Its v1 operations are
-`recommend`, `start`, `feedback`, and `active`. It requires an already
+`activate`, `recommend`, `start`, `feedback`, and `active`. `activate` is the
+canonical availability-now operation: it returns current work when a session is
+active, otherwise delegates to recommendation without starting work. It requires an already
 initialized current-version database and never initializes or migrates state.
 For example:
 
 ```bash
+printf '%s\n' '{"version":1,"operation":"activate","timezone":"America/New_York","time_cap_minutes":20}' | personal-os-bridge
 printf '%s\n' '{"version":1,"operation":"recommend","available_minutes":30,"timezone":"America/New_York"}' | personal-os-bridge
 printf '%s\n' '{"version":1,"operation":"start","task_id":1,"planned_minutes":25,"timezone":"America/New_York","selected_action":"Draft the introduction."}' | personal-os-bridge
 printf '%s\n' '{"version":1,"operation":"active"}' | personal-os-bridge

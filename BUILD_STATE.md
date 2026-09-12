@@ -1,6 +1,6 @@
 # Build State
 
-Last updated: 2026-09-01 for POS-011 Machine Interface v1.
+Last updated: 2026-09-12 for POS-012 Work Activation v1.
 
 ## Implemented
 
@@ -70,6 +70,15 @@ Last updated: 2026-09-01 for POS-011 Machine Interface v1.
   typed services as the human CLI, trusts only its own fresh UTC clock, performs
   no initialization or migration, and has no network listener or authentication
   layer.
+- A canonical read-only work-activation service for availability-now triggers.
+  It returns an existing active session without invoking recommendation, or
+  delegates to the existing recommendation service and preserves RECOMMEND or
+  NO_WORK. Its optional caller time cap is distinct from HARD availability and
+  selected duration, is not defaulted or persisted, and activation never starts
+  a session.
+- Machine Interface v1 additionally exposes `activate` with strict request
+  validation and ACTIVE_SESSION/RECOMMEND/NO_WORK result kinds while retaining
+  all existing version-1 operations unchanged.
 - Read-only full-state CLI inspection over one validated SQLite connection and
   explicit read transaction. All seven canonical entity groups are shown in
   deterministic ID order without initialization, migration, mutation,
@@ -109,9 +118,9 @@ survived the active session and PROGRESS closure. The Task remained OPEN and no
 stale active session remained. POS-011 did not access that runtime database or
 make a live provider request.
 
-Run on 2026-09-01 with Python 3.12.4 and pytest 8.4.2:
+Run on 2026-09-12 with Python 3.12.4 and pytest 8.4.2:
 
-- `python -m pytest` — passed: 390 passed, 0 failed.
+- `python -m pytest` — passed: 411 passed, 0 failed.
 - `python -m compileall -q src tests` — passed with exit code 0.
 - `python -m personal_os --help` — passed with exit code 0.
 - `personal-os --help` — passed with exit code 0.
@@ -144,6 +153,11 @@ Run on 2026-09-01 with Python 3.12.4 and pytest 8.4.2:
   no implicit database initialization, import safety, and the complete
   recommend-to-PROGRESS loop across independent invocations using canonical
   persistence. No live provider request was made.
+- Activation tests confirm active-session precedence without AI or mutation,
+  unchanged recommendation delegation, deterministic and ranker-generated
+  NO_WORK, omitted/zero/positive caller caps, existing HARD bounds, selected
+  durations distinct from caps, no cap persistence, strict bridge validation,
+  trusted time, and all three activation response kinds.
 - Provider tests confirm OpenAI and Groq configuration, provider-specific key
   requirements, official and overridden Groq base URLs, lazy client
   construction, structured parsing, refusals, malformed output, provider

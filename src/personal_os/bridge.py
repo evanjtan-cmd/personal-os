@@ -11,11 +11,16 @@ from datetime import UTC, datetime, timedelta
 from enum import Enum
 from typing import IO, Any
 
+from personal_os.activation_types import (
+    WorkActivationContext,
+    WorkActivationResultKind,
+)
 from personal_os.config import get_timezone_name
 from personal_os.errors import PersonalOSError
 from personal_os.models import serialize_instant
 from personal_os.recommendation_types import (
     RecommendationContext,
+    RecommendationResult,
     RecommendationResultKind,
 )
 from personal_os.runtime import PersonalOSRuntime, build_runtime
@@ -43,6 +48,7 @@ class _ValidatedRequest:
     start_reason: str | None = None
     outcome: SessionOutcome | None = None
     result_note: str | None = None
+    time_cap_minutes: int | None = None
 
 
 def _utc_now() -> datetime:
@@ -115,13 +121,9 @@ def _elapsed_microseconds(value: timedelta) -> int:
     )
 
 
-def _recommend(
-    request: _ValidatedRequest, runtime: PersonalOSRuntime, *, now: datetime,
-    environ: Mapping[str, str] | None,
+def _serialize_recommendation(
+    result: RecommendationResult,
 ) -> dict[str, object]:
-    result = runtime.recommendation_service.recommend(
-        _context(request, now=now, environ=environ)
-    )
     if result.kind is RecommendationResultKind.NO_WORK:
         return {
             "kind": "NO_WORK",
@@ -144,6 +146,42 @@ def _recommend(
         "action": result.action,
         "explanation": result.explanation,
     }
+
+
+def _recommend(
+    request: _ValidatedRequest, runtime: PersonalOSRuntime, *, now: datetime,
+    environ: Mapping[str, str] | None,
+) -> dict[str, object]:
+    result = runtime.recommendation_service.recommend(
+        _context(request, now=now, environ=environ)
+    )
+    return _serialize_recommendation(result)
+
+
+def _activate(
+    request: _ValidatedRequest, runtime: PersonalOSRuntime, *, now: datetime,
+    environ: Mapping[str, str] | None,
+) -> dict[str, object]:
+    result = runtime.activation_service.activate(WorkActivationContext(
+        reference_time=now,
+        timezone_name=get_timezone_name(request.timezone, environ),
+        time_cap_minutes=request.time_cap_minutes,
+    ))
+    if result.kind is WorkActivationResultKind.ACTIVE_SESSION:
+        session = result.active_session
+        task = result.active_task
+        assert session is not None and task is not None
+        return {
+            "kind": "ACTIVE_SESSION",
+            "session_id": session.id,
+            "task_id": session.task_id,
+            "task_title": task.title,
+            "planned_minutes": session.planned_minutes,
+            "selected_action": session.selected_action,
+            "started_at": serialize_instant(session.started_at),
+        }
+    assert result.recommendation is not None
+    return _serialize_recommendation(result.recommendation)
 
 
 def _start(
@@ -228,9 +266,20 @@ def _validate_request(request: object) -> _ValidatedRequest:
     operation = request.get("operation")
     if not isinstance(operation, str) or not operation:
         raise InvalidRequestError("operation must be supplied as text")
-    if operation not in {"recommend", "start", "feedback", "active"}:
+    if operation not in {"recommend", "start", "feedback", "active", "activate"}:
         raise InvalidRequestError(f"unknown operation: {operation}")
 
+    if operation == "activate":
+        _require_fields(
+            request,
+            required={"version", "operation"},
+            optional={"time_cap_minutes", "timezone"},
+        )
+        return _ValidatedRequest(
+            operation=operation,
+            time_cap_minutes=_integer(request, "time_cap_minutes"),
+            timezone=_explicit_timezone(request),
+        )
     if operation == "recommend":
         _require_fields(
             request,
@@ -303,6 +352,8 @@ def handle_request(
     now = clock()
     if operation == "recommend":
         return operation, _recommend(request, runtime, now=now, environ=environ)
+    if operation == "activate":
+        return operation, _activate(request, runtime, now=now, environ=environ)
     if operation == "start":
         return operation, _start(request, runtime, now=now, environ=environ)
     return operation, _feedback(request, runtime, now=now)

@@ -94,8 +94,8 @@ NFC, Shortcuts, voice, CLI, and future HTTP interfaces must remain thin adapters
 over centralized application logic.
 
 Machine Interface v1 is a separate, one-request-per-process JSON stdin/stdout
-adapter. Version-1 requests expose only recommendation, session start, session
-feedback, and active-session inspection. The adapter strictly validates one
+adapter. Version-1 requests expose activation, recommendation, session start,
+session feedback, and active-session inspection. The adapter strictly validates one
 JSON object, obtains authoritative current time locally, delegates to the same
 typed services as the human CLI, and returns one versioned JSON object. It does
 not initialize or migrate storage, persist recommendation acceptance before
@@ -145,13 +145,22 @@ It is not an export or synchronization interface.
 The human CLI remains a dogfood interface rather than a machine-readable API.
 `personal-os-bridge` provides the stable local machine boundary with integer
 protocol version 1 and the operations `recommend`, `start`, `feedback`, and
-`active`. Requests cannot supply authoritative current/reference timestamps.
+`active`, plus the canonical `activate` operation for availability-now triggers.
+Requests cannot supply authoritative current/reference timestamps.
 Recommendation remains read-only and its concrete action remains ephemeral;
 only a start request that supplies the action persists it in session history.
 Start and feedback reuse the authoritative session service and therefore do not
 duplicate eligibility, availability, duration, MUST-gating, or Task-transition
 policy. Bridge v1 deliberately excludes capture, full-state output, database
 initialization, HTTP, and transport-specific configuration.
+
+Activation first returns the current active session and associated Task without
+invoking recommendation. When no session is active, it delegates unchanged to
+the recommendation service and preserves RECOMMEND or NO_WORK. Its optional
+`time_cap_minutes` is a caller-imposed maximum mapped into existing
+recommendation policy; it is distinct from deterministic HARD-commitment
+availability and from the selected recommendation duration. No cap is invented
+when omitted. Activation is read-only and never starts a session.
 
 ## POS-001 executable boundary
 

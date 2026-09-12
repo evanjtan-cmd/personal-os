@@ -194,3 +194,17 @@ transport such as SSH. A future HTTP or platform-specific wrapper may call the
 same application boundaries, but transport concerns and domain intelligence
 must remain separate. Version 1 exposes only recommend, start, feedback, and
 active-session inspection; it adds no hidden recommendation-acceptance state.
+
+## 2026-09-12 — Work activation is the canonical availability-now operation
+
+Shortcut, NFC, Action Button, voice, and other availability-now triggers should
+call the canonical work-activation application service rather than independently
+orchestrating active-session inspection and recommendation. An existing active
+session always takes precedence and is returned without invoking recommendation;
+otherwise activation delegates unchanged to the existing recommendation service.
+
+Activation accepts an optional caller `time_cap_minutes` and maps it to the
+existing recommendation cap. That cap is distinct from deterministic hard
+availability and from the duration ultimately selected by recommendation. No
+default cap is invented or persisted. Activation is read-only, creates no
+history, and never starts a session automatically.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from personal_os.activation import WorkActivationService
 from personal_os.capture import CaptureService
 from personal_os.config import get_database_path
 from personal_os.openai_capture import OpenAIResponsesCaptureInterpreter
@@ -21,17 +22,20 @@ class PersonalOSRuntime:
     capture_service: CaptureService
     recommendation_service: RecommendationService
     session_service: SessionService
+    activation_service: WorkActivationService
 
 
 def build_runtime() -> PersonalOSRuntime:
     """Construct services without opening storage or provider connections."""
 
     store = SQLiteStateStore(get_database_path())
+    recommendation_service = RecommendationService(
+        store, OpenAIResponsesRecommendationRanker()
+    )
     return PersonalOSRuntime(
         store=store,
         capture_service=CaptureService(store, OpenAIResponsesCaptureInterpreter()),
-        recommendation_service=RecommendationService(
-            store, OpenAIResponsesRecommendationRanker()
-        ),
+        recommendation_service=recommendation_service,
         session_service=SessionService(store),
+        activation_service=WorkActivationService(store, recommendation_service),
     )

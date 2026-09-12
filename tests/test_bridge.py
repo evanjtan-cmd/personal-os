@@ -10,6 +10,7 @@ from unittest.mock import Mock
 import pytest
 
 import personal_os.bridge as bridge
+from personal_os.activation_types import WorkActivationResultKind
 from personal_os.config import DEFAULT_DATABASE_FILENAME, TIMEZONE_ENV_VAR
 from personal_os.database import initialize_database
 from personal_os.models import TaskImportance, TaskStatus
@@ -40,6 +41,7 @@ def fake_runtime() -> SimpleNamespace:
         capture_service=Mock(),
         recommendation_service=Mock(),
         session_service=Mock(),
+        activation_service=Mock(),
     )
 
 
@@ -378,6 +380,154 @@ def test_reference_time_cannot_be_supplied() -> None:
     assert "unknown field: reference_time" in response["error"]["message"]
 
 
+@pytest.mark.parametrize("cap", [True, -1, "20", 20.0])
+def test_activate_rejects_malformed_time_cap(cap: object) -> None:
+    runtime_factory = Mock(side_effect=AssertionError("runtime must not be built"))
+    output = io.StringIO()
+    status = bridge.run(
+        io.StringIO(json.dumps({
+            "version": 1,
+            "operation": "activate",
+            "timezone": "UTC",
+            "time_cap_minutes": cap,
+        })),
+        output,
+        runtime_factory=runtime_factory,
+        environ={},
+    )
+    assert status == 2
+    assert json.loads(output.getvalue())["error"]["code"] == "INVALID_REQUEST"
+    runtime_factory.assert_not_called()
+
+
+def test_activate_unknown_field_is_rejected_before_runtime_construction() -> None:
+    runtime_factory = Mock(side_effect=AssertionError("runtime must not be built"))
+    output = io.StringIO()
+    status = bridge.run(
+        io.StringIO('{"version":1,"operation":"activate","extra":true}'),
+        output,
+        runtime_factory=runtime_factory,
+        environ={TIMEZONE_ENV_VAR: "UTC"},
+    )
+    assert status == 2
+    assert json.loads(output.getvalue())["error"]["code"] == "INVALID_REQUEST"
+    runtime_factory.assert_not_called()
+
+
+@pytest.mark.parametrize("field", ["reference_time", "current_time"])
+def test_activate_rejects_caller_supplied_time(field: str) -> None:
+    status, response, _ = invoke(
+        {
+            "version": 1,
+            "operation": "activate",
+            "timezone": "UTC",
+            field: "2026-09-12T12:00:00Z",
+        },
+        fake_runtime(),
+    )
+    assert status == 2
+    assert f"unknown field: {field}" in response["error"]["message"]
+
+
+def test_activate_active_session_serializes_without_ai_or_start() -> None:
+    runtime = fake_runtime()
+    runtime.activation_service.activate.return_value = SimpleNamespace(
+        kind=WorkActivationResultKind.ACTIVE_SESSION,
+        active_session=SimpleNamespace(
+            id=12,
+            task_id=7,
+            planned_minutes=25,
+            selected_action="Continue the draft.",
+            started_at=NOW,
+        ),
+        active_task=SimpleNamespace(title="Draft essay"),
+        recommendation=None,
+    )
+    status, response, _ = invoke(
+        {"version": 1, "operation": "activate", "timezone": "UTC"}, runtime
+    )
+    assert status == 0
+    assert response["result"] == {
+        "kind": "ACTIVE_SESSION",
+        "session_id": 12,
+        "task_id": 7,
+        "task_title": "Draft essay",
+        "planned_minutes": 25,
+        "selected_action": "Continue the draft.",
+        "started_at": "2026-09-01T14:00:00.000000Z",
+    }
+    context = runtime.activation_service.activate.call_args.args[0]
+    assert context.reference_time == NOW
+    assert context.timezone_name == "UTC"
+    assert context.time_cap_minutes is None
+    runtime.recommendation_service.recommend.assert_not_called()
+    runtime.session_service.start_session.assert_not_called()
+
+
+def test_activate_recommend_serializes_existing_recommendation_shape() -> None:
+    runtime = fake_runtime()
+    runtime.activation_service.activate.return_value = SimpleNamespace(
+        kind=WorkActivationResultKind.RECOMMEND,
+        recommendation=SimpleNamespace(
+            kind=RecommendationResultKind.RECOMMEND,
+            task=SimpleNamespace(id=7, title="Draft essay"),
+            project_name="Applications",
+            duration_minutes=10,
+            action="Draft the opening paragraph.",
+            explanation="It fits the available window.",
+        ),
+    )
+    status, response, _ = invoke(
+        {
+            "version": 1,
+            "operation": "activate",
+            "timezone": "UTC",
+            "time_cap_minutes": 20,
+        },
+        runtime,
+    )
+    assert status == 0
+    assert response["result"] == {
+        "kind": "RECOMMEND",
+        "task_id": 7,
+        "task_title": "Draft essay",
+        "project_name": "Applications",
+        "duration_minutes": 10,
+        "action": "Draft the opening paragraph.",
+        "explanation": "It fits the available window.",
+    }
+    context = runtime.activation_service.activate.call_args.args[0]
+    assert context.time_cap_minutes == 20
+    runtime.session_service.start_session.assert_not_called()
+
+
+def test_activate_no_work_serializes_reason_and_environment_timezone() -> None:
+    runtime = fake_runtime()
+    runtime.activation_service.activate.return_value = SimpleNamespace(
+        kind=WorkActivationResultKind.NO_WORK,
+        recommendation=SimpleNamespace(
+            kind=RecommendationResultKind.NO_WORK,
+            explanation="No task fits.",
+            deterministic_reason=DeterministicNoWorkReason.NO_FEASIBLE_TASKS,
+        ),
+    )
+    status, response, _ = invoke(
+        {"version": 1, "operation": "activate", "time_cap_minutes": 0},
+        runtime,
+        environ={TIMEZONE_ENV_VAR: "America/New_York"},
+    )
+    assert status == 0
+    assert response["result"] == {
+        "kind": "NO_WORK",
+        "explanation": "No task fits.",
+        "reason": "NO_FEASIBLE_TASKS",
+    }
+    context = runtime.activation_service.activate.call_args.args[0]
+    assert context.timezone_name == "America/New_York"
+    assert context.time_cap_minutes == 0
+    runtime.session_service.start_session.assert_not_called()
+
+
 @pytest.mark.parametrize("selected_action", [None, "  Exact accepted action.  "])
 def test_start_delegates_and_preserves_optional_action(selected_action: str | None) -> None:
     runtime = fake_runtime()
@@ -472,6 +622,7 @@ def test_failed_real_start_leaves_no_session(tmp_path: Path) -> None:
         capture_service=Mock(),
         recommendation_service=Mock(),
         session_service=SessionService(store),
+        activation_service=Mock(),
     )
     status, response, _ = invoke(
         {
@@ -641,6 +792,7 @@ def test_complete_bridge_loop_uses_persistence_without_hidden_bridge_state(
         capture_service=Mock(),
         recommendation_service=RecommendationService(store, FirstCandidateRanker()),
         session_service=SessionService(store),
+        activation_service=Mock(),
     )
     initial_snapshot = store.read_state_snapshot()
 
@@ -716,6 +868,7 @@ def test_feedback_outcomes_use_real_session_service(
         capture_service=Mock(),
         recommendation_service=Mock(),
         session_service=SessionService(store),
+        activation_service=Mock(),
     )
     SessionService(store).start_session(
         task_id=task.id,

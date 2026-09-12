@@ -67,6 +67,10 @@ def test_runtime_wires_provider_capable_capture_and_recommendation_adapters(
     assert value.recommendation_service.ranker.__class__.__name__ == (
         "OpenAIResponsesRecommendationRanker"
     )
+    assert (
+        value.activation_service.recommendation_service
+        is value.recommendation_service
+    )
 
 
 def test_module_help_succeeds() -> None:
