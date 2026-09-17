@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -53,7 +54,14 @@ def test_adapter_uses_strict_responses_without_raw_temporal_context() -> None:
     assert "only one supplied eligible task" in instructions
     assert "exactly one of its allowed_durations" in instructions
     assert "one concise concrete action" in instructions
-    assert "decompose a broad task title" in instructions
+    assert "none of the supplied eligible candidates should reasonably be recommended" in instructions
+    assert "explain concisely why no supplied candidate is appropriate now" in instructions
+    assert "the no_work reason must support not working" in instructions
+    assert "do not choose no_work merely because a task is flexible" in instructions
+    assert "if supplied facts support an ordinary feasible work session, choose recommend" in instructions
+    assert "do not invent a specific subject, subtopic, resource, person, place, quantity" in instructions
+    assert "'study for act'" in instructions
+    assert "'review algebra practice problems for the act' invents an unsupported subtask" in instructions
     assert "already executable" in instructions
     assert "do not claim unknown facts" in instructions
     assert "not a substitute for the action" in instructions
@@ -65,6 +73,42 @@ def test_adapter_uses_strict_responses_without_raw_temporal_context() -> None:
     assert "daypart" not in serialized
     assert "rules" not in serialized
     assert payload["candidates"][0]["allowed_durations"] == [5, 10, 15, 20]
+
+
+def test_flexible_study_task_can_return_generic_grounded_recommendation() -> None:
+    study = replace(candidate(), title="Study for ACT", importance=TaskImportance.UNSPECIFIED)
+    response = SimpleNamespace(status="completed", output=[], output_text=json.dumps({
+        "kind": "RECOMMEND", "task_id": 1, "duration_minutes": 20,
+        "action": "Study for the ACT for 20 minutes.",
+        "reason": "This eligible task fits a focused session now.",
+    }))
+    client, responses = setup(response)
+
+    choice = OpenAIResponsesRecommendationRanker(
+        client=client, model="gpt-test"
+    ).recommend(RecommendationRankingContext(AvailabilityKind.FINITE, 20, False), (study,))
+
+    assert choice.kind.value == "RECOMMEND"
+    assert choice.action == "Study for the ACT for 20 minutes."
+    assert json.loads(responses.kwargs["input"])["candidates"][0]["title"] == "Study for ACT"
+    assert "algebra" not in responses.kwargs["input"].lower()
+    assert "review algebra practice problems" in responses.kwargs["instructions"].lower()
+
+
+def test_valid_no_work_shape_remains_supported_without_must_gate() -> None:
+    response = SimpleNamespace(status="completed", output=[], output_text=json.dumps({
+        "kind": "NO_WORK", "task_id": None, "duration_minutes": None,
+        "action": None, "reason": "None of these choices is useful now.",
+    }))
+    client, responses = setup(response)
+
+    choice = OpenAIResponsesRecommendationRanker(
+        client=client, model="gpt-test"
+    ).recommend(RecommendationRankingContext(AvailabilityKind.FINITE, 20, False), (candidate(),))
+
+    assert choice.kind.value == "NO_WORK"
+    assert choice.action is None
+    assert "only when must_gated is false and none" in responses.kwargs["instructions"].lower()
 
 
 def test_adapter_configuration_is_lazy(monkeypatch) -> None:

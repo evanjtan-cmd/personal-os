@@ -208,3 +208,18 @@ existing recommendation cap. That cap is distinct from deterministic hard
 availability and from the duration ultimately selected by recommendation. No
 default cap is invented or persisted. Activation is read-only, creates no
 history, and never starts a session automatically.
+
+## 2026-09-16 — Recommendation choice coherence and grounded actions
+
+NO_WORK requires an affirmative, user-facing explanation of why none of the
+supplied eligible candidates should reasonably be recommended now. Absence of
+feasible MUST work, a flexible schedule, unspecified or low importance, or a
+missing deadline alone is not that justification. A NO_WORK explanation must
+support not working rather than positively describing a useful work session.
+
+A concrete recommendation action may turn a broad task into a generic,
+executable work-session instruction, but may not invent a substantive subtask,
+topic, resource, person, place, quantity, or project detail absent from supplied
+facts. Already executable task wording should be preserved. These are provider
+contract rules; the deterministic service still validates task identity,
+allowed duration, and MUST gating without brittle natural-language matching.

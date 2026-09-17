@@ -1,6 +1,6 @@
 # Build State
 
-Last updated: 2026-09-12 for POS-012 Work Activation v1.
+Last updated: 2026-09-16 for POS-013 Recommendation Choice Coherence.
 
 ## Implemented
 
@@ -51,6 +51,11 @@ Last updated: 2026-09-12 for POS-012 Work Activation v1.
   derived facts and returns an ephemeral recommendation with a concise concrete
   execution action, or a valid no-work result. The action is validated
   separately from its ranking explanation and is not persisted.
+- POS-013 tightens the recommendation provider contract: NO_WORK needs an
+  affirmative reason no supplied candidate should be recommended now, not just
+  absence of a MUST gate; actions may use generic execution framing but must
+  not invent unsupported topical substeps. The response schema and
+  deterministic policy are unchanged.
 - Durable work-session history with a database-enforced single active session,
   exact start/end timestamps, derived elapsed duration, planned-duration and
   current-state revalidation, optional verbatim selected action, and distinct
@@ -119,9 +124,9 @@ survived the active session and PROGRESS closure. The Task remained OPEN and no
 stale active session remained. POS-011 did not access that runtime database or
 make a live provider request.
 
-Run on 2026-09-12 with Python 3.12.4 and pytest 8.4.2:
+Run on 2026-09-16 with Python 3.12.4 and pytest 8.4.2:
 
-- `python -m pytest` — passed: 414 passed, 0 failed.
+- `python -m pytest` — passed: 416 passed, 0 failed.
 - `python -m compileall -q src tests` — passed with exit code 0.
 - `python -m personal_os --help` — passed with exit code 0.
 - `personal-os --help` — passed with exit code 0.
@@ -138,6 +143,11 @@ Run on 2026-09-12 with Python 3.12.4 and pytest 8.4.2:
   snapshots, unchanged schema and table contents, HARD-only availability,
   feasible-MUST gating before bounding, short-task feasibility, derived-only AI
   input, and no live OpenAI request.
+- POS-013 mocked adapter tests assert the NO_WORK justification and action
+  grounding instructions, exercise a generic "Study for ACT" action and a valid
+  NO_WORK shape, and retain fail-closed malformed-output coverage. They do not
+  claim deterministic semantic verification of provider prose or make a live
+  provider request.
 - Session tests confirm strict v4 history, lossless v4-to-v5 migration, current
   v5 storage constraints, one-active concurrency, deterministic start rejection
   precedence, atomic feedback

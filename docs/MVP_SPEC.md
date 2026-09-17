@@ -55,6 +55,11 @@ or unresolved until they are supplied or deterministically established.
   not silently become SHOULD.
 - A valid recommendation may be "no additional work." The system must not
   fabricate activity.
+- NO_WORK requires a reason why none of the supplied eligible candidates should
+  reasonably be recommended now. An ordinary feasible FLEXIBLE task is not
+  disqualified merely for lacking a deadline or higher-priority constraint.
+- A concrete recommendation action may frame supplied work generically but
+  must not invent unsupported topical or substantive subtask details.
 - Availability and recommended work duration are distinct concepts.
 - Recommendation durations use the POS-004 fixed ladder and explicit short-task
   exception described below.
