@@ -174,6 +174,26 @@ def test_invalid_requests_are_structured_and_skip_runtime(api, body) -> None:
     runtime_factory.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("body", "field"),
+    [
+        ({"version": 1}, "version"),
+        ({"operation": "activate"}, "operation"),
+        ({"version": 1, "operation": "activate"}, "operation"),
+    ],
+)
+def test_http_body_rejects_transport_owned_fields(api, body, field) -> None:
+    status, response, _ = request(api, body)
+
+    assert status == 400
+    assert response["version"] == 1
+    assert response["operation"] == "activate"
+    assert response["ok"] is False
+    assert response["error"]["code"] == "INVALID_REQUEST"
+    assert response["error"]["message"] == f"unknown field: {field}"
+    api[3].assert_not_called()
+
+
 def test_missing_timezone_is_structured_operational_error(api) -> None:
     status, body, _ = request(api, {})
 

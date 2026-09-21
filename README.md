@@ -208,9 +208,10 @@ personal-os-http --port 8765
 ```
 
 It binds only to `127.0.0.1`; the port defaults to `8765`. The sole endpoint
-is `POST /v1/activate` with a JSON object containing optional `timezone` and
-`time_cap_minutes` fields. When no session is active, configure a timezone in
-the request or with `PERSONAL_OS_TIMEZONE`.
+is `POST /v1/activate` with a JSON object containing only optional `timezone`
+and `time_cap_minutes` fields. `version` and `operation` belong to the transport
+and are rejected in the request body. When no session is active, configure a
+timezone in the request or with `PERSONAL_OS_TIMEZONE`.
 
 ```bash
 curl -X POST http://127.0.0.1:8765/v1/activate \

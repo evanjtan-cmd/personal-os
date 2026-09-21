@@ -75,7 +75,14 @@ def create_server(
                 ))
                 return
             if isinstance(payload, dict):
-                payload = {"version": PROTOCOL_VERSION, "operation": "activate", **payload}
+                unknown = payload.keys() - {"timezone", "time_cap_minutes"}
+                if unknown:
+                    self._write(*_error(
+                        HTTPStatus.BAD_REQUEST,
+                        f"unknown field: {sorted(unknown)[0]}",
+                    ))
+                    return
+                payload = {**payload, "version": PROTOCOL_VERSION, "operation": "activate"}
             status, response = process_request(
                 payload,
                 runtime_factory=runtime_factory,

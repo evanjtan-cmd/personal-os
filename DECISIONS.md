@@ -228,8 +228,9 @@ allowed duration, and MUST gating without brittle natural-language matching.
 
 The first HTTP transport is a standard-library server bound exclusively to
 `127.0.0.1`, with no host override. It exposes only `POST /v1/activate` and
-returns Machine Interface v1 envelopes. HTTP parses the request and maps errors
-to status codes; bridge validation and response shapes, shared runtime
-construction, and the canonical activation service remain authoritative.
+returns Machine Interface v1 envelopes. HTTP owns the version and operation;
+its request body accepts only timezone and time cap. HTTP parses the request
+and maps errors to status codes; bridge validation and response shapes, shared
+runtime construction, and the canonical activation service remain authoritative.
 This local transport does not initialize or migrate storage, start sessions,
 or add accounts, authentication, deployment, or a frontend.

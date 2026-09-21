@@ -88,7 +88,8 @@ Last updated: 2026-09-21 for POS-014 Local HTTP API.
 - A separate `personal-os-http` local server exposes only `POST /v1/activate`.
   It binds to `127.0.0.1` with a configurable port, accepts the activation
   timezone and optional time cap in JSON, and returns Machine Interface v1
-  response envelopes. The endpoint reuses bridge validation/serialization and
+  response envelopes. Version and operation are transport-owned and rejected
+  in the request body. The endpoint reuses bridge validation/serialization and
   the canonical activation service. It performs no database initialization or
   session start and adds no runtime dependency.
 - Read-only full-state CLI inspection over one validated SQLite connection and
@@ -195,12 +196,13 @@ Run on 2026-09-16 with Python 3.12.4 and pytest 8.4.2:
 
 Run on 2026-09-21 with Python 3.13.0 and pytest 8.4.2:
 
-- `python -m pytest` — passed: 429 passed, 0 failed, using the project virtualenv.
+- `python -m pytest` — passed: 432 passed, 0 failed, using the project virtualenv.
 - `python -m compileall -q src tests` — passed with exit code 0.
 - `python -m personal_os --help` and `personal-os --help` — passed.
 - Editable package install and `personal-os-http --help` — passed.
 - HTTP endpoint tests use a server bound to `127.0.0.1`, isolated temporary
   SQLite databases, and a fake ranker. They cover all three activation result
   kinds, read-only behavior, structured request/runtime errors, and loopback
-  binding. No real user data or live AI request was used.
+  binding. HTTP body tests also reject transport-owned version and operation
+  fields. No real user data or live AI request was used.
 - `git diff --check` — passed with exit code 0.
