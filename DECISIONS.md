@@ -234,3 +234,14 @@ and maps errors to status codes; bridge validation and response shapes, shared
 runtime construction, and the canonical activation service remain authoritative.
 This local transport does not initialize or migrate storage, start sessions,
 or add accounts, authentication, deployment, or a frontend.
+
+## 2026-09-21 — Browser Work uses the local machine contract
+
+The browser Work page is served by the loopback HTTP process and uses its
+activate, start, and feedback endpoints. The HTTP adapter owns operation and
+version while bridge validation, response shapes, and application services
+remain authoritative. Recommendation acceptance passes the exact action and
+duration to the existing session start service for fresh revalidation. Static
+assets are fixed packaged resources, and the browser displays task and note
+text without interpreting it as HTML. Host and Origin checks constrain this
+unauthenticated interface to local same-origin use.

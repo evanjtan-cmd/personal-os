@@ -21,6 +21,9 @@ personal-os-http = "personal_os.http_api:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+personal_os = ["static/*.html", "static/*.css", "static/*.js"]
+
 [tool.pytest.ini_options]
 addopts = "-ra"
 pythonpath = ["src"]
