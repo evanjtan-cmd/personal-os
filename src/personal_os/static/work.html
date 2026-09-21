@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Work | Personal OS</title>
+  <link rel="stylesheet" href="/work.css">
+  <script src="/work.js" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="shell header-inner">
+      <span class="brand">Personal OS</span>
+      <span class="view-name">Work</span>
+    </div>
+  </header>
+  <main class="shell">
+    <div class="page-heading">
+      <div>
+        <p class="eyebrow">TODAY</p>
+        <h1>Work</h1>
+      </div>
+      <span class="connection">Local</span>
+    </div>
+
+    <form id="activate-form" class="controls">
+      <label for="timezone">Timezone
+        <input id="timezone" name="timezone" type="text" placeholder="America/New_York" autocomplete="off">
+      </label>
+      <label for="time-cap">Time available <span class="unit">minutes</span>
+        <input id="time-cap" name="time_cap_minutes" type="number" min="0" step="1" inputmode="numeric" placeholder="No cap">
+      </label>
+      <button id="activate-button" class="button primary" type="submit">Find work</button>
+    </form>
+
+    <p id="error" class="error" role="alert" hidden></p>
+    <p id="progress" class="progress" role="status" hidden>Updating...</p>
+
+    <section id="idle" class="state idle" aria-live="polite">
+      <p class="eyebrow">CURRENT STATE</p>
+      <h2>Ready when you are.</h2>
+    </section>
+
+    <section id="recommendation" class="state" aria-live="polite" hidden>
+      <p class="eyebrow">RECOMMENDED</p>
+      <h2 id="recommendation-title"></h2>
+      <p id="recommendation-meta" class="meta"></p>
+      <div class="detail">
+        <span class="detail-label">Next action</span>
+        <p id="recommendation-action" class="action"></p>
+      </div>
+      <p id="recommendation-explanation" class="explanation"></p>
+      <button id="start-button" class="button primary" type="button">Start work</button>
+    </section>
+
+    <section id="active" class="state" aria-live="polite" hidden>
+      <p class="eyebrow">ACTIVE SESSION</p>
+      <h2 id="active-title"></h2>
+      <p id="active-meta" class="meta"></p>
+      <div id="active-action-wrap" class="detail" hidden>
+        <span class="detail-label">Selected action</span>
+        <p id="active-action" class="action"></p>
+      </div>
+      <form id="feedback-form" class="feedback-form">
+        <label for="result-note">What happened? <span class="unit">optional</span>
+          <textarea id="result-note" rows="3" placeholder="A short note"></textarea>
+        </label>
+        <div class="feedback-actions">
+          <button class="button primary" type="submit" name="outcome" value="FINISHED">Finished</button>
+          <button class="button" type="submit" name="outcome" value="PROGRESS">Made progress</button>
+          <button class="button" type="submit" name="outcome" value="BLOCKED">Blocked</button>
+        </div>
+      </form>
+    </section>
+
+    <section id="no-work" class="state" aria-live="polite" hidden>
+      <p class="eyebrow">CURRENT STATE</p>
+      <h2>No work right now.</h2>
+      <p id="no-work-explanation" class="explanation"></p>
+    </section>
+
+    <section id="closed" class="state" aria-live="polite" hidden>
+      <p class="eyebrow">SESSION RECORDED</p>
+      <h2 id="closed-title"></h2>
+      <p id="closed-meta" class="meta"></p>
+      <button id="next-button" class="button primary" type="button">Find next work</button>
+    </section>
+  </main>
+</body>
+</html>

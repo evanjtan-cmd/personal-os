@@ -12,9 +12,9 @@ The completed minimal loop is exposed through a thin human-facing dogfood CLI.
 POS-007 adds a read-only `state` inspection command over one coherent snapshot
 of all canonical tables. Machine Interface v1 adds a separate one-shot
 `personal-os-bridge` JSON stdin/stdout adapter for trusted local automation.
-The local `personal-os-http` adapter exposes work activation over HTTP on
+The local `personal-os-http` adapter serves the browser Work interface on
 `127.0.0.1` only. All three adapters use the same application services. There
-is no timer, background scheduler, Shortcut file, NFC action, or UI. See
+is no timer, background scheduler, Shortcut file, or NFC action. See
 `BUILD_STATE.md` for the exact state.
 
 ## Requirements and setup
@@ -199,7 +199,7 @@ remote transport of its own. A trusted transport such as SSH may invoke it.
 The human `personal-os` output remains intentionally human-readable and should
 not be scraped as a machine contract.
 
-## Local HTTP API
+## Browser Work Interface
 
 Run the local server after initializing the database:
 
@@ -207,11 +207,21 @@ Run the local server after initializing the database:
 personal-os-http --port 8765
 ```
 
-It binds only to `127.0.0.1`; the port defaults to `8765`. The sole endpoint
-is `POST /v1/activate` with a JSON object containing only optional `timezone`
-and `time_cap_minutes` fields. `version` and `operation` belong to the transport
-and are rejected in the request body. When no session is active, configure a
-timezone in the request or with `PERSONAL_OS_TIMEZONE`.
+Open `http://127.0.0.1:8765/` in a browser. The Work page can request a
+recommendation, start it with the exact suggested action and duration, and
+record FINISHED, PROGRESS, or BLOCKED feedback. It waits for an explicit click
+before requesting another recommendation.
+
+The server binds only to `127.0.0.1`; the port defaults to `8765`. It requires
+the exact loopback Host header and rejects cross-origin POSTs. There is no CORS
+or authentication. When no session is active, configure an IANA timezone in
+the page or with `PERSONAL_OS_TIMEZONE`.
+
+The JSON API accepts `POST /v1/activate` with optional `timezone` and
+`time_cap_minutes`; `POST /v1/start` with `task_id`, `planned_minutes`, and
+optional `timezone`, `available_minutes`, `selected_action`, and `start_reason`;
+and `POST /v1/feedback` with `outcome` and optional `result_note`. `version` and
+`operation` are transport-owned and rejected in all HTTP request bodies.
 
 ```bash
 curl -X POST http://127.0.0.1:8765/v1/activate \
@@ -220,11 +230,9 @@ curl -X POST http://127.0.0.1:8765/v1/activate \
 ```
 
 Responses use the Machine Interface v1 envelope and preserve the bridge's
-`ACTIVE_SESSION`, `RECOMMEND`, and `NO_WORK` result shapes. Invalid requests
-return HTTP 400 with a structured `INVALID_REQUEST` error; expected runtime
-errors return HTTP 500 with a structured error. The endpoint reads existing
-state and never initializes the database or starts a session. It has no
-authentication and should be used only as a local process interface.
+result shapes. Invalid requests return HTTP 400 with a structured
+`INVALID_REQUEST` error; expected runtime errors return HTTP 500 with a
+structured error. The server never initializes the database or migrates it.
 
 ## Tests
 

@@ -18,6 +18,7 @@ from personal_os.recommendation_types import (
     RecommendationContext,
 )
 from personal_os.session import SessionService
+from personal_os.models import TaskStatus
 from personal_os.state import SQLiteStateStore
 
 NOW = datetime(2026, 9, 21, 14, 0, tzinfo=UTC)
@@ -45,7 +46,11 @@ def api(tmp_path: Path):
     store = SQLiteStateStore(path, clock=lambda: NOW)
     ranker = FakeRanker()
     activation = WorkActivationService(store, RecommendationService(store, ranker))
-    runtime_factory = Mock(return_value=SimpleNamespace(activation_service=activation))
+    runtime_factory = Mock(return_value=SimpleNamespace(
+        store=store,
+        session_service=SessionService(store),
+        activation_service=activation,
+    ))
     server = create_server(
         0, runtime_factory=runtime_factory, clock=lambda: NOW, environ={}
     )
@@ -62,15 +67,17 @@ def api(tmp_path: Path):
 def request(
     api, body: object, *, method: str = "POST",
     path: str = "/v1/activate", content_type: str = "application/json",
-    raw: str | None = None,
+    raw: str | None = None, extra_headers: dict[str, str] | None = None,
 ):
     server = api[0]
     connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
     try:
         payload = (raw if raw is not None else json.dumps(body)) if method == "POST" else None
+        headers = {"Content-Type": content_type} if payload is not None else {}
+        headers.update(extra_headers or {})
         connection.request(
             method, path, body=payload,
-            headers={"Content-Type": content_type} if payload is not None else {},
+            headers=headers,
         )
         response = connection.getresponse()
         return (
@@ -230,3 +237,157 @@ def test_route_method_and_media_errors_are_json(api) -> None:
 
 def test_server_binds_only_to_ipv4_loopback(api) -> None:
     assert api[0].server_address[0] == "127.0.0.1"
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected_status"),
+    [
+        ("FINISHED", TaskStatus.COMPLETED),
+        ("PROGRESS", TaskStatus.OPEN),
+        ("BLOCKED", TaskStatus.BLOCKED),
+    ],
+)
+def test_http_work_loop_preserves_action_and_closes_session(
+    api, outcome, expected_status
+) -> None:
+    _, store, ranker, _ = api
+    task = store.create_task("Write draft", estimated_minutes=25)
+    status, activation, _ = request(api, {"timezone": "UTC", "time_cap_minutes": 20})
+    assert status == 200
+    choice = activation["result"]
+    assert choice["kind"] == "RECOMMEND"
+
+    status, started, _ = request(api, {
+        "task_id": choice["task_id"],
+        "planned_minutes": choice["duration_minutes"],
+        "selected_action": choice["action"],
+        "timezone": "UTC",
+        "available_minutes": 20,
+    }, path="/v1/start")
+    assert status == 200
+    session = store.get_active_session()
+    assert session is not None
+    assert session.planned_minutes == choice["duration_minutes"]
+    assert session.selected_action == choice["action"]
+    assert started["result"]["selected_action"] == choice["action"]
+
+    status, active, _ = request(api, {})
+    assert status == 200
+    assert active["result"]["kind"] == "ACTIVE_SESSION"
+    assert active["result"]["selected_action"] == choice["action"]
+    assert ranker.calls == 1
+
+    status, closed, _ = request(api, {
+        "outcome": outcome,
+        "result_note": "  Worked on the draft.  ",
+    }, path="/v1/feedback")
+    assert status == 200
+    assert closed["result"]["outcome"] == outcome
+    assert closed["result"]["task_status"] == expected_status.value
+    assert closed["result"]["selected_action"] == choice["action"]
+    assert closed["result"]["result_note"] == "  Worked on the draft.  "
+    assert store.get_active_session() is None
+    assert store.get_task(task.id).status is expected_status
+
+
+def test_start_revalidates_stale_recommendation(api) -> None:
+    _, store, _, _ = api
+    task = store.create_task("Write draft", estimated_minutes=25)
+    _, activation, _ = request(api, {"timezone": "UTC"})
+    choice = activation["result"]
+    store.update_task(task.id, status=TaskStatus.COMPLETED)
+
+    status, response, _ = request(api, {
+        "task_id": choice["task_id"],
+        "planned_minutes": choice["duration_minutes"],
+        "selected_action": choice["action"],
+        "timezone": "UTC",
+    }, path="/v1/start")
+
+    assert status == 500
+    assert response["error"]["code"] == "SESSION_START"
+    assert response["error"]["kind"] == "TASK_NOT_OPEN"
+    assert store.list_sessions() == []
+
+
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        ("/v1/start", {"task_id": 1, "planned_minutes": True}),
+        ("/v1/start", {"task_id": 1}),
+        ("/v1/start", {"task_id": 1, "planned_minutes": 5, "version": 1}),
+        ("/v1/feedback", {"outcome": "DONE"}),
+        ("/v1/feedback", {"outcome": "PROGRESS", "operation": "feedback"}),
+    ],
+)
+def test_new_endpoints_reject_invalid_bodies_before_runtime(api, path, body) -> None:
+    status, response, _ = request(api, body, path=path)
+    assert status == 400
+    assert response["error"]["code"] == "INVALID_REQUEST"
+    api[3].assert_not_called()
+
+
+def test_feedback_without_session_is_structured_error(api) -> None:
+    status, response, _ = request(api, {"outcome": "PROGRESS"}, path="/v1/feedback")
+    assert status == 500
+    assert response["error"]["code"] == "NO_ACTIVE_SESSION"
+
+
+@pytest.mark.parametrize("path", ["/v1/activate", "/v1/start", "/v1/feedback"])
+def test_host_and_cross_origin_requests_are_rejected(api, path) -> None:
+    body = {} if path == "/v1/activate" else (
+        {"task_id": 1, "planned_minutes": 5} if path == "/v1/start"
+        else {"outcome": "PROGRESS"}
+    )
+    for header in (
+        {"Host": "example.com"},
+        {"Origin": "http://example.com"},
+        {"Origin": "null"},
+        {"Sec-Fetch-Site": "cross-site"},
+    ):
+        status, response, headers = request(api, body, path=path, extra_headers=header)
+        assert status in (400, 403)
+        assert response["ok"] is False
+        assert headers == "application/json; charset=utf-8"
+    api[3].assert_not_called()
+
+
+def test_same_origin_request_is_allowed(api) -> None:
+    _, store, _, _ = api
+    store.create_task("Write draft")
+    origin = f"http://127.0.0.1:{api[0].server_port}"
+    status, response, _ = request(
+        api, {"timezone": "UTC"},
+        extra_headers={"Origin": origin, "Sec-Fetch-Site": "same-origin"},
+    )
+    assert status == 200
+    assert response["result"]["kind"] == "RECOMMEND"
+
+
+@pytest.mark.parametrize(
+    ("path", "content_type"),
+    [
+        ("/", "text/html; charset=utf-8"),
+        ("/work.css", "text/css; charset=utf-8"),
+        ("/work.js", "text/javascript; charset=utf-8"),
+    ],
+)
+def test_browser_assets_are_served_with_restrictive_headers(api, path, content_type) -> None:
+    connection = http.client.HTTPConnection("127.0.0.1", api[0].server_port, timeout=5)
+    try:
+        connection.request("GET", path)
+        response = connection.getresponse()
+        body = response.read()
+        assert response.status == 200
+        assert response.getheader("Content-Type") == content_type
+        assert response.getheader("X-Content-Type-Options") == "nosniff"
+        assert "script-src 'self'" in response.getheader("Content-Security-Policy")
+        assert response.getheader("Access-Control-Allow-Origin") is None
+        assert body
+    finally:
+        connection.close()
+
+
+def test_static_paths_are_exact_and_invalid_host_is_rejected(api) -> None:
+    assert request(api, {}, method="GET", path="/../pyproject.toml")[0] == 404
+    assert request(api, {}, method="GET", path="/", extra_headers={"Host": "evil.test"})[0] == 400

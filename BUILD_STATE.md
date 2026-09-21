@@ -1,6 +1,6 @@
 # Build State
 
-Last updated: 2026-09-21 for POS-014 Local HTTP API.
+Last updated: 2026-09-21 for POS-015 Browser Work Interface.
 
 ## Implemented
 
@@ -85,13 +85,20 @@ Last updated: 2026-09-21 for POS-014 Local HTTP API.
 - Machine Interface v1 additionally exposes `activate` with strict request
   validation and ACTIVE_SESSION/RECOMMEND/NO_WORK result kinds while retaining
   all existing version-1 operations unchanged.
-- A separate `personal-os-http` local server exposes only `POST /v1/activate`.
-  It binds to `127.0.0.1` with a configurable port, accepts the activation
-  timezone and optional time cap in JSON, and returns Machine Interface v1
-  response envelopes. Version and operation are transport-owned and rejected
-  in the request body. The endpoint reuses bridge validation/serialization and
-  the canonical activation service. It performs no database initialization or
-  session start and adds no runtime dependency.
+- A separate `personal-os-http` local server binds to `127.0.0.1` with a
+  configurable port and returns Machine Interface v1 response envelopes.
+  Version and operation are transport-owned and rejected in request bodies.
+  It reuses bridge validation/serialization and canonical application services,
+  performs no database initialization or migration, and adds no runtime
+  dependency.
+- POS-015 adds `POST /v1/start` and `POST /v1/feedback` to the same loopback
+  adapter using bridge validation, serialization, and canonical session
+  services. A same-origin, framework-free Work page at `/` displays activation
+  states and errors, starts the exact recommended action and duration, and
+  records all three feedback outcomes. It does not auto-request another
+  recommendation after start or feedback. The server validates loopback Host
+  and POST Origin headers, rejects cross-site browser requests, and serves only
+  fixed packaged assets with restrictive content security headers.
 - Read-only full-state CLI inspection over one validated SQLite connection and
   explicit read transaction. All seven canonical entity groups are shown in
   deterministic ID order without initialization, migration, mutation,
@@ -111,7 +118,8 @@ Last updated: 2026-09-21 for POS-014 Local HTTP API.
 
 - Ollama/local inference, additional AI providers, or feedback/session AI behavior
 - Calendar or Google Sheets integration
-- Product CRUD commands, additional HTTP endpoints, Shortcuts, NFC, voice, or UI
+- Product CRUD commands, additional HTTP endpoints, Shortcuts, NFC, voice, or
+  other UI
 - Notifications, background work, deletion, import/export, or duration learning
 - Routines, goals, waiting-for items, decisions, open questions, dependencies,
   preferences, or temporary context
@@ -206,3 +214,17 @@ Run on 2026-09-21 with Python 3.13.0 and pytest 8.4.2:
   binding. HTTP body tests also reject transport-owned version and operation
   fields. No real user data or live AI request was used.
 - `git diff --check` — passed with exit code 0.
+
+Run for POS-015 on 2026-09-21 with Python 3.13.0 and pytest 8.4.2:
+
+- `python -m pytest` — passed: 450 passed, 0 failed, using isolated temporary
+  databases and fake AI providers.
+- `python -m compileall -q src tests`, `node --check` for the browser script,
+  CLI help, and `git diff --check` — passed.
+- HTTP tests cover recommendation, active session, no-work, durable start with
+  exact action and duration, all feedback outcomes, stale-start rejection,
+  request validation, same-origin/Host protections, packaged assets, and
+  loopback binding. A built wheel included all three browser assets. Browser
+  smoke checks used only disposable databases and fake rankers; HTML-like task
+  text remained literal with no inserted image or script elements. No real user
+  data or live AI requests were used.
