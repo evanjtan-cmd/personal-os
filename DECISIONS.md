@@ -223,3 +223,13 @@ topic, resource, person, place, quantity, or project detail absent from supplied
 facts. Already executable task wording should be preserved. These are provider
 contract rules; the deterministic service still validates task identity,
 allowed duration, and MUST gating without brittle natural-language matching.
+
+## 2026-09-21 — Local HTTP activation uses the machine contract
+
+The first HTTP transport is a standard-library server bound exclusively to
+`127.0.0.1`, with no host override. It exposes only `POST /v1/activate` and
+returns Machine Interface v1 envelopes. HTTP parses the request and maps errors
+to status codes; bridge validation and response shapes, shared runtime
+construction, and the canonical activation service remain authoritative.
+This local transport does not initialize or migrate storage, start sessions,
+or add accounts, authentication, deployment, or a frontend.

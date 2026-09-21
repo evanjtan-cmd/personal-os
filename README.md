@@ -12,9 +12,10 @@ The completed minimal loop is exposed through a thin human-facing dogfood CLI.
 POS-007 adds a read-only `state` inspection command over one coherent snapshot
 of all canonical tables. Machine Interface v1 adds a separate one-shot
 `personal-os-bridge` JSON stdin/stdout adapter for trusted local automation.
-Both adapters use the same application services. Neither provides a timer,
-background process, HTTP endpoint, network listener, Shortcut file, NFC action,
-or UI. See `BUILD_STATE.md` for the exact state.
+The local `personal-os-http` adapter exposes work activation over HTTP on
+`127.0.0.1` only. All three adapters use the same application services. There
+is no timer, background scheduler, Shortcut file, NFC action, or UI. See
+`BUILD_STATE.md` for the exact state.
 
 ## Requirements and setup
 
@@ -197,6 +198,32 @@ and include a structured error object. The bridge has no authentication or
 remote transport of its own. A trusted transport such as SSH may invoke it.
 The human `personal-os` output remains intentionally human-readable and should
 not be scraped as a machine contract.
+
+## Local HTTP API
+
+Run the local server after initializing the database:
+
+```bash
+personal-os-http --port 8765
+```
+
+It binds only to `127.0.0.1`; the port defaults to `8765`. The sole endpoint
+is `POST /v1/activate` with a JSON object containing optional `timezone` and
+`time_cap_minutes` fields. When no session is active, configure a timezone in
+the request or with `PERSONAL_OS_TIMEZONE`.
+
+```bash
+curl -X POST http://127.0.0.1:8765/v1/activate \
+  -H 'Content-Type: application/json' \
+  -d '{"timezone":"America/New_York","time_cap_minutes":20}'
+```
+
+Responses use the Machine Interface v1 envelope and preserve the bridge's
+`ACTIVE_SESSION`, `RECOMMEND`, and `NO_WORK` result shapes. Invalid requests
+return HTTP 400 with a structured `INVALID_REQUEST` error; expected runtime
+errors return HTTP 500 with a structured error. The endpoint reads existing
+state and never initializes the database or starts a session. It has no
+authentication and should be used only as a local process interface.
 
 ## Tests
 

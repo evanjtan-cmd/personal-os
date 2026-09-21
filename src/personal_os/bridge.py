@@ -394,6 +394,44 @@ def _response(
     }
 
 
+def process_request(
+    request: object, *,
+    runtime_factory: Callable[[], PersonalOSRuntime] = build_runtime,
+    clock: Callable[[], datetime] = _utc_now,
+    environ: Mapping[str, str] | None = None,
+    expected_operation: str | None = None,
+) -> tuple[int, dict[str, object]]:
+    """Validate and dispatch a parsed machine request for local adapters."""
+
+    operation: str | None = None
+    if isinstance(request, dict) and isinstance(request.get("operation"), str):
+        operation = request["operation"]
+    try:
+        validated = _validate_request(request)
+        operation = validated.operation
+        if expected_operation is not None and operation != expected_operation:
+            raise InvalidRequestError(f"operation must be {expected_operation}")
+        operation, result = handle_request(
+            validated, runtime_factory(), clock=clock, environ=environ
+        )
+        return 0, _response(operation=operation, result=result)
+    except InvalidRequestError as exc:
+        return 2, _response(
+            operation=operation, code="INVALID_REQUEST", message=str(exc)
+        )
+    except NoActiveSessionError as exc:
+        return 1, _response(
+            operation=operation, code="NO_ACTIVE_SESSION", message=str(exc)
+        )
+    except (PersonalOSError, OSError) as exc:
+        return 1, _response(
+            operation=operation,
+            code=_error_code(exc),
+            message=str(exc),
+            kind=_error_kind(exc),
+        )
+
+
 def run(
     stdin: IO[str], stdout: IO[str], *,
     runtime_factory: Callable[[], PersonalOSRuntime] = build_runtime,
@@ -402,7 +440,6 @@ def run(
 ) -> int:
     """Process exactly one stdin request and write exactly one JSON response."""
 
-    operation: str | None = None
     try:
         raw = stdin.read()
         if not raw.strip():
@@ -411,33 +448,14 @@ def run(
             request: Any = json.loads(raw)
         except json.JSONDecodeError as exc:
             raise InvalidRequestError("stdin must contain one valid JSON value") from exc
-        if isinstance(request, dict) and isinstance(request.get("operation"), str):
-            operation = request["operation"]
-        validated = _validate_request(request)
-        operation = validated.operation
-        operation, result = handle_request(
-            validated, runtime_factory(), clock=clock, environ=environ
+        status, response = process_request(
+            request, runtime_factory=runtime_factory, clock=clock, environ=environ
         )
-        response = _response(operation=operation, result=result)
-        status = 0
     except InvalidRequestError as exc:
         response = _response(
-            operation=operation, code="INVALID_REQUEST", message=str(exc)
+            operation=None, code="INVALID_REQUEST", message=str(exc)
         )
         status = 2
-    except NoActiveSessionError as exc:
-        response = _response(
-            operation=operation, code="NO_ACTIVE_SESSION", message=str(exc)
-        )
-        status = 1
-    except (PersonalOSError, OSError) as exc:
-        response = _response(
-            operation=operation,
-            code=_error_code(exc),
-            message=str(exc),
-            kind=_error_kind(exc),
-        )
-        status = 1
     json.dump(response, stdout, ensure_ascii=False, separators=(",", ":"))
     stdout.write("\n")
     return status
