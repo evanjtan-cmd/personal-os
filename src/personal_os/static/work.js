@@ -43,9 +43,7 @@ async function request(path, body) {
 
 function activationInputs() {
   const body = {};
-  const timezone = byId("timezone").value.trim();
   const cap = byId("time-cap").value;
-  if (timezone) body.timezone = timezone;
   if (cap !== "") body.time_cap_minutes = Number(cap);
   return body;
 }
@@ -90,7 +88,7 @@ async function activate() {
     renderActivation(result);
     byId("activate-button").textContent = "Refresh work";
   } catch (error) {
-    showError(`${error.message} Check the timezone or server configuration, then try again.`);
+    showError(`${error.message} Check the server configuration, then try again.`);
   } finally {
     setPending(false);
   }
@@ -103,7 +101,6 @@ async function startWork() {
     planned_minutes: recommendation.duration_minutes,
     selected_action: recommendation.action,
   };
-  if (recommendationContext?.timezone) body.timezone = recommendationContext.timezone;
   if (recommendationContext?.time_cap_minutes !== undefined) {
     body.available_minutes = recommendationContext.time_cap_minutes;
   }
