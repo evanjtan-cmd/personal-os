@@ -1,6 +1,7 @@
 import http.client
 import json
 from datetime import UTC, datetime
+from importlib.resources import files
 from pathlib import Path
 from threading import Thread
 from types import SimpleNamespace
@@ -290,6 +291,57 @@ def test_http_work_loop_preserves_action_and_closes_session(
     assert store.get_task(task.id).status is expected_status
 
 
+def test_work_loop_uses_configured_timezone_when_browser_omits_it(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "configured-timezone.db"
+    initialize_database(path)
+    store = SQLiteStateStore(path, clock=lambda: NOW)
+    ranker = FakeRanker()
+    runtime_factory = Mock(return_value=SimpleNamespace(
+        store=store,
+        session_service=SessionService(store),
+        activation_service=WorkActivationService(
+            store, RecommendationService(store, ranker)
+        ),
+    ))
+    server = create_server(
+        0,
+        runtime_factory=runtime_factory,
+        clock=lambda: NOW,
+        environ={"PERSONAL_OS_TIMEZONE": "UTC"},
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        configured_api = (server, store, ranker, runtime_factory)
+        store.create_task("Write draft", estimated_minutes=25)
+
+        status, activation, _ = request(configured_api, {"time_cap_minutes": 20})
+
+        assert status == 200
+        choice = activation["result"]
+        assert choice["kind"] == "RECOMMEND"
+
+        status, started, _ = request(configured_api, {
+            "task_id": choice["task_id"],
+            "planned_minutes": choice["duration_minutes"],
+            "selected_action": choice["action"],
+            "available_minutes": 20,
+        }, path="/v1/start")
+
+        assert status == 200
+        assert started["result"]["task_id"] == choice["task_id"]
+        session = store.get_active_session()
+        assert session is not None
+        assert session.planned_minutes == choice["duration_minutes"]
+        assert session.selected_action == choice["action"]
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
 def test_start_revalidates_stale_recommendation(api) -> None:
     _, store, _, _ = api
     task = store.create_task("Write draft", estimated_minutes=25)
@@ -386,6 +438,20 @@ def test_browser_assets_are_served_with_restrictive_headers(api, path, content_t
         assert body
     finally:
         connection.close()
+
+
+def test_work_page_assets_do_not_collect_or_send_timezone() -> None:
+    static = files("personal_os").joinpath("static")
+    html = static.joinpath("work.html").read_text(encoding="utf-8")
+    script = static.joinpath("work.js").read_text(encoding="utf-8")
+
+    assert 'id="timezone"' not in html
+    assert 'name="timezone"' not in html
+    assert "Timezone" not in html
+    assert 'byId("timezone")' not in script
+    assert "body.timezone" not in script
+    assert "time_cap_minutes" in script
+    assert "available_minutes" in script
 
 
 def test_static_paths_are_exact_and_invalid_host_is_rejected(api) -> None:

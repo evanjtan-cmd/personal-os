@@ -1,6 +1,6 @@
 # Build State
 
-Last updated: 2026-09-21 for POS-015 Browser Work Interface.
+Last updated: 2026-09-23 for POS-018 Browser timezone cleanup.
 
 ## Implemented
 
@@ -99,6 +99,12 @@ Last updated: 2026-09-21 for POS-015 Browser Work Interface.
   recommendation after start or feedback. The server validates loopback Host
   and POST Origin headers, rejects cross-site browser requests, and serves only
   fixed packaged assets with restrictive content security headers.
+- POS-018 removes timezone collection from the browser Work page. Browser
+  activation and recommendation start requests omit `timezone`, relying on the
+  HTTP process' configured `PERSONAL_OS_TIMEZONE`; the optional browser time
+  cap still flows from activation to session start as `available_minutes`.
+  Explicit timezone fields remain accepted by the existing HTTP and bridge
+  contracts for non-browser clients.
 - Read-only full-state CLI inspection over one validated SQLite connection and
   explicit read transaction. All seven canonical entity groups are shown in
   deterministic ID order without initialization, migration, mutation,
@@ -228,3 +234,19 @@ Run for POS-015 on 2026-09-21 with Python 3.13.0 and pytest 8.4.2:
   smoke checks used only disposable databases and fake rankers; HTML-like task
   text remained literal with no inserted image or script elements. No real user
   data or live AI requests were used.
+
+Run for POS-018 on 2026-09-23 with Python 3.13.0 and pytest 8.4.2:
+
+- `.venv/bin/python -m pytest` — passed: 452 passed, 0 failed, using isolated
+  temporary databases and fake AI providers.
+- `.venv/bin/python -m pytest tests/test_http_api.py` — passed: 36 passed,
+  0 failed. The first sandboxed attempt could not bind the loopback test
+  server (`PermissionError: [Errno 1] Operation not permitted`); rerunning with
+  local loopback bind permission passed.
+- `.venv/bin/python -m compileall -q src tests` — passed with exit code 0.
+- `node --check src/personal_os/static/work.js` — passed with exit code 0.
+- HTTP/browser tests confirm packaged Work assets have no timezone input or
+  timezone-sending JavaScript, activation and start requests can omit timezone
+  when `PERSONAL_OS_TIMEZONE` is configured, and the time cap still propagates
+  to session start as `available_minutes`. No real user data or live AI
+  requests were used.
