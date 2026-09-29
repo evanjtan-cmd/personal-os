@@ -245,3 +245,20 @@ duration to the existing session start service for fresh revalidation. Static
 assets are fixed packaged resources, and the browser displays task and note
 text without interpreting it as HTML. Host and Origin checks constrain this
 unauthenticated interface to local same-origin use.
+
+## 2026-09-28 — Capture is a shared Machine Interface v1 operation
+
+Machine Interface v1 additively exposes `capture`, superseding its original
+capture exclusion. A capture request contains non-empty natural-language text
+and may include an explicit IANA timezone for non-browser machine clients; it
+cannot supply current or reference time. The bridge obtains the trusted UTC
+instant locally, resolves timezone through the existing explicit configuration
+mechanism, and delegates interpretation and persistence entirely to the
+canonical `CaptureService`.
+
+Capture responses preserve APPLIED, UNRESOLVED, and FAILED as durable service
+outcomes and include user-facing names for created state where available. The
+loopback HTTP adapter exposes the same operation at `POST /v1/capture` through
+shared bridge validation and serialization. The browser sends only `raw_text`,
+does not infer timezone, and keeps capture independent from Work activation and
+session state.

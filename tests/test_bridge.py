@@ -12,9 +12,16 @@ import pytest
 import personal_os.bridge as bridge
 from personal_os.activation import WorkActivationService
 from personal_os.activation_types import WorkActivationResultKind
+from personal_os.capture import CaptureService
+from personal_os.capture_types import InterpretationResponse, parse_interpretation
 from personal_os.config import DEFAULT_DATABASE_FILENAME, TIMEZONE_ENV_VAR
 from personal_os.database import initialize_database
-from personal_os.models import TaskImportance, TaskStatus
+from personal_os.models import (
+    CaptureFailureKind,
+    CaptureStatus,
+    TaskImportance,
+    TaskStatus,
+)
 from personal_os.recommendation import RecommendationService
 from personal_os.recommendation_types import (
     DeterministicNoWorkReason,
@@ -98,7 +105,7 @@ def test_invalid_json_inputs_are_structured_exit_two(raw: str, message: str) -> 
         ({"version": 2, "operation": "active"}, "unsupported version"),
         ({"version": 1}, "operation"),
         ({"version": 1, "operation": None}, "operation"),
-        ({"version": 1, "operation": "capture"}, "unknown operation"),
+        ({"version": 1, "operation": "unknown"}, "unknown operation"),
     ],
 )
 def test_invalid_protocol_envelope_is_rejected(
@@ -150,6 +157,15 @@ def test_unknown_fields_are_rejected_for_every_operation(
             "operation": "recommend",
             "timezone": "Not/A_Zone",
         },
+        {"version": 1, "operation": "capture", "raw_text": "   "},
+        {"version": 1, "operation": "capture"},
+        {"version": 1, "operation": "capture", "raw_text": 42},
+        {
+            "version": 1,
+            "operation": "capture",
+            "raw_text": "Study for ACT",
+            "reference_time": "2020-01-01T00:00:00Z",
+        },
     ],
 )
 def test_invalid_request_never_constructs_runtime(payload: dict[str, object]) -> None:
@@ -166,6 +182,169 @@ def test_invalid_request_never_constructs_runtime(payload: dict[str, object]) ->
     assert status == 2
     assert json.loads(output.getvalue())["error"]["code"] == "INVALID_REQUEST"
     runtime_factory.assert_not_called()
+
+
+def test_capture_applied_delegates_with_trusted_time_and_serializes_names() -> None:
+    runtime = fake_runtime()
+    runtime.capture_service.capture_text.return_value = SimpleNamespace(
+        capture=SimpleNamespace(id=12, status=CaptureStatus.APPLIED),
+        project_id=7,
+        task_ids=(34, 35),
+        commitment_ids=(9,),
+        inbox_item_id=None,
+    )
+    runtime.store.get_project.return_value = SimpleNamespace(name="College")
+    runtime.store.get_task.side_effect = [
+        SimpleNamespace(title="Finish essay"),
+        SimpleNamespace(title="Email adviser"),
+    ]
+    runtime.store.get_fixed_commitment.return_value = SimpleNamespace(
+        title="Call Mike"
+    )
+
+    status, response, _ = invoke(
+        {
+            "version": 1,
+            "operation": "capture",
+            "raw_text": "  Finish biology worksheet tomorrow  ",
+        },
+        runtime,
+        environ={TIMEZONE_ENV_VAR: "America/New_York"},
+    )
+
+    assert status == 0
+    runtime.capture_service.capture_text.assert_called_once_with(
+        "  Finish biology worksheet tomorrow  ",
+        reference_time=NOW,
+        timezone_name="America/New_York",
+    )
+    assert response == {
+        "version": 1,
+        "ok": True,
+        "operation": "capture",
+        "result": {
+            "capture_id": 12,
+            "status": "APPLIED",
+            "project": {"id": 7, "name": "College"},
+            "tasks": [
+                {"id": 34, "title": "Finish essay"},
+                {"id": 35, "title": "Email adviser"},
+            ],
+            "commitments": [{"id": 9, "title": "Call Mike"}],
+        },
+    }
+
+
+def test_capture_unresolved_serializes_inbox_result() -> None:
+    runtime = fake_runtime()
+    runtime.capture_service.capture_text.return_value = SimpleNamespace(
+        capture=SimpleNamespace(
+            id=13,
+            status=CaptureStatus.UNRESOLVED,
+            unresolved_reason="time is missing AM/PM",
+        ),
+        project_id=None,
+        task_ids=(),
+        commitment_ids=(),
+        inbox_item_id=5,
+    )
+
+    status, response, _ = invoke(
+        {
+            "version": 1,
+            "operation": "capture",
+            "raw_text": "Call Mike tomorrow at 4",
+            "timezone": "UTC",
+        },
+        runtime,
+    )
+
+    assert status == 0
+    assert response["result"] == {
+        "capture_id": 13,
+        "status": "UNRESOLVED",
+        "unresolved_reason": "time is missing AM/PM",
+        "inbox_item_id": 5,
+    }
+
+
+def test_capture_unresolved_response_matches_persisted_inbox_item(
+    tmp_path: Path,
+) -> None:
+    class FakeInterpreter:
+        def interpret(self, raw_text, *, projects):
+            return InterpretationResponse(
+                parse_interpretation({
+                    "kind": "UNRESOLVED",
+                    "new_project": None,
+                    "tasks": [],
+                    "commitments": [],
+                    "unresolved_reason": "time is missing AM/PM",
+                }),
+                "fake",
+                "fake-model",
+                "fake-response",
+            )
+
+    database_path = tmp_path / DEFAULT_DATABASE_FILENAME
+    initialize_database(database_path)
+    store = SQLiteStateStore(database_path, clock=lambda: NOW)
+    runtime = fake_runtime()
+    runtime.store = store
+    runtime.capture_service = CaptureService(store, FakeInterpreter())
+
+    status, response, _ = invoke(
+        {
+            "version": 1,
+            "operation": "capture",
+            "raw_text": "Call Mike tomorrow at 4",
+            "timezone": "UTC",
+        },
+        runtime,
+    )
+
+    assert status == 0
+    result = response["result"]
+    inbox = store.get_inbox_item(result["inbox_item_id"])
+    assert result["status"] == "UNRESOLVED"
+    assert result["unresolved_reason"] == inbox.unresolved_reason
+    assert inbox.raw_text == "Call Mike tomorrow at 4"
+    assert inbox.source_capture_id == result["capture_id"]
+
+
+def test_capture_failed_is_a_successful_durable_result() -> None:
+    runtime = fake_runtime()
+    runtime.capture_service.capture_text.return_value = SimpleNamespace(
+        capture=SimpleNamespace(
+            id=14,
+            status=CaptureStatus.FAILED,
+            failure_kind=CaptureFailureKind.PROVIDER_ERROR,
+            failure_reason="request unavailable",
+        ),
+        project_id=None,
+        task_ids=(),
+        commitment_ids=(),
+        inbox_item_id=None,
+    )
+
+    status, response, _ = invoke(
+        {
+            "version": 1,
+            "operation": "capture",
+            "raw_text": "Study for ACT",
+            "timezone": "UTC",
+        },
+        runtime,
+    )
+
+    assert status == 0
+    assert response["ok"] is True
+    assert response["result"] == {
+        "capture_id": 14,
+        "status": "FAILED",
+        "failure_kind": "PROVIDER_ERROR",
+        "failure_reason": "request unavailable",
+    }
 
 
 def test_valid_request_constructs_runtime_exactly_once() -> None:

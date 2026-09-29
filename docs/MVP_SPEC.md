@@ -99,14 +99,14 @@ NFC, Shortcuts, voice, CLI, and future HTTP interfaces must remain thin adapters
 over centralized application logic.
 
 Machine Interface v1 is a separate, one-request-per-process JSON stdin/stdout
-adapter. Version-1 requests expose activation, recommendation, session start,
-session feedback, and active-session inspection. The adapter strictly validates one
-JSON object, obtains authoritative current time locally, delegates to the same
-typed services as the human CLI, and returns one versioned JSON object. It does
-not initialize or migrate storage, persist recommendation acceptance before
-session start, listen on a network, or provide authentication. Trusted local
-transports such as SSH may invoke it; a later transport may wrap it without
-moving deterministic or AI policy into that transport.
+adapter. Version-1 requests expose capture, activation, recommendation, session
+start, session feedback, and active-session inspection. The adapter strictly
+validates one JSON object, obtains authoritative current time locally, delegates
+to the same typed services as the human CLI, and returns one versioned JSON
+object. It does not initialize or migrate storage, persist recommendation
+acceptance before session start, listen on a network, or provide authentication.
+Trusted local transports such as SSH may invoke it; a later transport may wrap
+it without moving deterministic or AI policy into that transport.
 
 The existing Google Sheet is prototype and reference data. It is not the
 architectural source of truth and does not define the persistence model.
@@ -149,14 +149,17 @@ It is not an export or synchronization interface.
 
 The human CLI remains a dogfood interface rather than a machine-readable API.
 `personal-os-bridge` provides the stable local machine boundary with integer
-protocol version 1 and the operations `recommend`, `start`, `feedback`, and
-`active`, plus the canonical `activate` operation for availability-now triggers.
-Requests cannot supply authoritative current/reference timestamps.
+protocol version 1 and the operations `capture`, `recommend`, `start`,
+`feedback`, and `active`, plus the canonical `activate` operation for
+availability-now triggers. Requests cannot supply authoritative
+current/reference timestamps.
 Recommendation remains read-only and its concrete action remains ephemeral;
 only a start request that supplies the action persists it in session history.
 Start and feedback reuse the authoritative session service and therefore do not
 duplicate eligibility, availability, duration, MUST-gating, or Task-transition
-policy. Bridge v1 deliberately excludes capture, full-state output, database
+policy. Capture delegates interpretation and persistence to the canonical
+capture service, using the bridge's trusted clock and explicit timezone
+configuration. Bridge v1 deliberately excludes full-state output, database
 initialization, HTTP, and transport-specific configuration.
 
 Activation first returns the current active session and associated Task without
@@ -277,7 +280,8 @@ Schema structured output, and `store=False`. OpenAI-hosted and Groq-hosted
 inference are supported with distinct provider keys and accurate provider
 metadata. Client creation and all network activity are lazy, and no live
 request is part of automated validation. POS-003 adds no recurrence, rule
-capture, calendar integration, or HTTP behavior.
+capture, or calendar integration. POS-019 later exposes this unchanged service
+through Machine Interface v1 and the loopback HTTP adapter.
 
 ## Deterministic recommendation
 

@@ -1,6 +1,6 @@
 # Build State
 
-Last updated: 2026-09-23 for POS-018 Browser timezone cleanup.
+Last updated: 2026-09-28 for POS-019 Browser Easy Capture.
 
 ## Implemented
 
@@ -105,6 +105,13 @@ Last updated: 2026-09-23 for POS-018 Browser timezone cleanup.
   cap still flows from activation to session start as `available_minutes`.
   Explicit timezone fields remain accepted by the existing HTTP and bridge
   contracts for non-browser clients.
+- POS-019 adds natural-language capture to Machine Interface v1 and
+  `POST /v1/capture`. Both use a trusted local clock, existing explicit
+  timezone configuration, shared bridge validation/serialization, and the
+  canonical `CaptureService`; APPLIED, UNRESOLVED, and durable FAILED outcomes
+  retain their existing semantics. The Work page sends only `raw_text`, shows
+  created names or unresolved/failure details, clears successful input, and
+  leaves recommendation and session state untouched.
 - Read-only full-state CLI inspection over one validated SQLite connection and
   explicit read transaction. All seven canonical entity groups are shown in
   deterministic ID order without initialization, migration, mutation,
@@ -249,4 +256,22 @@ Run for POS-018 on 2026-09-23 with Python 3.13.0 and pytest 8.4.2:
   timezone-sending JavaScript, activation and start requests can omit timezone
   when `PERSONAL_OS_TIMEZONE` is configured, and the time cap still propagates
   to session start as `available_minutes`. No real user data or live AI
+  requests were used.
+
+Run for POS-019 on 2026-09-28 with Python 3.13.0 and pytest 8.4.2:
+
+- `.venv/bin/python -m pytest` — passed: 467 passed, 0 failed, using isolated
+  temporary databases and fake AI providers.
+- `.venv/bin/python -m pytest tests/test_http_api.py -q` — passed: 43 passed,
+  0 failed with local loopback bind permission. The initial sandboxed run was
+  blocked from binding `127.0.0.1` with `PermissionError: [Errno 1] Operation
+  not permitted`.
+- `.venv/bin/python -m compileall -q src tests` — passed with exit code 0.
+- `node --check src/personal_os/static/work.js` — passed with exit code 0.
+- `git diff --check` — passed with exit code 0.
+- Capture tests cover strict pre-runtime request validation, trusted clock and
+  configured-timezone use, APPLIED/UNRESOLVED/FAILED response shapes, linked
+  inbox persistence, loopback HTTP protections, and browser omission of
+  timezone/reference timestamps. Existing activation, start, active-session,
+  and all feedback outcomes remain covered. No real user data or live AI
   requests were used.
