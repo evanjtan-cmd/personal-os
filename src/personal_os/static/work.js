@@ -5,6 +5,7 @@ const screens = ["idle", "recommendation", "active", "no-work", "closed"];
 let recommendation = null;
 let recommendationContext = null;
 let pending = false;
+let capturePending = false;
 
 function showScreen(name) {
   for (const screen of screens) byId(screen).hidden = screen !== name;
@@ -24,7 +25,15 @@ function clearError() {
 function setPending(value) {
   pending = value;
   byId("progress").hidden = !value;
-  for (const button of document.querySelectorAll("button")) button.disabled = value;
+  for (const button of document.querySelectorAll("button:not(#capture-button)")) {
+    button.disabled = value;
+  }
+}
+
+function setCapturePending(value) {
+  capturePending = value;
+  byId("capture-progress").hidden = !value;
+  byId("capture-button").disabled = value;
 }
 
 async function request(path, body) {
@@ -46,6 +55,56 @@ function activationInputs() {
   const cap = byId("time-cap").value;
   if (cap !== "") body.time_cap_minutes = Number(cap);
   return body;
+}
+
+function renderCaptureResult(result) {
+  const output = byId("capture-result");
+  output.className = "capture-result";
+  if (result.status === "APPLIED") {
+    const created = [
+      result.project?.name,
+      ...result.tasks.map((task) => task.title),
+      ...result.commitments.map((commitment) => commitment.title),
+    ].filter(Boolean);
+    output.textContent = created.length
+      ? `Captured #${result.capture_id}: ${created.join("; ")}`
+      : `Captured #${result.capture_id}.`;
+  } else if (result.status === "UNRESOLVED") {
+    output.textContent = `Saved to Inbox #${result.inbox_item_id}: ${result.unresolved_reason}`;
+    output.classList.add("unresolved");
+  } else if (result.status === "FAILED") {
+    output.textContent = `Capture #${result.capture_id} failed (${result.failure_kind}): ${result.failure_reason}`;
+    output.classList.add("failed");
+  } else {
+    throw new Error("Unexpected capture response. Refresh and try again.");
+  }
+  output.hidden = false;
+}
+
+async function captureItem() {
+  if (capturePending) return;
+  const input = byId("capture-text");
+  const rawText = input.value;
+  const output = byId("capture-result");
+  if (!rawText.trim()) {
+    output.textContent = "Enter something to capture.";
+    output.className = "capture-result failed";
+    output.hidden = false;
+    return;
+  }
+  output.hidden = true;
+  setCapturePending(true);
+  try {
+    const result = await request("/v1/capture", { raw_text: rawText });
+    renderCaptureResult(result);
+    if (result.status !== "FAILED") input.value = "";
+  } catch (error) {
+    output.textContent = `${error.message} Check the server configuration, then try again.`;
+    output.className = "capture-result failed";
+    output.hidden = false;
+  } finally {
+    setCapturePending(false);
+  }
 }
 
 function renderActive(result) {
@@ -139,6 +198,10 @@ async function submitFeedback(outcome) {
 byId("activate-form").addEventListener("submit", (event) => {
   event.preventDefault();
   activate();
+});
+byId("capture-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  captureItem();
 });
 byId("start-button").addEventListener("click", startWork);
 byId("feedback-form").addEventListener("submit", (event) => {

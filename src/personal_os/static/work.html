@@ -23,6 +23,19 @@
       <span class="connection">Local</span>
     </div>
 
+    <section class="capture" aria-labelledby="capture-heading">
+      <p class="eyebrow">QUICK CAPTURE</p>
+      <h2 id="capture-heading">What needs your attention?</h2>
+      <form id="capture-form" class="capture-form">
+        <label for="capture-text">New item
+          <textarea id="capture-text" name="raw_text" rows="2" placeholder="Finish biology worksheet tomorrow" required></textarea>
+        </label>
+        <button id="capture-button" class="button primary" type="submit">Capture</button>
+      </form>
+      <p id="capture-progress" class="progress" role="status" hidden>Capturing...</p>
+      <p id="capture-result" class="capture-result" role="status" hidden></p>
+    </section>
+
     <form id="activate-form" class="controls">
       <label for="time-cap">Time available <span class="unit">minutes</span>
         <input id="time-cap" name="time_cap_minutes" type="number" min="0" step="1" inputmode="numeric" placeholder="No cap">

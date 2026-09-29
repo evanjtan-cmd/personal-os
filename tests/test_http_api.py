@@ -10,6 +10,8 @@ from unittest.mock import Mock
 import pytest
 
 from personal_os.activation import WorkActivationService
+from personal_os.capture import CaptureService
+from personal_os.capture_types import InterpretationResponse, parse_interpretation
 from personal_os.database import initialize_database
 from personal_os.http_api import create_server
 from personal_os.recommendation import RecommendationService
@@ -49,6 +51,7 @@ def api(tmp_path: Path):
     activation = WorkActivationService(store, RecommendationService(store, ranker))
     runtime_factory = Mock(return_value=SimpleNamespace(
         store=store,
+        capture_service=Mock(),
         session_service=SessionService(store),
         activation_service=activation,
     ))
@@ -240,6 +243,78 @@ def test_server_binds_only_to_ipv4_loopback(api) -> None:
     assert api[0].server_address[0] == "127.0.0.1"
 
 
+def test_capture_uses_configured_timezone_when_http_omits_it(
+    tmp_path: Path,
+) -> None:
+    class FakeInterpreter:
+        def interpret(self, raw_text, *, projects):
+            assert raw_text == "Finish biology worksheet tomorrow"
+            assert projects == []
+            return InterpretationResponse(
+                parse_interpretation({
+                    "kind": "APPLY",
+                    "new_project": None,
+                    "tasks": [{
+                        "title": "Finish biology worksheet",
+                        "project_id": None,
+                        "importance": "UNSPECIFIED",
+                        "estimated_minutes": None,
+                        "schedule": {
+                            "kind": "DAY",
+                            "dates": [{"kind": "TOMORROW", "value": None}],
+                        },
+                        "deadline": None,
+                    }],
+                    "commitments": [],
+                    "unresolved_reason": None,
+                }),
+                "fake",
+                "fake-model",
+                "fake-response",
+            )
+
+    path = tmp_path / "capture-http.db"
+    initialize_database(path)
+    store = SQLiteStateStore(path, clock=lambda: NOW)
+    capture_service = CaptureService(store, FakeInterpreter())
+    runtime_factory = Mock(return_value=SimpleNamespace(
+        store=store,
+        capture_service=capture_service,
+    ))
+    server = create_server(
+        0,
+        runtime_factory=runtime_factory,
+        clock=lambda: NOW,
+        environ={"PERSONAL_OS_TIMEZONE": "America/New_York"},
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        capture_api = (server, store, None, runtime_factory)
+        status, response, _ = request(
+            capture_api,
+            {"raw_text": "Finish biology worksheet tomorrow"},
+            path="/v1/capture",
+        )
+
+        assert status == 200
+        assert response["result"] == {
+            "capture_id": 1,
+            "status": "APPLIED",
+            "project": None,
+            "tasks": [{"id": 1, "title": "Finish biology worksheet"}],
+            "commitments": [],
+        }
+        capture = store.get_capture(1)
+        assert capture.reference_time == NOW
+        assert capture.timezone_name == "America/New_York"
+        assert store.get_task(1).day_date.isoformat() == "2026-09-22"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
 @pytest.mark.parametrize(
     ("outcome", "expected_status"),
     [
@@ -370,6 +445,10 @@ def test_start_revalidates_stale_recommendation(api) -> None:
         ("/v1/start", {"task_id": 1, "planned_minutes": 5, "version": 1}),
         ("/v1/feedback", {"outcome": "DONE"}),
         ("/v1/feedback", {"outcome": "PROGRESS", "operation": "feedback"}),
+        ("/v1/capture", {}),
+        ("/v1/capture", {"raw_text": "   "}),
+        ("/v1/capture", {"raw_text": 42}),
+        ("/v1/capture", {"raw_text": "Study", "current_time": "now"}),
     ],
 )
 def test_new_endpoints_reject_invalid_bodies_before_runtime(api, path, body) -> None:
@@ -385,12 +464,16 @@ def test_feedback_without_session_is_structured_error(api) -> None:
     assert response["error"]["code"] == "NO_ACTIVE_SESSION"
 
 
-@pytest.mark.parametrize("path", ["/v1/activate", "/v1/start", "/v1/feedback"])
+@pytest.mark.parametrize(
+    "path", ["/v1/activate", "/v1/start", "/v1/feedback", "/v1/capture"]
+)
 def test_host_and_cross_origin_requests_are_rejected(api, path) -> None:
-    body = {} if path == "/v1/activate" else (
-        {"task_id": 1, "planned_minutes": 5} if path == "/v1/start"
-        else {"outcome": "PROGRESS"}
-    )
+    body = {
+        "/v1/activate": {},
+        "/v1/start": {"task_id": 1, "planned_minutes": 5},
+        "/v1/feedback": {"outcome": "PROGRESS"},
+        "/v1/capture": {"raw_text": "Study for ACT"},
+    }[path]
     for header in (
         {"Host": "example.com"},
         {"Origin": "http://example.com"},
@@ -452,6 +535,21 @@ def test_work_page_assets_do_not_collect_or_send_timezone() -> None:
     assert "body.timezone" not in script
     assert "time_cap_minutes" in script
     assert "available_minutes" in script
+
+
+def test_work_page_assets_include_capture_without_client_time_context() -> None:
+    static = files("personal_os").joinpath("static")
+    html = static.joinpath("work.html").read_text(encoding="utf-8")
+    script = static.joinpath("work.js").read_text(encoding="utf-8")
+
+    assert 'id="capture-form"' in html
+    assert 'id="capture-text"' in html
+    assert 'id="capture-button"' in html
+    assert 'request("/v1/capture", { raw_text: rawText })' in script
+    assert "raw_text" in script
+    assert "reference_time" not in script
+    assert "current_time" not in script
+    assert "body.timezone" not in script
 
 
 def test_static_paths_are_exact_and_invalid_host_is_rejected(api) -> None:

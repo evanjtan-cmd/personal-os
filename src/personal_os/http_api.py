@@ -18,6 +18,7 @@ DEFAULT_PORT = 8765
 MAX_REQUEST_BYTES = 65_536
 ACTIVATE_PATH = "/v1/activate"
 POST_OPERATIONS = {
+    "/v1/capture": ("capture", {"raw_text", "timezone"}),
     ACTIVATE_PATH: ("activate", {"timezone", "time_cap_minutes"}),
     "/v1/start": (
         "start",

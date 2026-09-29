@@ -17,7 +17,7 @@ from personal_os.activation_types import (
 )
 from personal_os.config import get_timezone_name
 from personal_os.errors import PersonalOSError
-from personal_os.models import serialize_instant
+from personal_os.models import CaptureStatus, serialize_instant
 from personal_os.recommendation_types import (
     RecommendationContext,
     RecommendationResult,
@@ -40,6 +40,7 @@ class NoActiveSessionError(PersonalOSError):
 @dataclass(frozen=True, slots=True)
 class _ValidatedRequest:
     operation: str
+    raw_text: str | None = None
     available_minutes: int | None = None
     timezone: str | None = None
     task_id: int | None = None
@@ -85,6 +86,13 @@ def _optional_text(request: dict[str, object], field: str) -> str | None:
     value = request[field]
     if not isinstance(value, str) or not value.strip():
         raise InvalidRequestError(f"{field} must be non-empty text or null")
+    return value
+
+
+def _required_text(request: dict[str, object], field: str) -> str:
+    value = request[field]
+    if not isinstance(value, str) or not value.strip():
+        raise InvalidRequestError(f"{field} must be non-empty text")
     return value
 
 
@@ -146,6 +154,59 @@ def _serialize_recommendation(
         "action": result.action,
         "explanation": result.explanation,
     }
+
+
+def _capture(
+    request: _ValidatedRequest, runtime: PersonalOSRuntime, *, now: datetime,
+    environ: Mapping[str, str] | None,
+) -> dict[str, object]:
+    assert request.raw_text is not None
+    result = runtime.capture_service.capture_text(
+        request.raw_text,
+        reference_time=now,
+        timezone_name=get_timezone_name(request.timezone, environ),
+    )
+    capture = result.capture
+    response: dict[str, object] = {
+        "capture_id": capture.id,
+        "status": capture.status.value,
+    }
+    if capture.status is CaptureStatus.APPLIED:
+        response.update(
+            project=(
+                None
+                if result.project_id is None
+                else {
+                    "id": result.project_id,
+                    "name": runtime.store.get_project(result.project_id).name,
+                }
+            ),
+            tasks=[
+                {"id": task_id, "title": runtime.store.get_task(task_id).title}
+                for task_id in result.task_ids
+            ],
+            commitments=[
+                {
+                    "id": commitment_id,
+                    "title": runtime.store.get_fixed_commitment(commitment_id).title,
+                }
+                for commitment_id in result.commitment_ids
+            ],
+        )
+    elif capture.status is CaptureStatus.UNRESOLVED:
+        response.update(
+            unresolved_reason=capture.unresolved_reason,
+            inbox_item_id=result.inbox_item_id,
+        )
+    elif capture.status is CaptureStatus.FAILED:
+        assert capture.failure_kind is not None
+        response.update(
+            failure_kind=capture.failure_kind.value,
+            failure_reason=capture.failure_reason,
+        )
+    else:
+        raise RuntimeError("capture service returned a non-final capture")
+    return response
 
 
 def _recommend(
@@ -269,9 +330,22 @@ def _validate_request(request: object) -> _ValidatedRequest:
     operation = request.get("operation")
     if not isinstance(operation, str) or not operation:
         raise InvalidRequestError("operation must be supplied as text")
-    if operation not in {"recommend", "start", "feedback", "active", "activate"}:
+    if operation not in {
+        "capture", "recommend", "start", "feedback", "active", "activate"
+    }:
         raise InvalidRequestError(f"unknown operation: {operation}")
 
+    if operation == "capture":
+        _require_fields(
+            request,
+            required={"version", "operation", "raw_text"},
+            optional={"timezone"},
+        )
+        return _ValidatedRequest(
+            operation=operation,
+            raw_text=_required_text(request, "raw_text"),
+            timezone=_explicit_timezone(request),
+        )
     if operation == "activate":
         _require_fields(
             request,
@@ -353,6 +427,8 @@ def handle_request(
     if operation == "active":
         return operation, _active(runtime)
     now = clock()
+    if operation == "capture":
+        return operation, _capture(request, runtime, now=now, environ=environ)
     if operation == "recommend":
         return operation, _recommend(request, runtime, now=now, environ=environ)
     if operation == "activate":
