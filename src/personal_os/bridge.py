@@ -17,7 +17,12 @@ from personal_os.activation_types import (
 )
 from personal_os.config import get_timezone_name
 from personal_os.errors import PersonalOSError
-from personal_os.models import CaptureStatus, serialize_instant
+from personal_os.models import (
+    CaptureStatus,
+    ProjectStatus,
+    TaskStatus,
+    serialize_instant,
+)
 from personal_os.recommendation_types import (
     RecommendationContext,
     RecommendationResult,
@@ -318,6 +323,93 @@ def _active(
     }
 
 
+def _overview(runtime: PersonalOSRuntime) -> dict[str, object]:
+    snapshot = runtime.store.read_state_snapshot()
+    project_names = {project.id: project.name for project in snapshot.projects}
+    task_titles = {task.id: task.title for task in snapshot.tasks}
+
+    tasks = []
+    for task in snapshot.tasks:
+        if task.status not in {TaskStatus.OPEN, TaskStatus.BLOCKED}:
+            continue
+        if task.deadline_date is not None:
+            deadline: dict[str, object] | None = {
+                "kind": "DATE",
+                "date": task.deadline_date.isoformat(),
+            }
+        elif task.deadline_at is not None:
+            deadline = {
+                "kind": "INSTANT",
+                "at": serialize_instant(task.deadline_at),
+            }
+        else:
+            deadline = None
+        tasks.append({
+            "id": task.id,
+            "title": task.title,
+            "status": task.status.value,
+            "importance": task.importance.value,
+            "project_id": task.project_id,
+            "project_name": project_names.get(task.project_id),
+            "schedule": {
+                "mode": task.schedule_mode.value,
+                "day_date": (
+                    None if task.day_date is None else task.day_date.isoformat()
+                ),
+                "window_start": (
+                    None
+                    if task.window_start is None
+                    else serialize_instant(task.window_start)
+                ),
+                "window_end": (
+                    None
+                    if task.window_end is None
+                    else serialize_instant(task.window_end)
+                ),
+            },
+            "deadline": deadline,
+            "estimated_minutes": task.estimated_minutes,
+        })
+
+    active_session = next(
+        (session for session in snapshot.sessions if session.is_active), None
+    )
+    return {
+        "projects": [
+            {
+                "id": project.id,
+                "name": project.name,
+                "description": project.description,
+            }
+            for project in snapshot.projects
+            if project.status is ProjectStatus.ACTIVE
+        ],
+        "tasks": tasks,
+        "inbox": [
+            {
+                "id": item.id,
+                "raw_text": item.raw_text,
+                "unresolved_reason": item.unresolved_reason,
+                "source_capture_id": item.source_capture_id,
+            }
+            for item in snapshot.inbox_items
+            if not item.is_resolved
+        ],
+        "active_session": (
+            None
+            if active_session is None
+            else {
+                "session_id": active_session.id,
+                "task_id": active_session.task_id,
+                "task_title": task_titles[active_session.task_id],
+                "planned_minutes": active_session.planned_minutes,
+                "selected_action": active_session.selected_action,
+                "started_at": serialize_instant(active_session.started_at),
+            }
+        ),
+    }
+
+
 def _validate_request(request: object) -> _ValidatedRequest:
     """Validate the complete protocol contract without constructing runtime."""
     if not isinstance(request, dict):
@@ -331,7 +423,8 @@ def _validate_request(request: object) -> _ValidatedRequest:
     if not isinstance(operation, str) or not operation:
         raise InvalidRequestError("operation must be supplied as text")
     if operation not in {
-        "capture", "recommend", "start", "feedback", "active", "activate"
+        "capture", "recommend", "start", "feedback", "active", "activate",
+        "overview",
     }:
         raise InvalidRequestError(f"unknown operation: {operation}")
 
@@ -424,6 +517,8 @@ def handle_request(
     """Dispatch one fully validated request to application services."""
 
     operation = request.operation
+    if operation == "overview":
+        return operation, _overview(runtime)
     if operation == "active":
         return operation, _active(runtime)
     now = clock()

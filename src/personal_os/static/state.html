@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>State | Personal OS</title>
+  <link rel="stylesheet" href="/work.css">
+  <script src="/state.js" defer></script>
+</head>
+<body class="state-page">
+  <header class="site-header">
+    <div class="shell header-inner">
+      <span class="brand">Personal OS</span>
+      <nav class="site-nav" aria-label="Primary">
+        <a href="/">Work</a>
+        <a href="/state" aria-current="page">State</a>
+      </nav>
+    </div>
+  </header>
+  <main class="shell">
+    <div class="page-heading">
+      <div>
+        <p class="eyebrow">CURRENT STATE</p>
+        <h1>State</h1>
+      </div>
+      <button id="refresh-button" class="button" type="button">Refresh</button>
+    </div>
+
+    <p id="state-error" class="error" role="alert" hidden></p>
+    <p id="state-progress" class="progress" role="status">Loading state...</p>
+
+    <div id="overview" class="overview" aria-live="polite" hidden>
+      <section class="overview-section" aria-labelledby="active-heading">
+        <p class="eyebrow">NOW</p>
+        <h2 id="active-heading">Active session</h2>
+        <div id="active-session"></div>
+      </section>
+
+      <section class="overview-section" aria-labelledby="tasks-heading">
+        <p class="eyebrow">ACTIONABLE</p>
+        <h2 id="tasks-heading">Tasks</h2>
+        <div id="tasks"></div>
+      </section>
+
+      <section class="overview-section" aria-labelledby="inbox-heading">
+        <p class="eyebrow">UNRESOLVED</p>
+        <h2 id="inbox-heading">Inbox</h2>
+        <div id="inbox"></div>
+      </section>
+
+      <section class="overview-section" aria-labelledby="projects-heading">
+        <p class="eyebrow">PLANNING</p>
+        <h2 id="projects-heading">Active projects</h2>
+        <div id="projects"></div>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

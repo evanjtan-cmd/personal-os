@@ -17,6 +17,7 @@ from personal_os.runtime import PersonalOSRuntime, build_runtime
 DEFAULT_PORT = 8765
 MAX_REQUEST_BYTES = 65_536
 ACTIVATE_PATH = "/v1/activate"
+OVERVIEW_PATH = "/v1/overview"
 POST_OPERATIONS = {
     "/v1/capture": ("capture", {"raw_text", "timezone"}),
     ACTIVATE_PATH: ("activate", {"timezone", "time_cap_minutes"}),
@@ -28,6 +29,8 @@ POST_OPERATIONS = {
 }
 STATIC_FILES = {
     "/": ("work.html", "text/html; charset=utf-8"),
+    "/state": ("state.html", "text/html; charset=utf-8"),
+    "/state.js": ("state.js", "text/javascript; charset=utf-8"),
     "/work.css": ("work.css", "text/css; charset=utf-8"),
     "/work.js": ("work.js", "text/javascript; charset=utf-8"),
 }
@@ -84,6 +87,9 @@ def create_server(
         def do_POST(self) -> None:
             if not self._valid_host():
                 self._write(*_error(HTTPStatus.BAD_REQUEST, "invalid Host header"))
+                return
+            if self.path == OVERVIEW_PATH:
+                self._method_not_allowed()
                 return
             route = POST_OPERATIONS.get(self.path)
             if route is None:
@@ -152,6 +158,30 @@ def create_server(
         def do_GET(self) -> None:
             if not self._valid_host():
                 self._write(*_error(HTTPStatus.BAD_REQUEST, "invalid Host header"))
+                return
+            if self.path == OVERVIEW_PATH:
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                except ValueError:
+                    length = -1
+                if length != 0:
+                    self._write(*_error(
+                        HTTPStatus.BAD_REQUEST,
+                        "GET /v1/overview does not accept a request body",
+                        "overview",
+                    ))
+                    return
+                status, response = process_request(
+                    {"version": PROTOCOL_VERSION, "operation": "overview"},
+                    runtime_factory=runtime_factory,
+                    clock=clock,
+                    environ=environ,
+                    expected_operation="overview",
+                )
+                self._write(
+                    HTTPStatus.OK if status == 0 else HTTPStatus.INTERNAL_SERVER_ERROR,
+                    response,
+                )
                 return
             if self.path in POST_OPERATIONS:
                 self._method_not_allowed()

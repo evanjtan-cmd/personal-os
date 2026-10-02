@@ -100,13 +100,14 @@ over centralized application logic.
 
 Machine Interface v1 is a separate, one-request-per-process JSON stdin/stdout
 adapter. Version-1 requests expose capture, activation, recommendation, session
-start, session feedback, and active-session inspection. The adapter strictly
-validates one JSON object, obtains authoritative current time locally, delegates
-to the same typed services as the human CLI, and returns one versioned JSON
-object. It does not initialize or migrate storage, persist recommendation
-acceptance before session start, listen on a network, or provide authentication.
-Trusted local transports such as SSH may invoke it; a later transport may wrap
-it without moving deterministic or AI policy into that transport.
+start, session feedback, active-session inspection, and a purpose-built current
+state overview. The adapter strictly validates one JSON object, obtains
+authoritative current time locally where needed, delegates to the same typed
+services as the human CLI, and returns one versioned JSON object. It does not
+initialize or migrate storage, persist recommendation acceptance before session
+start, listen on a network, or provide authentication. Trusted local transports
+such as SSH may invoke it; a later transport may wrap it without moving
+deterministic or AI policy into that transport.
 
 The existing Google Sheet is prototype and reference data. It is not the
 architectural source of truth and does not define the persistence model.
@@ -145,13 +146,20 @@ provider response internals, hidden reasoning, and secrets. Its output is for
 human dogfooding rather than a stable machine-readable API.
 It is not an export or synchronization interface.
 
+POS-020 adds a distinct Machine Interface `overview` read model for thin user
+interfaces. It derives active projects, OPEN/BLOCKED tasks, unresolved Inbox
+items, and the current active session from one `read_state_snapshot()` result.
+It exposes only those explicitly designed current-state fields, requires no
+clock, timezone, or provider configuration, and is not the CLI full-state view
+or a generic serialization of `StateSnapshot`.
+
 ## Machine Interface v1
 
 The human CLI remains a dogfood interface rather than a machine-readable API.
 `personal-os-bridge` provides the stable local machine boundary with integer
 protocol version 1 and the operations `capture`, `recommend`, `start`,
-`feedback`, and `active`, plus the canonical `activate` operation for
-availability-now triggers. Requests cannot supply authoritative
+`feedback`, `active`, and `overview`, plus the canonical `activate` operation
+for availability-now triggers. Requests cannot supply authoritative
 current/reference timestamps.
 Recommendation remains read-only and its concrete action remains ephemeral;
 only a start request that supplies the action persists it in session history.
@@ -161,6 +169,12 @@ policy. Capture delegates interpretation and persistence to the canonical
 capture service, using the bridge's trusted clock and explicit timezone
 configuration. Bridge v1 deliberately excludes full-state output, database
 initialization, HTTP, and transport-specific configuration.
+
+Overview is read-only and serializes a deliberately bounded current-state
+contract from one coherent canonical snapshot. It excludes commitments, rules,
+capture history and interpretation details, closed sessions, provider metadata,
+and other full-state/debug information. The loopback HTTP adapter exposes this
+same operation as `GET /v1/overview`; it does not duplicate overview policy.
 
 Activation first returns the current active session and associated Task without
 invoking recommendation. When no session is active, it delegates unchanged to

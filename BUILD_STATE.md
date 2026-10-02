@@ -1,6 +1,6 @@
 # Build State
 
-Last updated: 2026-09-28 for POS-019 Browser Easy Capture.
+Last updated: 2026-10-01 for POS-020 Browser State / Inbox View.
 
 ## Implemented
 
@@ -70,10 +70,11 @@ Last updated: 2026-09-28 for POS-019 Browser Easy Capture.
   human-readable output, and no implicit database bootstrap or duplicated
   domain policy.
 - A separate one-shot `personal-os-bridge` machine adapter with strict,
-  versioned JSON stdin/stdout requests for recommend, start, feedback, and
-  active-session inspection. It uses shared runtime construction and the same
-  typed services as the human CLI, trusts only its own fresh UTC clock, performs
-  no initialization or migration, and has no network listener or authentication
+  versioned JSON stdin/stdout requests for capture, recommendation, activation,
+  session lifecycle, active-session inspection, and current-state overview. It
+  uses shared runtime construction and the same typed services as the human
+  CLI, trusts only its own fresh UTC clock where needed, performs no
+  initialization or migration, and has no network listener or authentication
   layer.
 - A canonical read-only work-activation service for availability-now triggers.
   It returns an existing active session without invoking recommendation, or
@@ -112,6 +113,13 @@ Last updated: 2026-09-28 for POS-019 Browser Easy Capture.
   retain their existing semantics. The Work page sends only `raw_text`, shows
   created names or unresolved/failure details, clears successful input, and
   leaves recommendation and session state untouched.
+- POS-020 adds the read-only Machine Interface v1 `overview` operation and
+  `GET /v1/overview`. The purpose-built contract derives active projects,
+  OPEN/BLOCKED tasks, unresolved Inbox items, and the active session from one
+  coherent `read_state_snapshot()` result without clock, timezone, provider,
+  AI, or mutation. A dedicated compact State page at `/state` loads and
+  refreshes that overview, uses safe DOM text insertion, and shares clear Work
+  and State navigation without changing the POS-019 Work flow.
 - Read-only full-state CLI inspection over one validated SQLite connection and
   explicit read transaction. All seven canonical entity groups are shown in
   deterministic ID order without initialization, migration, mutation,
@@ -275,3 +283,20 @@ Run for POS-019 on 2026-09-28 with Python 3.13.0 and pytest 8.4.2:
   timezone/reference timestamps. Existing activation, start, active-session,
   and all feedback outcomes remain covered. No real user data or live AI
   requests were used.
+
+Run for POS-020 on 2026-10-01 with Python 3.13.0 and pytest 8.4.2:
+
+- `.venv/bin/python -m pytest` — passed: 476 passed, 0 failed, using isolated
+  temporary databases and fake AI boundaries.
+- `.venv/bin/python -m pytest tests/test_bridge.py tests/test_http_api.py -q`
+  — passed: 142 passed, 0 failed with local loopback bind permission.
+- `.venv/bin/python -m compileall -q src tests` — passed with exit code 0.
+- `node --check src/personal_os/static/work.js` and
+  `node --check src/personal_os/static/state.js` — passed with exit code 0.
+- `git diff --check` — passed with exit code 0.
+- Overview tests confirm strict pre-runtime validation, one coherent snapshot
+  read, current-state filtering and joins, active-session/null serialization,
+  no clock/timezone/provider/AI requirement, normal GET response envelopes,
+  Host and method protections, packaged State assets, and safe DOM text
+  rendering. Existing capture and Work-loop coverage remains green. No real
+  user data or live AI requests were used.

@@ -76,7 +76,11 @@ def request(
     server = api[0]
     connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
     try:
-        payload = (raw if raw is not None else json.dumps(body)) if method == "POST" else None
+        payload = (
+            raw
+            if raw is not None
+            else json.dumps(body) if method == "POST" else None
+        )
         headers = {"Content-Type": content_type} if payload is not None else {}
         headers.update(extra_headers or {})
         connection.request(
@@ -241,6 +245,58 @@ def test_route_method_and_media_errors_are_json(api) -> None:
 
 def test_server_binds_only_to_ipv4_loopback(api) -> None:
     assert api[0].server_address[0] == "127.0.0.1"
+
+
+def test_get_overview_returns_machine_envelope_without_configuration(api) -> None:
+    _, store, ranker, runtime_factory = api
+    project = store.create_project("College", "Applications")
+    task = store.create_task("Draft essay", project_id=project.id)
+    store.create_inbox_item("Call Mike at 4", "time is missing AM/PM")
+
+    status, response, content_type = request(
+        api, {}, method="GET", path="/v1/overview"
+    )
+
+    assert status == 200
+    assert content_type == "application/json; charset=utf-8"
+    assert response["version"] == 1
+    assert response["ok"] is True
+    assert response["operation"] == "overview"
+    assert response["result"]["projects"] == [{
+        "id": project.id,
+        "name": "College",
+        "description": "Applications",
+    }]
+    assert response["result"]["tasks"][0]["id"] == task.id
+    assert response["result"]["inbox"][0]["raw_text"] == "Call Mike at 4"
+    assert response["result"]["active_session"] is None
+    assert ranker.calls == 0
+    runtime_factory.assert_called_once_with()
+
+
+def test_overview_enforces_host_and_get_only(api) -> None:
+    status, response, _ = request(
+        api,
+        {},
+        method="GET",
+        path="/v1/overview",
+        extra_headers={"Host": "evil.test"},
+    )
+    assert status == 400
+    assert response["error"]["message"] == "invalid Host header"
+    assert api[3].call_count == 0
+
+    status, response, _ = request(api, {}, path="/v1/overview")
+    assert status == 405
+    assert response["error"]["code"] == "METHOD_NOT_ALLOWED"
+    assert api[3].call_count == 0
+
+    status, response, _ = request(
+        api, {}, method="GET", path="/v1/overview", raw="{}"
+    )
+    assert status == 400
+    assert "does not accept a request body" in response["error"]["message"]
+    assert api[3].call_count == 0
 
 
 def test_capture_uses_configured_timezone_when_http_omits_it(
@@ -503,6 +559,8 @@ def test_same_origin_request_is_allowed(api) -> None:
     ("path", "content_type"),
     [
         ("/", "text/html; charset=utf-8"),
+        ("/state", "text/html; charset=utf-8"),
+        ("/state.js", "text/javascript; charset=utf-8"),
         ("/work.css", "text/css; charset=utf-8"),
         ("/work.js", "text/javascript; charset=utf-8"),
     ],
@@ -550,6 +608,24 @@ def test_work_page_assets_include_capture_without_client_time_context() -> None:
     assert "reference_time" not in script
     assert "current_time" not in script
     assert "body.timezone" not in script
+
+
+def test_state_page_assets_use_overview_and_safe_dom_rendering() -> None:
+    static = files("personal_os").joinpath("static")
+    work_html = static.joinpath("work.html").read_text(encoding="utf-8")
+    state_html = static.joinpath("state.html").read_text(encoding="utf-8")
+    script = static.joinpath("state.js").read_text(encoding="utf-8")
+
+    assert 'href="/state"' in work_html
+    assert 'href="/"' in state_html
+    assert 'href="/state" aria-current="page"' in state_html
+    assert 'fetch("/v1/overview"' in script
+    assert 'byId("refresh-button").addEventListener("click", loadOverview)' in script
+    assert "textContent" in script
+    assert "createElement" in script
+    assert "innerHTML" not in script
+    for section in ("active-session", "tasks", "inbox", "projects"):
+        assert f'id="{section}"' in state_html
 
 
 def test_static_paths_are_exact_and_invalid_host_is_rejected(api) -> None:
