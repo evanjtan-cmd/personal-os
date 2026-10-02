@@ -2,7 +2,7 @@ import io
 import json
 import subprocess
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -19,7 +19,9 @@ from personal_os.database import initialize_database
 from personal_os.models import (
     CaptureFailureKind,
     CaptureStatus,
+    ProjectStatus,
     TaskImportance,
+    TaskScheduleMode,
     TaskStatus,
 )
 from personal_os.recommendation import RecommendationService
@@ -130,6 +132,7 @@ def test_invalid_protocol_envelope_is_rejected(
         },
         {"version": 1, "operation": "feedback", "outcome": "PROGRESS", "extra": 1},
         {"version": 1, "operation": "active", "timezone": "UTC"},
+        {"version": 1, "operation": "overview", "extra": True},
     ],
 )
 def test_unknown_fields_are_rejected_for_every_operation(
@@ -166,6 +169,7 @@ def test_unknown_fields_are_rejected_for_every_operation(
             "raw_text": "Study for ACT",
             "reference_time": "2020-01-01T00:00:00Z",
         },
+        {"version": 1, "operation": "overview", "timezone": "UTC"},
     ],
 )
 def test_invalid_request_never_constructs_runtime(payload: dict[str, object]) -> None:
@@ -182,6 +186,195 @@ def test_invalid_request_never_constructs_runtime(payload: dict[str, object]) ->
     assert status == 2
     assert json.loads(output.getvalue())["error"]["code"] == "INVALID_REQUEST"
     runtime_factory.assert_not_called()
+
+
+def test_overview_serializes_filtered_coherent_snapshot_without_clock_or_ai() -> None:
+    runtime = fake_runtime()
+    snapshot = SimpleNamespace(
+        projects=(
+            SimpleNamespace(
+                id=1,
+                name="College",
+                description="Applications",
+                status=ProjectStatus.ACTIVE,
+            ),
+            SimpleNamespace(
+                id=2,
+                name="Archived",
+                description=None,
+                status=ProjectStatus.COMPLETED,
+            ),
+        ),
+        tasks=(
+            SimpleNamespace(
+                id=10,
+                title="Draft essay",
+                status=TaskStatus.OPEN,
+                importance=TaskImportance.MUST,
+                project_id=1,
+                schedule_mode=TaskScheduleMode.FLEXIBLE,
+                day_date=None,
+                window_start=None,
+                window_end=None,
+                deadline_date=date(2026, 10, 15),
+                deadline_at=None,
+                estimated_minutes=45,
+            ),
+            SimpleNamespace(
+                id=11,
+                title="Call adviser",
+                status=TaskStatus.BLOCKED,
+                importance=TaskImportance.SHOULD,
+                project_id=None,
+                schedule_mode=TaskScheduleMode.DAY,
+                day_date=date(2026, 10, 2),
+                window_start=None,
+                window_end=None,
+                deadline_date=None,
+                deadline_at=datetime(2026, 10, 3, 16, tzinfo=UTC),
+                estimated_minutes=None,
+            ),
+            SimpleNamespace(
+                id=12,
+                title="Completed task",
+                status=TaskStatus.COMPLETED,
+                importance=TaskImportance.COULD,
+                project_id=2,
+                schedule_mode=TaskScheduleMode.FLEXIBLE,
+                day_date=None,
+                window_start=None,
+                window_end=None,
+                deadline_date=None,
+                deadline_at=None,
+                estimated_minutes=None,
+            ),
+        ),
+        inbox_items=(
+            SimpleNamespace(
+                id=20,
+                raw_text="Call Mike at 4",
+                unresolved_reason="time is missing AM/PM",
+                source_capture_id=8,
+                is_resolved=False,
+            ),
+            SimpleNamespace(
+                id=21,
+                raw_text="Resolved item",
+                unresolved_reason="was unclear",
+                source_capture_id=None,
+                is_resolved=True,
+            ),
+        ),
+        sessions=(
+            SimpleNamespace(
+                id=30,
+                task_id=10,
+                planned_minutes=25,
+                selected_action="Draft the introduction.",
+                started_at=NOW,
+                is_active=True,
+            ),
+            SimpleNamespace(id=29, task_id=12, is_active=False),
+        ),
+    )
+    runtime.store.read_state_snapshot.return_value = snapshot
+    runtime_factory = Mock(return_value=runtime)
+    clock = Mock(side_effect=AssertionError("overview must not read the clock"))
+
+    status, response = bridge.process_request(
+        {"version": 1, "operation": "overview"},
+        runtime_factory=runtime_factory,
+        clock=clock,
+        environ={},
+    )
+
+    assert status == 0
+    assert response == {
+        "version": 1,
+        "ok": True,
+        "operation": "overview",
+        "result": {
+            "projects": [
+                {"id": 1, "name": "College", "description": "Applications"}
+            ],
+            "tasks": [
+                {
+                    "id": 10,
+                    "title": "Draft essay",
+                    "status": "OPEN",
+                    "importance": "MUST",
+                    "project_id": 1,
+                    "project_name": "College",
+                    "schedule": {
+                        "mode": "FLEXIBLE",
+                        "day_date": None,
+                        "window_start": None,
+                        "window_end": None,
+                    },
+                    "deadline": {"kind": "DATE", "date": "2026-10-15"},
+                    "estimated_minutes": 45,
+                },
+                {
+                    "id": 11,
+                    "title": "Call adviser",
+                    "status": "BLOCKED",
+                    "importance": "SHOULD",
+                    "project_id": None,
+                    "project_name": None,
+                    "schedule": {
+                        "mode": "DAY",
+                        "day_date": "2026-10-02",
+                        "window_start": None,
+                        "window_end": None,
+                    },
+                    "deadline": {
+                        "kind": "INSTANT",
+                        "at": "2026-10-03T16:00:00.000000Z",
+                    },
+                    "estimated_minutes": None,
+                },
+            ],
+            "inbox": [{
+                "id": 20,
+                "raw_text": "Call Mike at 4",
+                "unresolved_reason": "time is missing AM/PM",
+                "source_capture_id": 8,
+            }],
+            "active_session": {
+                "session_id": 30,
+                "task_id": 10,
+                "task_title": "Draft essay",
+                "planned_minutes": 25,
+                "selected_action": "Draft the introduction.",
+                "started_at": "2026-09-01T14:00:00.000000Z",
+            },
+        },
+    }
+    runtime_factory.assert_called_once_with()
+    runtime.store.read_state_snapshot.assert_called_once_with()
+    clock.assert_not_called()
+    runtime.capture_service.capture_text.assert_not_called()
+    runtime.recommendation_service.recommend.assert_not_called()
+    runtime.session_service.start_session.assert_not_called()
+
+
+def test_overview_without_active_session_returns_null() -> None:
+    runtime = fake_runtime()
+    runtime.store.read_state_snapshot.return_value = SimpleNamespace(
+        projects=(), tasks=(), inbox_items=(), sessions=()
+    )
+
+    status, response, _ = invoke(
+        {"version": 1, "operation": "overview"}, runtime, environ={}
+    )
+
+    assert status == 0
+    assert response["result"] == {
+        "projects": [],
+        "tasks": [],
+        "inbox": [],
+        "active_session": None,
+    }
 
 
 def test_capture_applied_delegates_with_trusted_time_and_serializes_names() -> None:

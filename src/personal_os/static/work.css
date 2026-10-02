@@ -13,7 +13,10 @@ body { margin: 0; }
 .site-header { border-bottom: 1px solid #d9dfda; background: #fff; }
 .header-inner { min-height: 60px; display: flex; align-items: center; gap: 12px; }
 .brand { font-weight: 700; color: #17634c; }
-.view-name { padding-left: 12px; border-left: 1px solid #c7d0c9; color: #56635b; }
+.site-nav { display: flex; gap: 4px; padding-left: 10px; border-left: 1px solid #c7d0c9; }
+.site-nav a { border-radius: 4px; padding: 6px 8px; color: #56635b; font-size: 14px; text-decoration: none; }
+.site-nav a:hover { background: #f2f6f2; color: #26362d; }
+.site-nav a[aria-current="page"] { color: #17634c; font-weight: 700; }
 .page-heading { display: flex; justify-content: space-between; align-items: end; margin: 42px 0 30px; }
 .eyebrow { margin: 0 0 10px; color: #487064; font-size: 11px; font-weight: 800; letter-spacing: 0.08em; }
 h1, h2, p { margin-top: 0; }
@@ -50,6 +53,19 @@ input:focus, textarea:focus, button:focus-visible { outline: 2px solid #24745b; 
 .feedback-actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 16px; }
 .error { margin: 22px 0 0; padding: 12px 15px; border-left: 3px solid #b54334; background: #fbefec; color: #79372f; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
 .progress { margin: 15px 0 0; color: #566b5d; font-size: 13px; }
+
+.state-page .page-heading { align-items: center; }
+.overview { border-top: 1px solid #cbd4cd; }
+.overview-section { padding: 28px 0; border-bottom: 1px solid #d9dfda; }
+.overview-section h2 { font-size: 20px; }
+.state-list { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.state-item { padding: 15px 0; border-top: 1px solid #e1e6e2; }
+.state-item:first-child { border-top: 0; }
+.state-item h3 { margin: 0 0 6px; font-size: 16px; line-height: 1.35; overflow-wrap: anywhere; }
+.state-item p { margin: 4px 0 0; color: #5a685f; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.state-item .item-status { color: #315c4d; font-size: 12px; font-weight: 750; }
+.state-item.blocked .item-status { color: #8a3d32; }
+.empty-state { margin: 0; color: #68736c; font-size: 14px; }
 
 @media (max-width: 640px) {
   .shell { width: min(100% - 30px, 760px); }

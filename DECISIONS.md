@@ -262,3 +262,19 @@ loopback HTTP adapter exposes the same operation at `POST /v1/capture` through
 shared bridge validation and serialization. The browser sends only `raw_text`,
 does not infer timezone, and keeps capture independent from Work activation and
 session state.
+
+## 2026-10-01 — Interfaces use a purpose-built current-state overview
+
+Machine Interface v1 additively exposes the read-only `overview` operation for
+thin interfaces. It derives active projects, OPEN/BLOCKED tasks, unresolved
+Inbox items, and the current active session from one coherent canonical
+`StateSnapshot`, then serializes only the explicitly designed browser fields.
+It requires no clock, timezone, provider configuration, or AI work and performs
+no mutation.
+
+Overview is intentionally distinct from the CLI's human debugging view and is
+not a generic full-state export. It excludes historical captures and sessions,
+capture interpretation/provider details, rules, commitments, secrets, and
+other unnecessary canonical state. The loopback adapter exposes the same
+machine operation as `GET /v1/overview`, and the dedicated State page remains a
+safe, read-only renderer over that contract.
