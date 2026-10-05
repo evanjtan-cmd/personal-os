@@ -20,6 +20,7 @@ from personal_os.models import (
     CaptureFailureKind,
     CaptureStatus,
     ProjectStatus,
+    TaskExecutionMode,
     TaskImportance,
     TaskScheduleMode,
     TaskStatus,
@@ -133,6 +134,14 @@ def test_invalid_protocol_envelope_is_rejected(
         {"version": 1, "operation": "feedback", "outcome": "PROGRESS", "extra": 1},
         {"version": 1, "operation": "active", "timezone": "UTC"},
         {"version": 1, "operation": "overview", "extra": True},
+        {
+            "version": 1,
+            "operation": "update_task_planning",
+            "task_id": 1,
+            "execution_mode": "SPLITTABLE",
+            "estimated_minutes": None,
+            "title": "Rename",
+        },
     ],
 )
 def test_unknown_fields_are_rejected_for_every_operation(
@@ -170,6 +179,20 @@ def test_unknown_fields_are_rejected_for_every_operation(
             "reference_time": "2020-01-01T00:00:00Z",
         },
         {"version": 1, "operation": "overview", "timezone": "UTC"},
+        {
+            "version": 1,
+            "operation": "update_task_planning",
+            "task_id": 1,
+            "execution_mode": "MAYBE",
+            "estimated_minutes": None,
+        },
+        {
+            "version": 1,
+            "operation": "update_task_planning",
+            "task_id": 1,
+            "execution_mode": "SPLITTABLE",
+            "estimated_minutes": 0,
+        },
     ],
 )
 def test_invalid_request_never_constructs_runtime(payload: dict[str, object]) -> None:
@@ -219,6 +242,7 @@ def test_overview_serializes_filtered_coherent_snapshot_without_clock_or_ai() ->
                 deadline_date=date(2026, 10, 15),
                 deadline_at=None,
                 estimated_minutes=45,
+                execution_mode=TaskExecutionMode.SPLITTABLE,
             ),
             SimpleNamespace(
                 id=11,
@@ -233,6 +257,7 @@ def test_overview_serializes_filtered_coherent_snapshot_without_clock_or_ai() ->
                 deadline_date=None,
                 deadline_at=datetime(2026, 10, 3, 16, tzinfo=UTC),
                 estimated_minutes=None,
+                execution_mode=TaskExecutionMode.ONE_SITTING,
             ),
             SimpleNamespace(
                 id=12,
@@ -247,6 +272,7 @@ def test_overview_serializes_filtered_coherent_snapshot_without_clock_or_ai() ->
                 deadline_date=None,
                 deadline_at=None,
                 estimated_minutes=None,
+                execution_mode=TaskExecutionMode.SPLITTABLE,
             ),
         ),
         inbox_items=(
@@ -312,6 +338,7 @@ def test_overview_serializes_filtered_coherent_snapshot_without_clock_or_ai() ->
                         "window_end": None,
                     },
                     "deadline": {"kind": "DATE", "date": "2026-10-15"},
+                    "execution_mode": "SPLITTABLE",
                     "estimated_minutes": 45,
                 },
                 {
@@ -331,6 +358,7 @@ def test_overview_serializes_filtered_coherent_snapshot_without_clock_or_ai() ->
                         "kind": "INSTANT",
                         "at": "2026-10-03T16:00:00.000000Z",
                     },
+                    "execution_mode": "ONE_SITTING",
                     "estimated_minutes": None,
                 },
             ],
@@ -356,6 +384,43 @@ def test_overview_serializes_filtered_coherent_snapshot_without_clock_or_ai() ->
     runtime.capture_service.capture_text.assert_not_called()
     runtime.recommendation_service.recommend.assert_not_called()
     runtime.session_service.start_session.assert_not_called()
+
+
+def test_update_task_planning_updates_only_planning_fields(tmp_path: Path) -> None:
+    database_path = tmp_path / DEFAULT_DATABASE_FILENAME
+    initialize_database(database_path)
+    store = SQLiteStateStore(database_path, clock=lambda: NOW)
+    task = store.create_task(
+        "Take diagnostic PSAT",
+        importance=TaskImportance.MUST,
+        estimated_minutes=30,
+    )
+    runtime = fake_runtime()
+    runtime.store = store
+
+    status, response, _ = invoke(
+        {
+            "version": 1,
+            "operation": "update_task_planning",
+            "task_id": task.id,
+            "execution_mode": "ONE_SITTING",
+            "estimated_minutes": 180,
+        },
+        runtime,
+    )
+
+    assert status == 0
+    assert response["result"] == {
+        "task_id": task.id,
+        "title": "Take diagnostic PSAT",
+        "execution_mode": "ONE_SITTING",
+        "estimated_minutes": 180,
+    }
+    updated = store.get_task(task.id)
+    assert updated.title == task.title
+    assert updated.importance is TaskImportance.MUST
+    assert updated.execution_mode is TaskExecutionMode.ONE_SITTING
+    assert updated.estimated_minutes == 180
 
 
 def test_overview_without_active_session_returns_null() -> None:
@@ -388,8 +453,16 @@ def test_capture_applied_delegates_with_trusted_time_and_serializes_names() -> N
     )
     runtime.store.get_project.return_value = SimpleNamespace(name="College")
     runtime.store.get_task.side_effect = [
-        SimpleNamespace(title="Finish essay"),
-        SimpleNamespace(title="Email adviser"),
+        SimpleNamespace(
+            id=34, title="Finish essay",
+            execution_mode=TaskExecutionMode.SPLITTABLE,
+            estimated_minutes=45,
+        ),
+        SimpleNamespace(
+            id=35, title="Email adviser",
+            execution_mode=TaskExecutionMode.ONE_SITTING,
+            estimated_minutes=None,
+        ),
     ]
     runtime.store.get_fixed_commitment.return_value = SimpleNamespace(
         title="Call Mike"
@@ -420,8 +493,20 @@ def test_capture_applied_delegates_with_trusted_time_and_serializes_names() -> N
             "status": "APPLIED",
             "project": {"id": 7, "name": "College"},
             "tasks": [
-                {"id": 34, "title": "Finish essay"},
-                {"id": 35, "title": "Email adviser"},
+                {
+                    "id": 34,
+                    "title": "Finish essay",
+                    "execution_mode": "SPLITTABLE",
+                    "estimated_minutes": 45,
+                    "planning_note": None,
+                },
+                {
+                    "id": 35,
+                    "title": "Email adviser",
+                    "execution_mode": "ONE_SITTING",
+                    "estimated_minutes": None,
+                    "planning_note": "Needs a duration before it can be recommended.",
+                },
             ],
             "commitments": [{"id": 9, "title": "Call Mike"}],
         },

@@ -7,7 +7,10 @@ from zoneinfo import ZoneInfo
 
 from personal_os.eligibility import calculate_availability, evaluate_task
 from personal_os.errors import DomainValidationError, PersistenceError
-from personal_os.models import Project, TaskImportance, serialize_date, serialize_instant
+from personal_os.models import (
+    Project, TaskExecutionMode, TaskImportance, serialize_date,
+    serialize_instant,
+)
 from personal_os.recommendation_types import (
     AvailabilityKind, DeterministicNoWorkReason, EligibleTaskCandidate,
     RecommendationChoice, RecommendationChoiceKind, RecommendationContext,
@@ -27,13 +30,26 @@ class RecommendationRanker(Protocol):
 
 
 def allowed_durations(
-    estimated_minutes: int | None, available_minutes: int | None,
+    execution_mode: TaskExecutionMode, estimated_minutes: int | None,
+    availability_kind: AvailabilityKind, available_minutes: int | None,
 ) -> tuple[int, ...]:
+    if execution_mode is TaskExecutionMode.ONE_SITTING:
+        if estimated_minutes is None:
+            return ()
+        if availability_kind is not AvailabilityKind.FINITE:
+            return ()
+        if available_minutes is None or available_minutes < estimated_minutes:
+            return ()
+        return (estimated_minutes,)
+
+    if execution_mode is not TaskExecutionMode.SPLITTABLE:
+        raise DomainValidationError("execution_mode must be a TaskExecutionMode")
+
     if estimated_minutes is not None and estimated_minutes < 5:
         if available_minutes is None or estimated_minutes <= available_minutes:
             return (estimated_minutes,)
         return ()
-    maximum = 60
+    maximum = 30 if availability_kind is AvailabilityKind.NO_KNOWN_HARD_BOUND else 60
     if available_minutes is not None:
         maximum = min(maximum, available_minutes)
     if estimated_minutes is not None:
@@ -127,7 +143,8 @@ class RecommendationService:
             if not decision.eligible:
                 continue
             durations = allowed_durations(
-                task.estimated_minutes, availability.available_minutes,
+                task.execution_mode, task.estimated_minutes, availability.kind,
+                availability.available_minutes,
             )
             if not durations:
                 continue
@@ -140,7 +157,7 @@ class RecommendationService:
                 decision.deadline_state,
                 None if task.deadline_date is None else serialize_date(task.deadline_date),
                 None if task.deadline_at is None else serialize_instant(task.deadline_at),
-                task.estimated_minutes, durations,
+                task.estimated_minutes, task.execution_mode, durations,
             ))
         if not candidates:
             return RecommendationResult(

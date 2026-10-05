@@ -145,7 +145,7 @@ def test_ranker_no_work_is_preserved_when_valid(store) -> None:
 
 def test_omitted_cap_invents_no_default_and_activation_is_read_only(store) -> None:
     store.create_task("Unbounded task")
-    ranker = RecordingRanker(duration=35)
+    ranker = RecordingRanker(duration=30)
     before = store.read_state_snapshot()
 
     result = WorkActivationService(
@@ -153,10 +153,10 @@ def test_omitted_cap_invents_no_default_and_activation_is_read_only(store) -> No
     ).activate(WorkActivationContext(NOW, "UTC"))
 
     assert result.recommendation is not None
-    assert result.recommendation.duration_minutes == 35
+    assert result.recommendation.duration_minutes == 30
     ranking_context, candidates = ranker.calls[0]
     assert ranking_context.available_minutes is None
-    assert candidates[0].allowed_durations == (5, 10, 15, 20, 25, 30, 35, 45, 60)
+    assert candidates[0].allowed_durations == (5, 10, 15, 20, 25, 30)
     assert store.read_state_snapshot() == before
 
 

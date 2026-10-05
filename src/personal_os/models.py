@@ -38,6 +38,11 @@ class TaskScheduleMode(StrEnum):
     WINDOW = "WINDOW"
 
 
+class TaskExecutionMode(StrEnum):
+    SPLITTABLE = "SPLITTABLE"
+    ONE_SITTING = "ONE_SITTING"
+
+
 class CommitmentHardness(StrEnum):
     UNKNOWN = "UNKNOWN"
     HARD = "HARD"
@@ -201,7 +206,7 @@ def validate_task_fields(
     *, title: object, project_id: object, status: object, importance: object,
     schedule_mode: object, day_date: object, window_start: object,
     window_end: object, deadline_date: object, deadline_at: object,
-    estimated_minutes: object,
+    estimated_minutes: object, execution_mode: object,
 ) -> dict[str, object]:
     normalized_project_id = None if project_id is None else require_identifier(project_id, "project_id")
     normalized_mode = require_enum(schedule_mode, TaskScheduleMode, "schedule_mode")
@@ -235,6 +240,7 @@ def validate_task_fields(
         "deadline_date": normalized_deadline_date,
         "deadline_at": normalized_deadline_at,
         "estimated_minutes": validate_estimated_minutes(estimated_minutes),
+        "execution_mode": require_enum(execution_mode, TaskExecutionMode, "execution_mode"),
     }
 
 
@@ -281,6 +287,7 @@ class Task:
     deadline_date: date | None
     deadline_at: datetime | None
     estimated_minutes: int | None
+    execution_mode: TaskExecutionMode
     created_at: datetime
     updated_at: datetime
     source_capture_id: int | None = None
@@ -292,6 +299,7 @@ class Task:
             day_date=self.day_date, window_start=self.window_start,
             window_end=self.window_end, deadline_date=self.deadline_date,
             deadline_at=self.deadline_at, estimated_minutes=self.estimated_minutes,
+            execution_mode=self.execution_mode,
         )
         created, updated = _validate_timestamps(self.created_at, self.updated_at)
         object.__setattr__(self, "id", require_identifier(self.id))

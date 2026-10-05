@@ -278,3 +278,23 @@ capture interpretation/provider details, rules, commitments, secrets, and
 other unnecessary canonical state. The loopback adapter exposes the same
 machine operation as `GET /v1/overview`, and the dedicated State page remains a
 safe, read-only renderer over that contract.
+
+## 2026-10-05 — Task workability is canonical state
+
+Tasks carry an explicit execution mode: SPLITTABLE for work that can be
+advanced in bounded partial sessions, and ONE_SITTING for work that must be
+completed continuously. Existing tasks migrate deterministically to SPLITTABLE
+to preserve behavior; migration does not reinterpret historical titles.
+
+Recommendation and session start share one deterministic duration policy.
+SPLITTABLE tasks remain bounded by the normal work-session ladder, known
+availability, and estimates; when availability is unknown, they may not exceed
+30 minutes. ONE_SITTING tasks are feasible only when they have a known estimate
+and known sufficient availability; if feasible, their sole allowed duration is
+the full estimate, even when it exceeds 60 minutes.
+
+Capture may classify the execution mode from the literal requested action, but
+it must not invent an estimate from world knowledge. ONE_SITTING with unknown
+duration is valid persisted state, and a narrow planning update operation may
+correct only execution mode and estimated minutes without adding generic task
+CRUD.

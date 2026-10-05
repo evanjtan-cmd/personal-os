@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from personal_os.models import CommitmentHardness, TaskImportance
+from personal_os.models import CommitmentHardness, TaskExecutionMode, TaskImportance
 
 
 class InterpretationValidationError(ValueError):
@@ -102,6 +102,7 @@ class TaskIntent:
     project: ProjectReference
     importance: TaskImportance
     estimated_minutes: int | None
+    execution_mode: TaskExecutionMode
     schedule: TaskScheduleIntent
     deadline: DeadlineIntent
 
@@ -243,15 +244,34 @@ def _deadline(value: object) -> DeadlineIntent:
 
 
 def _task(value: object) -> TaskIntent:
-    data = _object(value, {"title", "project_id", "importance", "estimated_minutes", "schedule", "deadline"}, "task")
+    data = _object(
+        value,
+        {
+            "title", "project_id", "importance", "estimated_minutes",
+            "execution_mode", "schedule", "deadline",
+        },
+        "task",
+    )
     try:
         importance = TaskImportance(data["importance"])
     except (ValueError, TypeError) as exc:
         raise InterpretationValidationError("task importance is invalid") from exc
+    try:
+        execution_mode = TaskExecutionMode(data["execution_mode"])
+    except (ValueError, TypeError) as exc:
+        raise InterpretationValidationError("task execution mode is invalid") from exc
     minutes = data["estimated_minutes"]
     if minutes is not None and (type(minutes) is not int or minutes <= 0):
         raise InterpretationValidationError("estimated minutes must be a positive integer")
-    return TaskIntent(_text(data["title"], "task title"), _project_reference(data["project_id"]), importance, minutes, _schedule(data["schedule"]), _deadline(data["deadline"]))
+    return TaskIntent(
+        _text(data["title"], "task title"),
+        _project_reference(data["project_id"]),
+        importance,
+        minutes,
+        execution_mode,
+        _schedule(data["schedule"]),
+        _deadline(data["deadline"]),
+    )
 
 
 def _commitment(value: object) -> FixedCommitmentIntent:
@@ -319,4 +339,5 @@ def _task_to_dict(value: TaskIntent) -> dict[str, Any]:
     elif value.deadline.kind is DeadlineKind.INSTANT:
         deadline = {"kind": "INSTANT", "value": _instant_to_dict(value.deadline.instant)}
     return {"title": value.title, "project_id": project_id, "importance": value.importance.value,
-            "estimated_minutes": value.estimated_minutes, "schedule": schedule, "deadline": deadline}
+            "estimated_minutes": value.estimated_minutes, "execution_mode": value.execution_mode.value,
+            "schedule": schedule, "deadline": deadline}

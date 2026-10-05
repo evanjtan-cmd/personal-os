@@ -8,7 +8,10 @@ from enum import StrEnum
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from personal_os.errors import DomainValidationError, PersonalOSError
-from personal_os.models import Task, TaskImportance, normalize_instant, require_identifier, require_text
+from personal_os.models import (
+    Task, TaskExecutionMode, TaskImportance, normalize_instant,
+    require_identifier, require_text,
+)
 
 
 class EligibilityReason(StrEnum):
@@ -124,6 +127,7 @@ class EligibleTaskCandidate:
     deadline_date: str | None
     deadline_at: str | None
     estimated_minutes: int | None
+    execution_mode: TaskExecutionMode
     allowed_durations: tuple[int, ...]
 
 

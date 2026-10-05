@@ -5,6 +5,7 @@ import pytest
 from personal_os.errors import DomainValidationError
 from personal_os.models import (
     TaskImportance,
+    TaskExecutionMode,
     TaskScheduleMode,
     TaskStatus,
     canonicalize_parameters,
@@ -27,6 +28,7 @@ BASE_TASK = {
     "deadline_date": None,
     "deadline_at": None,
     "estimated_minutes": None,
+    "execution_mode": TaskExecutionMode.SPLITTABLE,
 }
 
 

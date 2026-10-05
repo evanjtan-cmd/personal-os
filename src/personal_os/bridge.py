@@ -20,6 +20,7 @@ from personal_os.errors import PersonalOSError
 from personal_os.models import (
     CaptureStatus,
     ProjectStatus,
+    TaskExecutionMode,
     TaskStatus,
     serialize_instant,
 )
@@ -50,6 +51,8 @@ class _ValidatedRequest:
     timezone: str | None = None
     task_id: int | None = None
     planned_minutes: int | None = None
+    execution_mode: TaskExecutionMode | None = None
+    estimated_minutes: int | None = None
     selected_action: str | None = None
     start_reason: str | None = None
     outcome: SessionOutcome | None = None
@@ -83,6 +86,29 @@ def _integer(
     if type(value) is not int or value < minimum:
         raise InvalidRequestError(f"{field} must be a {description} integer")
     return value
+
+
+def _nullable_positive_integer(request: dict[str, object], field: str) -> int | None:
+    if field not in request:
+        return None
+    value = request[field]
+    if value is None:
+        return None
+    if type(value) is not int or value <= 0:
+        raise InvalidRequestError(f"{field} must be a positive integer or null")
+    return value
+
+
+def _execution_mode(request: dict[str, object]) -> TaskExecutionMode:
+    value = request["execution_mode"]
+    if not isinstance(value, str):
+        raise InvalidRequestError("execution_mode must be SPLITTABLE or ONE_SITTING")
+    try:
+        return TaskExecutionMode(value)
+    except ValueError as exc:
+        raise InvalidRequestError(
+            "execution_mode must be SPLITTABLE or ONE_SITTING"
+        ) from exc
 
 
 def _optional_text(request: dict[str, object], field: str) -> str | None:
@@ -177,6 +203,7 @@ def _capture(
         "status": capture.status.value,
     }
     if capture.status is CaptureStatus.APPLIED:
+        tasks = [runtime.store.get_task(task_id) for task_id in result.task_ids]
         response.update(
             project=(
                 None
@@ -187,8 +214,19 @@ def _capture(
                 }
             ),
             tasks=[
-                {"id": task_id, "title": runtime.store.get_task(task_id).title}
-                for task_id in result.task_ids
+                {
+                    "id": task.id,
+                    "title": task.title,
+                    "execution_mode": task.execution_mode.value,
+                    "estimated_minutes": task.estimated_minutes,
+                    "planning_note": (
+                        "Needs a duration before it can be recommended."
+                        if task.execution_mode is TaskExecutionMode.ONE_SITTING
+                        and task.estimated_minutes is None
+                        else None
+                    ),
+                }
+                for task in tasks
             ],
             commitments=[
                 {
@@ -305,6 +343,23 @@ def _feedback(
     }
 
 
+def _update_task_planning(
+    request: _ValidatedRequest, runtime: PersonalOSRuntime,
+) -> dict[str, object]:
+    assert request.task_id is not None and request.execution_mode is not None
+    task = runtime.store.update_task_planning(
+        request.task_id,
+        execution_mode=request.execution_mode,
+        estimated_minutes=request.estimated_minutes,
+    )
+    return {
+        "task_id": task.id,
+        "title": task.title,
+        "execution_mode": task.execution_mode.value,
+        "estimated_minutes": task.estimated_minutes,
+    }
+
+
 def _active(
     runtime: PersonalOSRuntime,
 ) -> dict[str, object]:
@@ -368,6 +423,7 @@ def _overview(runtime: PersonalOSRuntime) -> dict[str, object]:
                 ),
             },
             "deadline": deadline,
+            "execution_mode": task.execution_mode.value,
             "estimated_minutes": task.estimated_minutes,
         })
 
@@ -424,7 +480,7 @@ def _validate_request(request: object) -> _ValidatedRequest:
         raise InvalidRequestError("operation must be supplied as text")
     if operation not in {
         "capture", "recommend", "start", "feedback", "active", "activate",
-        "overview",
+        "overview", "update_task_planning",
     }:
         raise InvalidRequestError(f"unknown operation: {operation}")
 
@@ -503,6 +559,25 @@ def _validate_request(request: object) -> _ValidatedRequest:
             outcome=outcome,
             result_note=_optional_text(request, "result_note"),
         )
+    if operation == "update_task_planning":
+        _require_fields(
+            request,
+            required={
+                "version", "operation", "task_id", "execution_mode",
+                "estimated_minutes",
+            },
+            optional=set(),
+        )
+        task_id = _integer(request, "task_id", positive=True)
+        assert task_id is not None
+        return _ValidatedRequest(
+            operation=operation,
+            task_id=task_id,
+            execution_mode=_execution_mode(request),
+            estimated_minutes=_nullable_positive_integer(
+                request, "estimated_minutes"
+            ),
+        )
     _require_fields(request, required={"version", "operation"}, optional=set())
     return _ValidatedRequest(operation=operation)
 
@@ -521,6 +596,8 @@ def handle_request(
         return operation, _overview(runtime)
     if operation == "active":
         return operation, _active(runtime)
+    if operation == "update_task_planning":
+        return operation, _update_task_planning(request, runtime)
     now = clock()
     if operation == "capture":
         return operation, _capture(request, runtime, now=now, environ=environ)

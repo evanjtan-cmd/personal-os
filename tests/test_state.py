@@ -11,6 +11,7 @@ from personal_os.errors import DomainValidationError, EntityNotFoundError, Persi
 from personal_os.models import (
     CommitmentHardness,
     ProjectStatus,
+    TaskExecutionMode,
     TaskImportance,
     TaskScheduleMode,
     TaskStatus,
@@ -170,7 +171,7 @@ def test_standalone_and_project_linked_tasks_round_trip(store: SQLiteStateStore)
     standalone = store.create_task("Call dentist")
     linked = store.create_task(
         "Draft essay", project_id=project.id, importance=TaskImportance.MUST,
-        estimated_minutes=45,
+        estimated_minutes=45, execution_mode=TaskExecutionMode.ONE_SITTING,
     )
     updated = store.update_task(linked.id, status=TaskStatus.BLOCKED)
     completed = store.update_task(updated.id, status=TaskStatus.COMPLETED)
@@ -178,9 +179,38 @@ def test_standalone_and_project_linked_tasks_round_trip(store: SQLiteStateStore)
     assert standalone.project_id is None
     assert standalone.importance is TaskImportance.UNSPECIFIED
     assert linked.importance is TaskImportance.MUST
+    assert linked.execution_mode is TaskExecutionMode.ONE_SITTING
     assert completed.status is TaskStatus.COMPLETED
     assert completed.updated_at > linked.updated_at
     assert store.list_tasks() == [standalone, completed]
+
+
+def test_task_planning_update_round_trips_only_planning_fields(
+    store: SQLiteStateStore,
+) -> None:
+    task = store.create_task(
+        "Take diagnostic test",
+        importance=TaskImportance.MUST,
+        estimated_minutes=30,
+    )
+
+    updated = store.update_task_planning(
+        task.id,
+        execution_mode=TaskExecutionMode.ONE_SITTING,
+        estimated_minutes=180,
+    )
+    cleared = store.update_task_planning(
+        task.id,
+        execution_mode=TaskExecutionMode.SPLITTABLE,
+        estimated_minutes=None,
+    )
+
+    assert updated.execution_mode is TaskExecutionMode.ONE_SITTING
+    assert updated.estimated_minutes == 180
+    assert cleared.execution_mode is TaskExecutionMode.SPLITTABLE
+    assert cleared.estimated_minutes is None
+    assert cleared.title == task.title
+    assert cleared.importance is TaskImportance.MUST
 
 
 def test_task_nonexistent_project_is_rejected(store: SQLiteStateStore) -> None:

@@ -30,6 +30,7 @@ from personal_os.models import (
     ProjectStatus,
     Rule,
     Task,
+    TaskExecutionMode,
     TaskImportance,
     TaskScheduleMode,
     TaskStatus,
@@ -159,6 +160,7 @@ class SQLiteStateStore:
                 deadline_date=None if row["deadline_date"] is None else parse_date(row["deadline_date"], "deadline_date"),
                 deadline_at=None if row["deadline_at"] is None else parse_instant(row["deadline_at"], "deadline_at"),
                 estimated_minutes=row["estimated_minutes"],
+                execution_mode=TaskExecutionMode(row["execution_mode"]),
                 created_at=parse_instant(row["created_at"], "created_at"),
                 updated_at=parse_instant(row["updated_at"], "updated_at"),
                 source_capture_id=row["source_capture_id"],
@@ -262,8 +264,9 @@ class SQLiteStateStore:
             """INSERT INTO tasks (
                 title, project_id, status, importance, schedule_mode, day_date,
                 window_start, window_end, deadline_date, deadline_at,
-                estimated_minutes, created_at, updated_at, source_capture_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                estimated_minutes, execution_mode, created_at, updated_at,
+                source_capture_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             self._task_sql_values(values) + (now, now, source_capture_id),
         )
         return self._task_from_row(self._row_or_missing(connection, "tasks", cursor.lastrowid, "task"))
@@ -335,6 +338,7 @@ class SQLiteStateStore:
             None if values["deadline_date"] is None else serialize_date(values["deadline_date"]),
             None if values["deadline_at"] is None else serialize_instant(values["deadline_at"]),
             values["estimated_minutes"],
+            values["execution_mode"].value,
         )
 
     @staticmethod
@@ -352,12 +356,13 @@ class SQLiteStateStore:
         day_date: date | None = None, window_start: datetime | None = None,
         window_end: datetime | None = None, deadline_date: date | None = None,
         deadline_at: datetime | None = None, estimated_minutes: int | None = None,
+        execution_mode: TaskExecutionMode = TaskExecutionMode.SPLITTABLE,
     ) -> Task:
         values = validate_task_fields(
             title=title, project_id=project_id, status=status, importance=importance,
             schedule_mode=schedule_mode, day_date=day_date, window_start=window_start,
             window_end=window_end, deadline_date=deadline_date, deadline_at=deadline_at,
-            estimated_minutes=estimated_minutes,
+            estimated_minutes=estimated_minutes, execution_mode=execution_mode,
         )
         with self._transaction() as connection:
             return self._insert_task(connection, values=values)
@@ -377,6 +382,7 @@ class SQLiteStateStore:
         day_date: object = _OMITTED, window_start: object = _OMITTED,
         window_end: object = _OMITTED, deadline_date: object = _OMITTED,
         deadline_at: object = _OMITTED, estimated_minutes: object = _OMITTED,
+        execution_mode: object = _OMITTED,
     ) -> Task:
         with self._transaction() as connection:
             current = self._task_from_row(self._row_or_missing(connection, "tasks", task_id, "task"))
@@ -392,6 +398,7 @@ class SQLiteStateStore:
                     ("deadline_date", current.deadline_date, deadline_date),
                     ("deadline_at", current.deadline_at, deadline_at),
                     ("estimated_minutes", current.estimated_minutes, estimated_minutes),
+                    ("execution_mode", current.execution_mode, execution_mode),
                 )
             }
             values = validate_task_fields(**proposed)
@@ -399,11 +406,22 @@ class SQLiteStateStore:
             connection.execute(
                 """UPDATE tasks SET title = ?, project_id = ?, status = ?, importance = ?,
                     schedule_mode = ?, day_date = ?, window_start = ?, window_end = ?,
-                    deadline_date = ?, deadline_at = ?, estimated_minutes = ?, updated_at = ?
+                    deadline_date = ?, deadline_at = ?, estimated_minutes = ?,
+                    execution_mode = ?, updated_at = ?
                     WHERE id = ?""",
                 self._task_sql_values(values) + (serialize_instant(self._now()), task_id),
             )
             return self._task_from_row(self._row_or_missing(connection, "tasks", task_id, "task"))
+
+    def update_task_planning(
+        self, task_id: int, *, execution_mode: object,
+        estimated_minutes: object,
+    ) -> Task:
+        return self.update_task(
+            task_id,
+            execution_mode=execution_mode,
+            estimated_minutes=estimated_minutes,
+        )
 
     def create_fixed_commitment(
         self, title: str, start_at: datetime, *, end_at: datetime | None = None,

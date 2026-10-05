@@ -61,8 +61,18 @@ or unresolved until they are supplied or deterministically established.
 - A concrete recommendation action may frame supplied work generically but
   must not invent unsupported topical or substantive subtask details.
 - Availability and recommended work duration are distinct concepts.
-- Recommendation durations use the POS-004 fixed ladder and explicit short-task
-  exception described below.
+- Omitted or blank caller availability means availability is unknown, not
+  unlimited.
+- Tasks have explicit execution semantics. SPLITTABLE work can be advanced in
+  bounded partial sessions. ONE_SITTING work must be completed in one
+  continuous session.
+- SPLITTABLE recommendation durations use the POS-004 fixed ladder and explicit
+  short-task exception described below. When availability is unknown, one
+  SPLITTABLE recommendation may not exceed 30 minutes.
+- ONE_SITTING work requires both a known duration and known sufficient
+  availability before it can be recommended. If feasible, the only valid
+  recommendation duration is the full estimated duration, which may exceed 60
+  minutes.
 
 ## Session semantics
 
@@ -158,9 +168,9 @@ or a generic serialization of `StateSnapshot`.
 The human CLI remains a dogfood interface rather than a machine-readable API.
 `personal-os-bridge` provides the stable local machine boundary with integer
 protocol version 1 and the operations `capture`, `recommend`, `start`,
-`feedback`, `active`, and `overview`, plus the canonical `activate` operation
-for availability-now triggers. Requests cannot supply authoritative
-current/reference timestamps.
+`feedback`, `active`, `overview`, and the narrow `update_task_planning`
+operation, plus the canonical `activate` operation for availability-now
+triggers. Requests cannot supply authoritative current/reference timestamps.
 Recommendation remains read-only and its concrete action remains ephemeral;
 only a start request that supplies the action persists it in session history.
 Start and feedback reuse the authoritative session service and therefore do not
@@ -175,6 +185,9 @@ contract from one coherent canonical snapshot. It excludes commitments, rules,
 capture history and interpretation details, closed sessions, provider metadata,
 and other full-state/debug information. The loopback HTTP adapter exposes this
 same operation as `GET /v1/overview`; it does not duplicate overview policy.
+The `update_task_planning` operation, also exposed to the browser as
+`POST /v1/task-planning`, may update only `execution_mode` and
+`estimated_minutes` for planning correction. It is not generic Task CRUD.
 
 Activation first returns the current active session and associated Task without
 invoking recommendation. When no session is active, it delegates unchanged to
@@ -182,7 +195,8 @@ the recommendation service and preserves RECOMMEND or NO_WORK. Its optional
 `time_cap_minutes` is a caller-imposed maximum mapped into existing
 recommendation policy; it is distinct from deterministic HARD-commitment
 availability and from the selected recommendation duration. No cap is invented
-when omitted. Activation is read-only and never starts a session.
+when omitted; omitted or blank availability is unknown rather than unlimited.
+Activation is read-only and never starts a session.
 
 ## POS-001 executable boundary
 
@@ -310,9 +324,13 @@ date and exact deadlines against their UTC instant, but neither removes a task.
 Only HARD commitments constrain availability. An active HARD commitment yields
 deterministic no-work; the earliest future HARD start and an optional trusted
 caller cap form the finite bound. SOFT and UNKNOWN commitments are ignored and
-omitted from ranking. Candidate durations use the fixed 5–60 minute ladder,
-bounded by availability and task estimate, while an explicit 1–4 minute
-estimate remains usable exactly when it fits.
+omitted from ranking. Omitted caller availability is unknown, not unlimited.
+SPLITTABLE candidate durations use the fixed 5–60 minute ladder, bounded by
+known availability and task estimate, while an explicit 1–4 minute estimate
+remains usable exactly when it fits. When availability is unknown, SPLITTABLE
+work is capped at 30 minutes. ONE_SITTING candidates require a known estimate
+and known sufficient availability; when feasible, their only allowed duration is
+the full estimate, including estimates greater than 60 minutes.
 
 After eligibility and duration feasibility, any feasible MUST task excludes all
 lower importance candidates. Stable urgency preselection bounds the ranker to

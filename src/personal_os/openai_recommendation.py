@@ -96,6 +96,7 @@ class OpenAIResponsesRecommendationRanker:
                     "deadline_date": item.deadline_date,
                     "deadline_at": item.deadline_at,
                     "estimated_minutes": item.estimated_minutes,
+                    "execution_mode": item.execution_mode.value,
                     "allowed_durations": list(item.allowed_durations),
                 }
                 for item in candidates

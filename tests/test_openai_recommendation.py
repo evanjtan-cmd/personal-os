@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from personal_os.models import TaskImportance
+from personal_os.models import TaskExecutionMode, TaskImportance
 from personal_os.openai_recommendation import OpenAIResponsesRecommendationRanker
 from personal_os.recommendation_types import (
     AvailabilityKind, DeadlineState, EligibleTaskCandidate, RecommendationError,
@@ -30,7 +30,11 @@ def setup(response):
 
 
 def candidate():
-    return EligibleTaskCandidate(1, "Write", None, TaskImportance.SHOULD, ScheduleState.FLEXIBLE, None, DeadlineState.NONE, None, None, 20, (5, 10, 15, 20))
+    return EligibleTaskCandidate(
+        1, "Write", None, TaskImportance.SHOULD, ScheduleState.FLEXIBLE,
+        None, DeadlineState.NONE, None, None, 20, TaskExecutionMode.SPLITTABLE,
+        (5, 10, 15, 20),
+    )
 
 
 def test_adapter_uses_strict_responses_without_raw_temporal_context() -> None:
@@ -73,6 +77,7 @@ def test_adapter_uses_strict_responses_without_raw_temporal_context() -> None:
     assert "daypart" not in serialized
     assert "rules" not in serialized
     assert payload["candidates"][0]["allowed_durations"] == [5, 10, 15, 20]
+    assert payload["candidates"][0]["execution_mode"] == "SPLITTABLE"
 
 
 def test_flexible_study_task_can_return_generic_grounded_recommendation() -> None:

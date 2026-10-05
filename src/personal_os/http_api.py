@@ -26,6 +26,10 @@ POST_OPERATIONS = {
         {"task_id", "planned_minutes", "timezone", "available_minutes", "selected_action", "start_reason"},
     ),
     "/v1/feedback": ("feedback", {"outcome", "result_note"}),
+    "/v1/task-planning": (
+        "update_task_planning",
+        {"task_id", "execution_mode", "estimated_minutes"},
+    ),
 }
 STATIC_FILES = {
     "/": ("work.html", "text/html; charset=utf-8"),
