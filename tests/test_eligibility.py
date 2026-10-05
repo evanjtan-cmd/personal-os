@@ -5,7 +5,7 @@ import pytest
 from personal_os.eligibility import calculate_availability, evaluate_task
 from personal_os.models import (
     CommitmentHardness, FixedCommitment, Project, ProjectStatus, Task,
-    TaskImportance, TaskScheduleMode, TaskStatus,
+    TaskExecutionMode, TaskImportance, TaskScheduleMode, TaskStatus,
 )
 from personal_os.recommendation_types import (
     AvailabilityKind, DeadlineState, EligibilityReason, RecommendationContext,
@@ -26,8 +26,9 @@ def task(**changes) -> Task:
         importance=TaskImportance.UNSPECIFIED,
         schedule_mode=TaskScheduleMode.FLEXIBLE, day_date=None,
         window_start=None, window_end=None, deadline_date=None,
-        deadline_at=None, estimated_minutes=None, created_at=CREATED,
-        updated_at=CREATED,
+        deadline_at=None, estimated_minutes=None,
+        execution_mode=TaskExecutionMode.SPLITTABLE,
+        created_at=CREATED, updated_at=CREATED,
     )
     values.update(changes)
     return Task(**values)

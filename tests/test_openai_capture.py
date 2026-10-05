@@ -66,6 +66,10 @@ def test_adapter_uses_responses_strict_schema_and_disables_storage() -> None:
     assert "no deadline is explicit, use deadline null" in instructions
     assert "no importance is explicit, use unspecified" in instructions
     assert "no duration is explicit, use estimated_minutes null" in instructions
+    assert "classify execution_mode as splittable" in instructions
+    assert "classify execution_mode as one_sitting" in instructions
+    assert "one_sitting with unknown duration is valid persisted state" in instructions
+    assert "do not use world knowledge to guess durations" in instructions
     assert "no project relationship is explicit, use project_id null" in instructions
     assert "do not return unresolved solely because" in instructions
     assert "preserve an explicitly supplied temporal fact" in instructions
@@ -85,6 +89,7 @@ def _applied_task_payload(reason: object) -> dict:
         "tasks": [{
             "title": "Buy milk", "project_id": None,
             "importance": "UNSPECIFIED", "estimated_minutes": None,
+            "execution_mode": "SPLITTABLE",
             "schedule": None, "deadline": None,
         }],
         "commitments": [], "unresolved_reason": reason,
@@ -189,6 +194,10 @@ def test_nullable_flattens_union_and_uses_type_union_when_possible() -> None:
 def test_capture_schema_preserves_date_project_clock_and_deadline_alternatives() -> None:
     task = CAPTURE_SCHEMA["properties"]["tasks"]["items"]
     properties = task["properties"]
+    assert properties["execution_mode"] == {
+        "type": "string",
+        "enum": ["SPLITTABLE", "ONE_SITTING"],
+    }
     date_value = (
         properties["schedule"]["properties"]["dates"]["items"]
         ["properties"]["value"]

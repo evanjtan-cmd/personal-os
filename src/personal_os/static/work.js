@@ -57,18 +57,29 @@ function activationInputs() {
   return body;
 }
 
+function describeCapturedTask(task) {
+  const mode = task.execution_mode === "ONE_SITTING"
+    ? "one sitting"
+    : "splittable";
+  const duration = task.estimated_minutes === null
+    ? ""
+    : `, ${task.estimated_minutes} min`;
+  const note = task.planning_note ? ` (${task.planning_note})` : "";
+  return `${task.title} — ${mode}${duration}${note}`;
+}
+
 function renderCaptureResult(result) {
   const output = byId("capture-result");
   output.className = "capture-result";
   if (result.status === "APPLIED") {
     const created = [
       result.project?.name,
-      ...result.tasks.map((task) => task.title),
+      ...result.tasks.map(describeCapturedTask),
       ...result.commitments.map((commitment) => commitment.title),
     ].filter(Boolean);
     output.textContent = created.length
-      ? `Captured #${result.capture_id}: ${created.join("; ")}`
-      : `Captured #${result.capture_id}.`;
+      ? `Captured: ${created.join("; ")}`
+      : "Captured.";
   } else if (result.status === "UNRESOLVED") {
     output.textContent = `Saved to Inbox #${result.inbox_item_id}: ${result.unresolved_reason}`;
     output.classList.add("unresolved");

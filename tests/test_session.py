@@ -10,7 +10,7 @@ from personal_os.capture_types import InterpretationResponse, parse_interpretati
 from personal_os.database import TABLE_DDL, initialize_database
 from personal_os.errors import DomainValidationError, EntityNotFoundError, PersistenceError
 from personal_os.models import (
-    CaptureStatus, CommitmentHardness, ProjectStatus, TaskImportance,
+    CaptureStatus, CommitmentHardness, ProjectStatus, TaskExecutionMode, TaskImportance,
     TaskScheduleMode, TaskStatus,
 )
 from personal_os.recommendation import RecommendationService
@@ -177,6 +177,36 @@ def test_current_duration_is_exact_and_not_clamped(store) -> None:
     assert service.start_session(task_id=task.id, planned_minutes=10, context=context()).planned_minutes == 10
 
 
+def test_one_sitting_session_start_requires_full_known_fit(store) -> None:
+    unknown = store.create_task(
+        "Take diagnostic test",
+        execution_mode=TaskExecutionMode.ONE_SITTING,
+    )
+    with pytest.raises(SessionStartError) as missing:
+        start(store, unknown.id, 30)
+    assert missing.value.kind is SessionStartFailureKind.DURATION_NOT_ALLOWED
+
+    long = store.create_task(
+        "Take practice exam",
+        execution_mode=TaskExecutionMode.ONE_SITTING,
+        estimated_minutes=180,
+    )
+    for minutes, available in ((30, 180), (180, None), (180, 60)):
+        with pytest.raises(SessionStartError) as error:
+            SessionService(store).start_session(
+                task_id=long.id,
+                planned_minutes=minutes,
+                context=context(available),
+            )
+        assert error.value.kind is SessionStartFailureKind.DURATION_NOT_ALLOWED
+
+    assert SessionService(store).start_session(
+        task_id=long.id,
+        planned_minutes=180,
+        context=context(180),
+    ).planned_minutes == 180
+
+
 def test_short_task_exception_and_nonladder_rejection(store) -> None:
     short = store.create_task("Short", estimated_minutes=2)
     assert SessionService(store).start_session(task_id=short.id, planned_minutes=2, context=context(2)).planned_minutes == 2
@@ -205,6 +235,22 @@ def test_infeasible_must_does_not_gate_start(store, must_kind) -> None:
     store.create_task("Must", **kwargs)
     lower = store.create_task("Lower", estimated_minutes=2)
     assert SessionService(store).start_session(task_id=lower.id, planned_minutes=2, context=context(2)).task_id == lower.id
+
+
+def test_infeasible_must_one_sitting_does_not_gate_start(store) -> None:
+    store.create_task(
+        "Must exam",
+        importance=TaskImportance.MUST,
+        execution_mode=TaskExecutionMode.ONE_SITTING,
+        estimated_minutes=180,
+    )
+    lower = store.create_task("Lower", estimated_minutes=10)
+
+    assert SessionService(store).start_session(
+        task_id=lower.id,
+        planned_minutes=10,
+        context=context(60),
+    ).task_id == lower.id
 
 
 def test_start_rejection_precedence(store) -> None:
@@ -421,7 +467,7 @@ class FakeInterpreter:
         payload = {
             "kind": "APPLY",
             "new_project": {"name": "MVP", "description": None},
-            "tasks": [{"title": "Finish loop", "project_id": "NEW", "importance": "MUST", "estimated_minutes": 10, "schedule": None, "deadline": None}],
+            "tasks": [{"title": "Finish loop", "project_id": "NEW", "importance": "MUST", "estimated_minutes": 10, "execution_mode": "SPLITTABLE", "schedule": None, "deadline": None}],
             "commitments": [], "unresolved_reason": None,
         }
         return InterpretationResponse(parse_interpretation(payload), "fake", "fake", "1")
@@ -447,6 +493,7 @@ def test_recommendation_action_becomes_durable_only_when_started_and_survives_pr
                 "tasks": [{
                     "title": "Study for ACT", "project_id": None,
                     "importance": "UNSPECIFIED", "estimated_minutes": None,
+                    "execution_mode": "SPLITTABLE",
                     "schedule": None, "deadline": None,
                 }],
                 "commitments": [], "unresolved_reason": None,

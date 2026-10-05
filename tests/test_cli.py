@@ -25,6 +25,7 @@ from personal_os.models import (
     CaptureFailureKind,
     CaptureStatus,
     CommitmentHardness,
+    TaskExecutionMode,
     TaskImportance,
     TaskScheduleMode,
 )
@@ -175,7 +176,7 @@ def test_product_command_does_not_migrate_stale_database(
 
     assert main([command]) == 1
 
-    assert "not current version 5" in capsys.readouterr().err
+    assert "not current version 6" in capsys.readouterr().err
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
 
@@ -282,8 +283,16 @@ def test_capture_applied_prints_only_created_records(
     )
     value.store.get_project.return_value = SimpleNamespace(id=7, name="College")
     value.store.get_task.side_effect = [
-        SimpleNamespace(id=34, title="Finish essay"),
-        SimpleNamespace(id=35, title="Email adviser"),
+        SimpleNamespace(
+            id=34, title="Finish essay",
+            execution_mode=TaskExecutionMode.SPLITTABLE,
+            estimated_minutes=45,
+        ),
+        SimpleNamespace(
+            id=35, title="Email adviser",
+            execution_mode=TaskExecutionMode.ONE_SITTING,
+            estimated_minutes=None,
+        ),
     ]
     value.store.get_fixed_commitment.return_value = SimpleNamespace(id=9, title="Call Mike")
     install_runtime(monkeypatch, value)
@@ -295,7 +304,11 @@ def test_capture_applied_prints_only_created_records(
     )
     assert capsys.readouterr().out == (
         "Captured #12: APPLIED\nProject #7: College\nTask #34: Finish essay\n"
-        "Task #35: Email adviser\nCommitment #9: Call Mike\n"
+        "  Planning: splittable; 45 minutes\n"
+        "Task #35: Email adviser\n"
+        "  Planning: one sitting; duration not set\n"
+        "  Needs a duration before it can be recommended.\n"
+        "Commitment #9: Call Mike\n"
     )
 
 
@@ -456,7 +469,11 @@ def test_start_forwards_only_inputs_and_prints_session(
         id=8, task_id=34, planned_minutes=25, started_at=NOW,
         selected_action=None,
     )
-    value.store.get_task.return_value = SimpleNamespace(id=34, title="Finish essay")
+    value.store.get_task.return_value = SimpleNamespace(
+        id=34, title="Finish essay",
+        execution_mode=TaskExecutionMode.SPLITTABLE,
+        estimated_minutes=25,
+    )
     install_runtime(monkeypatch, value)
 
     assert main(["start", "34", "25", "--available-minutes", "30", "--reason", "Ready", "--timezone", "UTC"]) == 0
@@ -468,7 +485,9 @@ def test_start_forwards_only_inputs_and_prints_session(
     assert call["start_reason"] == "Ready"
     assert call["context"].reference_time == NOW
     assert capsys.readouterr().out == (
-        "Started session #8\nTask #34: Finish essay\nPlanned: 25 minutes\n"
+        "Started session #8\nTask #34: Finish essay\n"
+        "  Planning: splittable; 25 minutes\n"
+        "Planned: 25 minutes\n"
         "Started: 2026-08-30T16:00:00.000000Z\n"
     )
 
@@ -481,7 +500,11 @@ def test_start_action_is_forwarded_and_confirmed(
         id=8, task_id=34, planned_minutes=25, started_at=NOW,
         selected_action="Draft one section.",
     )
-    value.store.get_task.return_value = SimpleNamespace(id=34, title="Essay")
+    value.store.get_task.return_value = SimpleNamespace(
+        id=34, title="Essay",
+        execution_mode=TaskExecutionMode.SPLITTABLE,
+        estimated_minutes=25,
+    )
     install_runtime(monkeypatch, value)
 
     assert main([
@@ -525,7 +548,11 @@ def test_feedback_forwards_verbatim_note_and_fresh_end(
         id=8, task_id=34, outcome=outcome,
         actual_duration=timedelta(hours=1, minutes=18, seconds=42, microseconds=123456),
     )
-    value.store.get_task.return_value = SimpleNamespace(id=34, title="Finish essay")
+    value.store.get_task.return_value = SimpleNamespace(
+        id=34, title="Finish essay",
+        execution_mode=TaskExecutionMode.SPLITTABLE,
+        estimated_minutes=25,
+    )
     install_runtime(monkeypatch, value)
 
     assert main([command, "--note", "  Kept verbatim  "]) == 0
@@ -571,12 +598,18 @@ def test_active_display_needs_no_timezone_and_does_not_mutate(
         id=8, task_id=34, planned_minutes=25, started_at=NOW,
         selected_action="Draft one section.",
     )
-    value.store.get_task.return_value = SimpleNamespace(id=34, title="Finish essay")
+    value.store.get_task.return_value = SimpleNamespace(
+        id=34, title="Finish essay",
+        execution_mode=TaskExecutionMode.SPLITTABLE,
+        estimated_minutes=25,
+    )
     install_runtime(monkeypatch, value)
 
     assert main(["active"]) == 0
     assert capsys.readouterr().out == (
-        "Active session #8\nTask #34: Finish essay\nAction: Draft one section.\n"
+        "Active session #8\nTask #34: Finish essay\n"
+        "  Planning: splittable; 25 minutes\n"
+        "Action: Draft one section.\n"
         "Planned: 25 minutes\n"
         "Started: 2026-08-30T16:00:00.000000Z\n"
     )
@@ -627,6 +660,7 @@ def test_complete_dogfood_cli_loop_uses_real_services_without_network(
                 "tasks": [{
                     "title": "Finish loop", "project_id": "NEW",
                     "importance": "MUST", "estimated_minutes": 10,
+                    "execution_mode": "SPLITTABLE",
                     "schedule": None, "deadline": None,
                 }],
                 "commitments": [],

@@ -12,7 +12,9 @@ from datetime import UTC, datetime, timedelta
 from personal_os.config import get_database_path, get_timezone_name
 from personal_os.database import initialize_database
 from personal_os.errors import PersonalOSError
-from personal_os.models import CaptureStatus, TaskScheduleMode, serialize_instant
+from personal_os.models import (
+    CaptureStatus, TaskExecutionMode, TaskScheduleMode, serialize_instant,
+)
 from personal_os.recommendation_types import (
     RecommendationContext,
     RecommendationResultKind,
@@ -96,6 +98,22 @@ def _context(args: argparse.Namespace) -> RecommendationContext:
 def _print_task(runtime: _CLIRuntime, task_id: int) -> None:
     task = runtime.store.get_task(task_id)
     print(f"Task #{task.id}: {task.title}")
+    mode = (
+        "one sitting"
+        if task.execution_mode is TaskExecutionMode.ONE_SITTING
+        else "splittable"
+    )
+    duration = (
+        "duration not set"
+        if task.estimated_minutes is None
+        else f"{task.estimated_minutes} minutes"
+    )
+    print(f"  Planning: {mode}; {duration}")
+    if (
+        task.execution_mode is TaskExecutionMode.ONE_SITTING
+        and task.estimated_minutes is None
+    ):
+        print("  Needs a duration before it can be recommended.")
 
 
 def _handle_capture(args: argparse.Namespace, runtime: _CLIRuntime) -> int:
@@ -271,6 +289,12 @@ def _print_state(snapshot: StateSnapshot) -> None:
             "    Estimate: "
             + ("none" if task.estimated_minutes is None else f"{task.estimated_minutes} minutes")
         )
+        print(f"    Execution mode: {task.execution_mode.value}")
+        if (
+            task.execution_mode is TaskExecutionMode.ONE_SITTING
+            and task.estimated_minutes is None
+        ):
+            print("    Needs a duration before it can be recommended.")
         print(f"    Source capture: {_source(task.source_capture_id)}")
 
     section("Commitments", snapshot.fixed_commitments)

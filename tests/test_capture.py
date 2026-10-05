@@ -56,9 +56,10 @@ def apply_payload(*, tasks=None, commitments=None, new_project=None):
             "commitments": commitments or [], "unresolved_reason": None}
 
 
-def task(title, *, project_id=None, schedule=None, deadline=None, minutes=None):
+def task(title, *, project_id=None, schedule=None, deadline=None, minutes=None, execution_mode="SPLITTABLE"):
     return {"title": title, "project_id": project_id, "importance": "UNSPECIFIED",
-            "estimated_minutes": minutes, "schedule": schedule, "deadline": deadline}
+            "estimated_minutes": minutes, "execution_mode": execution_mode,
+            "schedule": schedule, "deadline": deadline}
 
 
 def date_ir(kind, value=None):
@@ -94,6 +95,7 @@ def test_scheduleless_action_applies_as_standalone_flexible_task(
     assert captured.project_id is None
     assert captured.importance is TaskImportance.UNSPECIFIED
     assert captured.estimated_minutes is None
+    assert captured.execution_mode.value == "SPLITTABLE"
     assert captured.schedule_mode is TaskScheduleMode.FLEXIBLE
     assert captured.day_date is None
     assert captured.window_start is None
@@ -388,6 +390,32 @@ def test_task_schedule_deadline_and_estimate_semantics(store: SQLiteStateStore) 
     assert made[2].schedule_mode.value == "DAY"
     assert made[3].estimated_minutes == 30
     assert made[4].schedule_mode.value == "FLEXIBLE" and made[4].estimated_minutes is None
+
+
+def test_task_execution_mode_capture_semantics(store: SQLiteStateStore) -> None:
+    cases = [
+        ("Study for ACT", task("Study for ACT"), "SPLITTABLE", None),
+        (
+            "Take diagnostic PSAT",
+            task("Take diagnostic PSAT", execution_mode="ONE_SITTING"),
+            "ONE_SITTING",
+            None,
+        ),
+        (
+            "Take diagnostic test, about 3 hours",
+            task("Take diagnostic test", minutes=180, execution_mode="ONE_SITTING"),
+            "ONE_SITTING",
+            180,
+        ),
+    ]
+
+    for raw, intent, mode, minutes in cases:
+        result = CaptureService(store, FakeInterpreter(apply_payload(tasks=[intent]))).capture_text(
+            raw, reference_time=REFERENCE, timezone_name="UTC"
+        )
+        captured = store.get_task(result.task_ids[0])
+        assert captured.execution_mode.value == mode
+        assert captured.estimated_minutes == minutes
 
 
 def test_double_finalization_and_invalid_source_foreign_key_are_rejected(store: SQLiteStateStore) -> None:

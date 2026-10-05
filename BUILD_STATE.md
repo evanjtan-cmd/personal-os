@@ -1,6 +1,6 @@
 # Build State
 
-Last updated: 2026-10-01 for POS-020 Browser State / Inbox View.
+Last updated: 2026-10-05 for POS-021 Task Workability + Planning Correction.
 
 ## Implemented
 
@@ -8,11 +8,11 @@ Last updated: 2026-10-01 for POS-020 Browser State / Inbox View.
   dogfood CLI over the completed application services.
 - External runtime data at `~/.personal-os/personal_os.db`, overrideable through
   `PERSONAL_OS_DATA_DIR`.
-- Standard-library SQLite schema version 5 with explicit ordered migrations,
+- Standard-library SQLite schema version 6 with explicit ordered migrations,
   strict version-specific schema validation, transactional rollback, and
   verified foreign-key enforcement.
-- Fresh 0 → 1 → 2 → 3 → 4 → 5 initialization, existing
-  version-1/version-2/version-3/version-4 migration, and idempotent
+- Fresh 0 → 1 → 2 → 3 → 4 → 5 → 6 initialization, existing
+  version-1/version-2/version-3/version-4/version-5 migration, and idempotent
   current-version initialization.
 - Typed, validated application records and SQLite create/get/list/update
   operations for:
@@ -22,8 +22,9 @@ Last updated: 2026-10-01 for POS-020 Browser State / Inbox View.
   - structured rules;
   - inbox/unresolved items.
 - Task OPEN/BLOCKED/COMPLETED status, UNSPECIFIED/MUST/SHOULD/COULD importance,
-  FLEXIBLE/DAY/WINDOW scheduling, mutually exclusive date-only or exact-time
-  deadlines, and positive estimated durations.
+  FLEXIBLE/DAY/WINDOW scheduling, SPLITTABLE/ONE_SITTING execution mode,
+  mutually exclusive date-only or exact-time deadlines, and positive estimated
+  durations.
 - Fixed commitments with explicit UNKNOWN/HARD/SOFT classification and optional
   ends.
 - Canonical UTC instant storage, calendar-date storage, canonical JSON-object
@@ -44,9 +45,15 @@ Last updated: 2026-10-01 for POS-020 Browser State / Inbox View.
 - Read-only deterministic eligibility and availability evaluation, including
   missed-DAY metadata, half-open WINDOW handling, deadline classification, and
   HARD-only fixed-commitment bounds.
-- Duration-feasible recommendation candidates with the fixed 5–60 minute
-  ladder, explicit short-task support, deterministic feasible-MUST gating,
-  stable 50-candidate bounding, and strict selected-task/duration validation.
+- Duration-feasible recommendation candidates with the normal SPLITTABLE
+  5–60 minute ladder, explicit short-task support, ONE_SITTING full-duration
+  feasibility, deterministic feasible-MUST gating, stable 50-candidate
+  bounding, and strict selected-task/duration validation.
+- POS-021 task workability policy: SPLITTABLE tasks keep bounded partial-session
+  recommendations, with unknown availability capped at 30 minutes; ONE_SITTING
+  tasks require a known positive estimate and known sufficient availability,
+  and their only allowed duration is the full estimate, even above 60 minutes.
+  Recommendation and session start share this deterministic policy.
 - A separate lazy OpenAI Responses API recommendation ranker that receives only
   derived facts and returns an ephemeral recommendation with a concise concrete
   execution action, or a valid no-work result. The action is validated
@@ -120,6 +127,13 @@ Last updated: 2026-10-01 for POS-020 Browser State / Inbox View.
   AI, or mutation. A dedicated compact State page at `/state` loads and
   refreshes that overview, uses safe DOM text insertion, and shares clear Work
   and State navigation without changing the POS-019 Work flow.
+- POS-021 extends overview tasks with execution mode and estimated minutes,
+  adds Machine Interface v1 `update_task_planning` plus loopback
+  `POST /v1/task-planning` for updating only those two planning facts, and adds
+  a compact State-page planning editor for OPEN/BLOCKED tasks. Capture now
+  interprets execution mode without inventing durations, and Work/CLI capture
+  confirmations show title, splittable vs one-sitting, supplied duration, and
+  the warning when a one-sitting task still needs a duration.
 - Read-only full-state CLI inspection over one validated SQLite connection and
   explicit read transaction. All seven canonical entity groups are shown in
   deterministic ID order without initialization, migration, mutation,
@@ -222,6 +236,18 @@ Run on 2026-09-16 with Python 3.12.4 and pytest 8.4.2:
   `anyOf` is the necessary, structurally distinct deadline date/instant union.
   No live provider request was made by automated validation.
 - `git diff --check` — passed with exit code 0.
+
+Run for POS-021 on 2026-10-05 with Python 3.13.0 and pytest 8.4.2:
+
+- `.venv/bin/python -m pytest` — passed: 493 passed, 0 failed, using isolated
+  temporary databases and fake AI providers. HTTP tests required loopback bind
+  permission for disposable `127.0.0.1` servers.
+- `.venv/bin/python -m compileall -q src tests` — passed.
+- `node --check src/personal_os/static/work.js` and
+  `node --check src/personal_os/static/state.js` — passed.
+- `.venv/bin/python -m personal_os --help` and `.venv/bin/personal-os --help`
+  — passed.
+- `git diff --check` — passed.
 
 Run on 2026-09-21 with Python 3.13.0 and pytest 8.4.2:
 

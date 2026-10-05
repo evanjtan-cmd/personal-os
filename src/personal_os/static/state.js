@@ -31,10 +31,40 @@ function formatDeadline(deadline) {
   return `Deadline: ${formatInstant(deadline.at)}`;
 }
 
+function formatPlanning(task) {
+  const split = task.execution_mode === "ONE_SITTING"
+    ? "Needs one sitting"
+    : "Can be split across work sessions";
+  const duration = task.estimated_minutes === null
+    ? "Duration not set"
+    : `${task.estimated_minutes} min total`;
+  return `${split} · ${duration}`;
+}
+
+function planningWarning(task) {
+  return task.execution_mode === "ONE_SITTING" && task.estimated_minutes === null
+    ? "Needs a duration before it can be recommended."
+    : null;
+}
+
 function list(items, renderItem) {
   const output = element("ul", undefined, "state-list");
   for (const item of items) output.append(renderItem(item));
   return output;
+}
+
+async function postJson(path, body) {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    credentials: "omit",
+  });
+  const envelope = await response.json();
+  if (!response.ok || !envelope.ok) {
+    throw new Error(envelope.error?.message || `Request failed (${response.status})`);
+  }
+  return envelope.result;
 }
 
 function renderActive(session) {
@@ -75,11 +105,77 @@ function renderTasks(tasks) {
     );
     const deadline = formatDeadline(task.deadline);
     if (deadline) item.append(element("p", deadline));
-    if (task.estimated_minutes !== null) {
-      item.append(element("p", `Estimate: ${task.estimated_minutes} min`));
-    }
+    item.append(element("p", formatPlanning(task)));
+    const warning = planningWarning(task);
+    if (warning) item.append(element("p", warning, "planning-warning"));
+    item.append(renderPlanningEditor(task));
     return item;
   }));
+}
+
+function renderPlanningEditor(task) {
+  const details = document.createElement("details");
+  details.className = "planning-editor";
+  details.append(element("summary", "Edit planning"));
+
+  const form = document.createElement("form");
+  form.dataset.taskId = String(task.id);
+
+  const modeLabel = element("label", "Can this be split across work sessions?");
+  const modeSelect = document.createElement("select");
+  modeSelect.name = "execution_mode";
+  for (const [value, text] of [
+    ["SPLITTABLE", "Yes"],
+    ["ONE_SITTING", "No, it needs one sitting"],
+  ]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = text;
+    option.selected = task.execution_mode === value;
+    modeSelect.append(option);
+  }
+  modeLabel.append(modeSelect);
+
+  const minutesLabel = element("label", "About how long total?");
+  const minutesInput = document.createElement("input");
+  minutesInput.name = "estimated_minutes";
+  minutesInput.type = "number";
+  minutesInput.min = "1";
+  minutesInput.step = "1";
+  minutesInput.inputMode = "numeric";
+  minutesInput.placeholder = "Minutes";
+  minutesInput.value = task.estimated_minutes === null ? "" : String(task.estimated_minutes);
+  minutesLabel.append(minutesInput);
+
+  const message = element("p", "", "form-message");
+  message.hidden = true;
+  const actions = element("div", undefined, "planning-actions");
+  const save = element("button", "Save planning", "button primary");
+  save.type = "submit";
+  actions.append(save);
+  form.append(modeLabel, minutesLabel, actions, message);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const minutes = minutesInput.value.trim();
+    const body = {
+      task_id: task.id,
+      execution_mode: modeSelect.value,
+      estimated_minutes: minutes === "" ? null : Number(minutes),
+    };
+    message.hidden = true;
+    save.disabled = true;
+    try {
+      await postJson("/v1/task-planning", body);
+      await loadOverview();
+    } catch (caught) {
+      message.textContent = `${caught.message} Refresh state, then try again.`;
+      message.hidden = false;
+    } finally {
+      save.disabled = false;
+    }
+  });
+  details.append(form);
+  return details;
 }
 
 function renderInbox(items) {

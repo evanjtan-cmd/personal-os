@@ -191,7 +191,9 @@ class CaptureService:
                 if isinstance(resolved, _Unresolved): return self._unresolved(capture, response, payload, resolved.reason)
                 deadline_at = resolved
             base = {"title": intent.title, "project_id": project_id, "status": TaskStatus.OPEN, "importance": intent.importance,
-                    "deadline_date": deadline_date, "deadline_at": deadline_at, "estimated_minutes": intent.estimated_minutes}
+                    "deadline_date": deadline_date, "deadline_at": deadline_at,
+                    "estimated_minutes": intent.estimated_minutes,
+                    "execution_mode": intent.execution_mode}
             if intent.schedule.kind is TaskScheduleKind.DAY:
                 resolved_dates = []
                 for expression in intent.schedule.dates:

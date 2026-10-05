@@ -31,7 +31,7 @@
       <h2 id="capture-heading">What needs your attention?</h2>
       <form id="capture-form" class="capture-form">
         <label for="capture-text">New item
-          <textarea id="capture-text" name="raw_text" rows="2" placeholder="Finish biology worksheet tomorrow" required></textarea>
+          <textarea id="capture-text" name="raw_text" rows="2" required></textarea>
         </label>
         <button id="capture-button" class="button primary" type="submit">Capture</button>
       </form>
@@ -40,9 +40,10 @@
     </section>
 
     <form id="activate-form" class="controls">
-      <label for="time-cap">Time available <span class="unit">minutes</span>
-        <input id="time-cap" name="time_cap_minutes" type="number" min="0" step="1" inputmode="numeric" placeholder="No cap">
+      <label for="time-cap">How much time do you have? <span class="unit">optional</span>
+        <input id="time-cap" name="time_cap_minutes" type="number" min="0" step="1" inputmode="numeric" placeholder="Not sure" aria-describedby="time-cap-help">
       </label>
+      <p id="time-cap-help" class="field-help">Leave blank if you're not sure.</p>
       <button id="activate-button" class="button primary" type="submit">Find work</button>
     </form>
 

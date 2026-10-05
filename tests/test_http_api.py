@@ -21,7 +21,7 @@ from personal_os.recommendation_types import (
     RecommendationContext,
 )
 from personal_os.session import SessionService
-from personal_os.models import TaskStatus
+from personal_os.models import TaskExecutionMode, TaskStatus
 from personal_os.state import SQLiteStateStore
 
 NOW = datetime(2026, 9, 21, 14, 0, tzinfo=UTC)
@@ -268,9 +268,35 @@ def test_get_overview_returns_machine_envelope_without_configuration(api) -> Non
         "description": "Applications",
     }]
     assert response["result"]["tasks"][0]["id"] == task.id
+    assert response["result"]["tasks"][0]["execution_mode"] == "SPLITTABLE"
     assert response["result"]["inbox"][0]["raw_text"] == "Call Mike at 4"
     assert response["result"]["active_session"] is None
     assert ranker.calls == 0
+    runtime_factory.assert_called_once_with()
+
+
+def test_task_planning_endpoint_updates_only_planning_fields(api) -> None:
+    _, store, _, runtime_factory = api
+    task = store.create_task("Take diagnostic PSAT", estimated_minutes=30)
+
+    status, response, _ = request(api, {
+        "task_id": task.id,
+        "execution_mode": "ONE_SITTING",
+        "estimated_minutes": 180,
+    }, path="/v1/task-planning")
+
+    assert status == 200
+    assert response["operation"] == "update_task_planning"
+    assert response["result"] == {
+        "task_id": task.id,
+        "title": "Take diagnostic PSAT",
+        "execution_mode": "ONE_SITTING",
+        "estimated_minutes": 180,
+    }
+    updated = store.get_task(task.id)
+    assert updated.title == task.title
+    assert updated.execution_mode is TaskExecutionMode.ONE_SITTING
+    assert updated.estimated_minutes == 180
     runtime_factory.assert_called_once_with()
 
 
@@ -315,6 +341,7 @@ def test_capture_uses_configured_timezone_when_http_omits_it(
                         "project_id": None,
                         "importance": "UNSPECIFIED",
                         "estimated_minutes": None,
+                        "execution_mode": "SPLITTABLE",
                         "schedule": {
                             "kind": "DAY",
                             "dates": [{"kind": "TOMORROW", "value": None}],
@@ -358,7 +385,13 @@ def test_capture_uses_configured_timezone_when_http_omits_it(
             "capture_id": 1,
             "status": "APPLIED",
             "project": None,
-            "tasks": [{"id": 1, "title": "Finish biology worksheet"}],
+            "tasks": [{
+                "id": 1,
+                "title": "Finish biology worksheet",
+                "execution_mode": "SPLITTABLE",
+                "estimated_minutes": None,
+                "planning_note": None,
+            }],
             "commitments": [],
         }
         capture = store.get_capture(1)
@@ -505,6 +538,10 @@ def test_start_revalidates_stale_recommendation(api) -> None:
         ("/v1/capture", {"raw_text": "   "}),
         ("/v1/capture", {"raw_text": 42}),
         ("/v1/capture", {"raw_text": "Study", "current_time": "now"}),
+        ("/v1/task-planning", {"task_id": 1, "execution_mode": "SPLITTABLE"}),
+        ("/v1/task-planning", {"task_id": 1, "execution_mode": "MAYBE", "estimated_minutes": None}),
+        ("/v1/task-planning", {"task_id": 1, "execution_mode": "SPLITTABLE", "estimated_minutes": 0}),
+        ("/v1/task-planning", {"task_id": 1, "execution_mode": "SPLITTABLE", "estimated_minutes": None, "title": "Rename"}),
     ],
 )
 def test_new_endpoints_reject_invalid_bodies_before_runtime(api, path, body) -> None:
@@ -521,7 +558,7 @@ def test_feedback_without_session_is_structured_error(api) -> None:
 
 
 @pytest.mark.parametrize(
-    "path", ["/v1/activate", "/v1/start", "/v1/feedback", "/v1/capture"]
+    "path", ["/v1/activate", "/v1/start", "/v1/feedback", "/v1/capture", "/v1/task-planning"]
 )
 def test_host_and_cross_origin_requests_are_rejected(api, path) -> None:
     body = {
@@ -529,6 +566,7 @@ def test_host_and_cross_origin_requests_are_rejected(api, path) -> None:
         "/v1/start": {"task_id": 1, "planned_minutes": 5},
         "/v1/feedback": {"outcome": "PROGRESS"},
         "/v1/capture": {"raw_text": "Study for ACT"},
+        "/v1/task-planning": {"task_id": 1, "execution_mode": "SPLITTABLE", "estimated_minutes": None},
     }[path]
     for header in (
         {"Host": "example.com"},
@@ -593,6 +631,12 @@ def test_work_page_assets_do_not_collect_or_send_timezone() -> None:
     assert "body.timezone" not in script
     assert "time_cap_minutes" in script
     assert "available_minutes" in script
+    assert "Finish biology worksheet tomorrow" not in html
+    assert "No cap" not in html
+    assert "How much time do you have?" in html
+    assert "optional" in html
+    assert "placeholder=\"Not sure\"" in html
+    assert "Leave blank if you're not sure" in html
 
 
 def test_work_page_assets_include_capture_without_client_time_context() -> None:
@@ -624,6 +668,10 @@ def test_state_page_assets_use_overview_and_safe_dom_rendering() -> None:
     assert "textContent" in script
     assert "createElement" in script
     assert "innerHTML" not in script
+    assert 'postJson("/v1/task-planning"' in script
+    assert "Can this be split across work sessions?" in script
+    assert "No, it needs one sitting" in script
+    assert "Needs a duration before it can be recommended." in script
     for section in ("active-session", "tasks", "inbox", "projects"):
         assert f'id="{section}"' in state_html
 

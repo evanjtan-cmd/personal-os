@@ -56,9 +56,10 @@ CAPTURE_SCHEMA: dict[str, Any] = {
             "title": {"type": "string"}, "project_id": {"type": ["integer", "string", "null"]},
             "importance": {"type": "string", "enum": ["UNSPECIFIED", "MUST", "SHOULD", "COULD"]},
             "estimated_minutes": _nullable({"type": "integer", "minimum": 1}),
+            "execution_mode": {"type": "string", "enum": ["SPLITTABLE", "ONE_SITTING"]},
             "schedule": _nullable({"type": "object", "additionalProperties": False, "properties": {"kind": {"type": "string", "enum": ["DAY", "THIS_WEEKEND"]}, "dates": {"type": "array", "items": DATE_IR}}, "required": ["kind", "dates"]}),
             "deadline": _nullable({"type": "object", "additionalProperties": False, "properties": {"kind": {"type": "string", "enum": ["DATE", "INSTANT"]}, "value": DEADLINE_VALUE_IR}, "required": ["kind", "value"]}),
-        }, "required": ["title", "project_id", "importance", "estimated_minutes", "schedule", "deadline"]}},
+        }, "required": ["title", "project_id", "importance", "estimated_minutes", "execution_mode", "schedule", "deadline"]}},
         "commitments": {"type": "array", "items": {"type": "object", "additionalProperties": False, "properties": {"title": {"type": "string"}, "start": INSTANT_IR, "hardness": {"type": "string", "enum": ["UNKNOWN", "HARD", "SOFT"]}}, "required": ["title", "start", "hardness"]}},
         "unresolved_reason": _nullable({"type": "string"}),
     },
@@ -112,10 +113,16 @@ class OpenAIResponsesCaptureInterpreter:
             "Extract only explicit Personal OS capture semantics. Ordinary actionable tasks do not require "
             "scheduling information. When no date, time, or window is explicit, use schedule null; this means "
             "FLEXIBLE, not UNRESOLVED. When no deadline is explicit, use deadline null. When no importance is "
-            "explicit, use UNSPECIFIED. When no duration is explicit, use estimated_minutes null. When no "
+            "explicit, use UNSPECIFIED. When no duration is explicit, use estimated_minutes null. Classify "
+            "execution_mode as SPLITTABLE when the task can usefully be advanced in partial bounded sessions "
+            "such as studying, researching, writing, planning, or general project work. Classify execution_mode "
+            "as ONE_SITTING only when the requested action must be completed in one continuous sitting, such as "
+            "taking a test or exam. Absence of duration does not make ordinary SPLITTABLE work unresolved. "
+            "ONE_SITTING with unknown duration is valid persisted state; keep estimated_minutes null unless "
+            "the user supplied a duration. Do not use world knowledge to guess durations. When no "
             "project relationship is explicit, use project_id null. Do not return UNRESOLVED solely because "
             "any of these optional facts are absent. Study for ACT and Buy milk are APPLY standalone FLEXIBLE "
-            "tasks. Preserve an explicitly supplied temporal fact in the appropriate existing task temporal "
+            "SPLITTABLE tasks. Preserve an explicitly supplied temporal fact in the appropriate existing task temporal "
             "representation rather than dropping it because other optional fields are absent. Do not invent an "
             "exact clock time or deadline semantics that were not expressed, and do not discard scheduling or "
             "deadline semantics that were expressed. Use UNRESOLVED only when safely representing "

@@ -8,7 +8,7 @@ import pytest
 from personal_os.database import TABLE_DDL, initialize_database
 from personal_os.errors import PersistenceError
 from personal_os.models import (
-    CommitmentHardness, ProjectStatus, TaskImportance, TaskScheduleMode,
+    CommitmentHardness, ProjectStatus, TaskExecutionMode, TaskImportance, TaskScheduleMode,
     TaskStatus,
 )
 from personal_os.recommendation import RecommendationService, allowed_durations
@@ -49,17 +49,18 @@ class Ranker:
 @pytest.mark.parametrize(
     ("estimate", "available", "expected"),
     [
-        (None, None, (5, 10, 15, 20, 25, 30, 35, 45, 60)),
+        (None, None, (5, 10, 15, 20, 25, 30)),
         (None, 240, (5, 10, 15, 20, 25, 30, 35, 45, 60)),
         (28, None, (5, 10, 15, 20, 25, 28)),
-        (35, None, (5, 10, 15, 20, 25, 30, 35)),
-        (90, None, (5, 10, 15, 20, 25, 30, 35, 45, 60)),
+        (35, None, (5, 10, 15, 20, 25, 30)),
+        (90, None, (5, 10, 15, 20, 25, 30)),
         (3, None, (3,)), (3, 2, ()), (2, 4, (2,)),
         (None, 4, ()), (None, 0, ()),
     ],
 )
 def test_duration_policy(estimate, available, expected) -> None:
-    assert allowed_durations(estimate, available) == expected
+    kind = AvailabilityKind.NO_KNOWN_HARD_BOUND if available is None else AvailabilityKind.FINITE
+    assert allowed_durations(TaskExecutionMode.SPLITTABLE, estimate, kind, available) == expected
 
 
 def test_success_returns_ephemeral_recommendation_and_does_not_write(store) -> None:
@@ -123,6 +124,58 @@ def test_explicit_short_task_can_be_ranked_and_must_gate(store) -> None:
     context, candidates = ranker.calls[0]
     assert context.must_gated is True
     assert [(item.task_id, item.allowed_durations) for item in candidates] == [(must.id, (2,))]
+
+
+def test_one_sitting_recommendation_requires_known_full_fit(store) -> None:
+    store.create_task(
+        "Take diagnostic test",
+        execution_mode=TaskExecutionMode.ONE_SITTING,
+    )
+    ranker = Ranker()
+    unknown_duration = RecommendationService(store, ranker).recommend(
+        RecommendationContext(NOW, "UTC", 240)
+    )
+    assert unknown_duration.kind is RecommendationResultKind.NO_WORK
+    assert not ranker.calls
+
+    long = store.create_task(
+        "Take practice exam",
+        execution_mode=TaskExecutionMode.ONE_SITTING,
+        estimated_minutes=180,
+    )
+    for available in (None, 60):
+        result = RecommendationService(store, Ranker()).recommend(
+            RecommendationContext(NOW, "UTC", available)
+        )
+        assert result.kind is RecommendationResultKind.NO_WORK
+
+    ranker = Ranker(RecommendationChoice(
+        RecommendationChoiceKind.RECOMMEND, long.id, 180,
+        "Take practice exam.", "Full sitting fits.",
+    ))
+    result = RecommendationService(store, ranker).recommend(
+        RecommendationContext(NOW, "UTC", 180)
+    )
+    assert result.kind is RecommendationResultKind.RECOMMEND
+    assert result.duration_minutes == 180
+    assert ranker.calls[0][1][0].allowed_durations == (180,)
+
+
+def test_infeasible_must_one_sitting_does_not_gate_feasible_work(store) -> None:
+    store.create_task(
+        "Must exam",
+        importance=TaskImportance.MUST,
+        execution_mode=TaskExecutionMode.ONE_SITTING,
+        estimated_minutes=180,
+    )
+    lower = store.create_task("Short should", importance=TaskImportance.SHOULD, estimated_minutes=10)
+    ranker = Ranker()
+
+    RecommendationService(store, ranker).recommend(RecommendationContext(NOW, "UTC", 60))
+
+    context, candidates = ranker.calls[0]
+    assert not context.must_gated
+    assert [item.task_id for item in candidates] == [lower.id]
 
 
 @pytest.mark.parametrize("kind", ["blocked", "future", "duration"])
@@ -276,14 +329,14 @@ def test_bounding_preserves_comparable_deadline_severity_over_task_id(store) -> 
     assert newer_ids[-1] not in supplied_ids
 
 
-def test_snapshot_is_coherent_and_schema_remains_version_five(store) -> None:
+def test_snapshot_is_coherent_and_schema_remains_current_version(store) -> None:
     project = store.create_project("P")
     task = store.create_task("T", project_id=project.id)
     commitment = store.create_fixed_commitment("C", NOW + timedelta(hours=1))
     projects, tasks, commitments = store.read_recommendation_snapshot()
     assert (projects, tasks, commitments) == ([project], [task], [commitment])
     with sqlite3.connect(store.database_path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 6
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
     assert tables == set(TABLE_DDL)
 

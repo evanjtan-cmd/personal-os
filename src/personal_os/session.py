@@ -61,7 +61,8 @@ def validate_session_start(
             "a HARD commitment is active",
         )
     if planned_minutes not in allowed_durations(
-        selected.estimated_minutes, availability.available_minutes
+        selected.execution_mode, selected.estimated_minutes, availability.kind,
+        availability.available_minutes,
     ):
         raise SessionStartError(
             SessionStartFailureKind.DURATION_NOT_ALLOWED,
@@ -74,7 +75,8 @@ def validate_session_start(
             local_date=local_date,
         ).eligible
         and bool(allowed_durations(
-            item.estimated_minutes, availability.available_minutes
+            item.execution_mode, item.estimated_minutes, availability.kind,
+            availability.available_minutes,
         ))
         for item in tasks
     )
