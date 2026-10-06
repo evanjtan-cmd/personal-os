@@ -652,6 +652,8 @@ def test_work_page_assets_include_capture_without_client_time_context() -> None:
     assert "reference_time" not in script
     assert "current_time" not in script
     assert "body.timezone" not in script
+    assert "Capture failed while interpreting this item" in script
+    assert "failure_reason" not in script
 
 
 def test_state_page_assets_use_overview_and_safe_dom_rendering() -> None:

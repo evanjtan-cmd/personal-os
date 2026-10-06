@@ -287,6 +287,14 @@ bare `at 4` to AM or PM, infer a missing year, invent importance or duration,
 silently choose a project, or express recurrence. A bare clock and an explicit
 date without a year remain UNRESOLVED rather than becoming failed captures.
 
+The provider-facing capture schema may use a simpler wire representation than
+the canonical typed intents. Temporal provider wire uses fixed tagged date and
+deadline objects: weekday dates carry weekday names that are deterministically
+converted to canonical ISO weekday integers, explicit dates and missing-year
+dates use their own text fields, and deadlines carry `kind`, `date`, and a
+nullable `clock`. Canonical validation still enforces valid DATE-versus-INSTANT
+deadline combinations and still rejects unsupported or invented temporal facts.
+
 Relative dates are resolved deterministically from the capture's trusted,
 timezone-aware reference instant and IANA timezone. TODAY, TOMORROW, weekday,
 next-weekday, explicit full dates, and this-weekend windows are supported. Day

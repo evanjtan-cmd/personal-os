@@ -26,10 +26,34 @@ def _nullable(schema: dict[str, Any]) -> dict[str, Any]:
     raise ValueError("nullable schema must have a type or direct anyOf union")
 
 
+WEEKDAY_TO_ISO = {
+    "MONDAY": 1,
+    "TUESDAY": 2,
+    "WEDNESDAY": 3,
+    "THURSDAY": 4,
+    "FRIDAY": 5,
+    "SATURDAY": 6,
+    "SUNDAY": 7,
+}
 DATE_IR = {
-    "type": "object", "additionalProperties": False,
-    "properties": {"kind": {"type": "string", "enum": ["TODAY", "TOMORROW", "WEEKDAY", "NEXT_WEEKDAY", "EXPLICIT_DATE", "MISSING_YEAR"]}, "value": {"type": ["string", "integer", "null"], "minimum": 1, "maximum": 7}},
-    "required": ["kind", "value"],
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "kind": {
+            "type": "string",
+            "enum": [
+                "TODAY", "TOMORROW", "WEEKDAY", "NEXT_WEEKDAY",
+                "EXPLICIT_DATE", "MISSING_YEAR",
+            ],
+        },
+        "weekday": {
+            "type": ["string", "null"],
+            "enum": [*WEEKDAY_TO_ISO, None],
+        },
+        "date": {"type": ["string", "null"]},
+        "text": {"type": ["string", "null"]},
+    },
+    "required": ["kind", "weekday", "date", "text"],
 }
 CLOCK_IR = {
     "type": "object",
@@ -46,7 +70,16 @@ CLOCK_IR = {
     "required": ["kind", "hour", "minute", "period"],
 }
 INSTANT_IR = {"type": "object", "additionalProperties": False, "properties": {"date": DATE_IR, "clock": CLOCK_IR}, "required": ["date", "clock"]}
-DEADLINE_VALUE_IR = {"anyOf": [DATE_IR, INSTANT_IR]}
+DEADLINE_IR = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "kind": {"type": "string", "enum": ["DATE", "INSTANT"]},
+        "date": DATE_IR,
+        "clock": _nullable(CLOCK_IR),
+    },
+    "required": ["kind", "date", "clock"],
+}
 CAPTURE_SCHEMA: dict[str, Any] = {
     "type": "object", "additionalProperties": False,
     "properties": {
@@ -58,7 +91,7 @@ CAPTURE_SCHEMA: dict[str, Any] = {
             "estimated_minutes": _nullable({"type": "integer", "minimum": 1}),
             "execution_mode": {"type": "string", "enum": ["SPLITTABLE", "ONE_SITTING"]},
             "schedule": _nullable({"type": "object", "additionalProperties": False, "properties": {"kind": {"type": "string", "enum": ["DAY", "THIS_WEEKEND"]}, "dates": {"type": "array", "items": DATE_IR}}, "required": ["kind", "dates"]}),
-            "deadline": _nullable({"type": "object", "additionalProperties": False, "properties": {"kind": {"type": "string", "enum": ["DATE", "INSTANT"]}, "value": DEADLINE_VALUE_IR}, "required": ["kind", "value"]}),
+            "deadline": _nullable(DEADLINE_IR),
         }, "required": ["title", "project_id", "importance", "estimated_minutes", "execution_mode", "schedule", "deadline"]}},
         "commitments": {"type": "array", "items": {"type": "object", "additionalProperties": False, "properties": {"title": {"type": "string"}, "start": INSTANT_IR, "hardness": {"type": "string", "enum": ["UNKNOWN", "HARD", "SOFT"]}}, "required": ["title", "start", "hardness"]}},
         "unresolved_reason": _nullable({"type": "string"}),
@@ -67,12 +100,116 @@ CAPTURE_SCHEMA: dict[str, Any] = {
 }
 
 
-def _normalize_capture_wire_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Normalize one strict-wire null substitute before canonical parsing."""
+def _wire_object(value: object, keys: set[str], label: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != keys:
+        raise InterpretationValidationError(f"{label} has an invalid wire shape")
+    return value
 
-    if payload.get("kind") == "APPLY" and payload.get("unresolved_reason") == "":
-        return {**payload, "unresolved_reason": None}
-    return payload
+
+def _normalize_date_wire(value: object) -> dict[str, Any]:
+    data = _wire_object(value, {"kind", "weekday", "date", "text"}, "date expression")
+    kind = data["kind"]
+    weekday, date, text = data["weekday"], data["date"], data["text"]
+    if kind in {"TODAY", "TOMORROW"}:
+        if weekday is not None or date is not None or text is not None:
+            raise InterpretationValidationError("relative date wire fields must be null")
+        return {"kind": kind, "value": None}
+    if kind in {"WEEKDAY", "NEXT_WEEKDAY"}:
+        if weekday not in WEEKDAY_TO_ISO or date is not None or text is not None:
+            raise InterpretationValidationError("weekday date wire fields are invalid")
+        return {"kind": kind, "value": WEEKDAY_TO_ISO[weekday]}
+    if kind == "EXPLICIT_DATE":
+        if not isinstance(date, str) or weekday is not None or text is not None:
+            raise InterpretationValidationError("explicit date wire fields are invalid")
+        return {"kind": kind, "value": date}
+    if kind == "MISSING_YEAR":
+        if not isinstance(text, str) or weekday is not None or date is not None:
+            raise InterpretationValidationError("missing-year date wire fields are invalid")
+        return {"kind": kind, "value": text}
+    raise InterpretationValidationError("unsupported date expression")
+
+
+def _normalize_instant_wire(value: object) -> dict[str, Any]:
+    data = _wire_object(value, {"date", "clock"}, "date-time expression")
+    return {"date": _normalize_date_wire(data["date"]), "clock": data["clock"]}
+
+
+def _normalize_deadline_wire(value: object) -> dict[str, Any]:
+    data = _wire_object(value, {"kind", "date", "clock"}, "deadline")
+    kind = data["kind"]
+    if kind == "DATE":
+        if data["clock"] is not None:
+            raise InterpretationValidationError("date deadline wire clock must be null")
+        return {"kind": "DATE", "value": _normalize_date_wire(data["date"])}
+    if kind == "INSTANT":
+        if data["clock"] is None:
+            raise InterpretationValidationError("instant deadline wire clock is required")
+        return {
+            "kind": "INSTANT",
+            "value": {
+                "date": _normalize_date_wire(data["date"]),
+                "clock": data["clock"],
+            },
+        }
+    raise InterpretationValidationError("unsupported deadline")
+
+
+def _normalize_schedule_wire(value: object) -> dict[str, Any]:
+    data = _wire_object(value, {"kind", "dates"}, "task schedule")
+    dates = data["dates"]
+    if not isinstance(dates, list):
+        raise InterpretationValidationError("schedule dates must be an array")
+    return {
+        "kind": data["kind"],
+        "dates": [_normalize_date_wire(item) for item in dates],
+    }
+
+
+def _normalize_task_wire(value: object) -> dict[str, Any]:
+    data = _wire_object(
+        value,
+        {
+            "title", "project_id", "importance", "estimated_minutes",
+            "execution_mode", "schedule", "deadline",
+        },
+        "task",
+    )
+    return {
+        **data,
+        "schedule": None if data["schedule"] is None else _normalize_schedule_wire(data["schedule"]),
+        "deadline": None if data["deadline"] is None else _normalize_deadline_wire(data["deadline"]),
+    }
+
+
+def _normalize_commitment_wire(value: object) -> dict[str, Any]:
+    data = _wire_object(value, {"title", "start", "hardness"}, "commitment")
+    return {**data, "start": _normalize_instant_wire(data["start"])}
+
+
+def _normalize_capture_wire_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Normalize strict provider wire output before canonical parsing."""
+
+    data = _wire_object(
+        payload,
+        {"kind", "new_project", "tasks", "commitments", "unresolved_reason"},
+        "capture interpretation",
+    )
+    if not isinstance(data["tasks"], list):
+        raise InterpretationValidationError("tasks must be an array")
+    if not isinstance(data["commitments"], list):
+        raise InterpretationValidationError("commitments must be an array")
+    normalized = {
+        **data,
+        "tasks": [_normalize_task_wire(item) for item in data["tasks"]],
+        "commitments": [
+            _normalize_commitment_wire(item)
+            for item in data["commitments"]
+        ],
+    }
+    if data["kind"] == "APPLY" and data["unresolved_reason"] == "":
+        normalized["unresolved_reason"] = None
+    return normalized
+
 
 
 class OpenAIResponsesCaptureInterpreter:
@@ -130,8 +267,11 @@ class OpenAIResponsesCaptureInterpreter:
             "Meet Sam at 4 is UNRESOLVED because AM/PM cannot be inferred. Never infer hard facts. Never invent a date, time, deadline, "
             "importance, duration, project identity, recurrence, commitment hardness, or other hard fact. Use UNKNOWN "
             "commitment hardness unless the user's language explicitly establishes HARD or SOFT semantics. "
-            "Use BARE_HOUR for a bare clock hour, "
-            "MISSING_YEAR for a date without a year, and UNRESOLVED for unsupported or uncertain meaning. "
+            "Use BARE_HOUR for a bare clock hour, MISSING_YEAR for a date without a year, weekday names "
+            "MONDAY through SUNDAY for weekday dates, and UNRESOLVED for unsupported or uncertain meaning. "
+            "For every date object, fill only the field matching its kind: weekday for WEEKDAY or NEXT_WEEKDAY, "
+            "date for EXPLICIT_DATE, text for MISSING_YEAR, and nulls for TODAY or TOMORROW. For every deadline, "
+            "use kind DATE with clock null or kind INSTANT with a non-null clock. "
             "If kind is APPLY, output unresolved_reason as null. If kind is UNRESOLVED, output a concise "
             "non-empty explanation in unresolved_reason. Never use an empty string as a substitute for null. "
             "For task project_id, use an existing integer ID only when the user's text clearly associates "
@@ -172,8 +312,8 @@ class OpenAIResponsesCaptureInterpreter:
             raise InterpretationError(CaptureFailureKind.INVALID_OUTPUT, f"{provider} response was malformed JSON", provider=provider, model=str(response_model), response_id=None if response_id is None else str(response_id)) from exc
         if not isinstance(payload, dict):
             raise InterpretationError(CaptureFailureKind.INVALID_OUTPUT, f"{provider} response was not a JSON object", provider=provider, model=str(response_model), response_id=None if response_id is None else str(response_id))
-        payload = _normalize_capture_wire_payload(payload)
         try:
+            payload = _normalize_capture_wire_payload(payload)
             interpretation = parse_interpretation(payload)
         except InterpretationValidationError as exc:
             raise InterpretationError(CaptureFailureKind.INVALID_OUTPUT, str(exc), provider=provider, model=str(response_model), response_id=None if response_id is None else str(response_id)) from exc

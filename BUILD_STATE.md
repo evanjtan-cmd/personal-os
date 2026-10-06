@@ -1,6 +1,6 @@
 # Build State
 
-Last updated: 2026-10-05 for POS-021 Task Workability + Planning Correction.
+Last updated: 2026-10-06 for POS-022 Temporal Capture Robustness.
 
 ## Implemented
 
@@ -38,6 +38,11 @@ Last updated: 2026-10-05 for POS-021 Task Workability + Planning Correction.
 - Natural-language capture application flow with a constrained OpenAI Responses
   API adapter, deterministic relative-date and local-time resolution, atomic
   multi-record application, and unresolved inbox routing.
+- POS-022 gives the capture provider schema a fixed temporal wire contract:
+  tagged date objects with explicit weekday/date/text fields, weekday-name to
+  ISO-weekday normalization at the adapter boundary, and fixed deadline objects
+  with `kind`, `date`, and nullable `clock`. Canonical date/deadline semantics
+  and fail-closed validation remain unchanged.
 - Schedule-less actionable captures use canonical FLEXIBLE task semantics.
   Missing optional schedule, deadline, importance, duration, or project facts
   do not cause UNRESOLVED; genuine ambiguity in explicitly supplied meaning
@@ -118,7 +123,7 @@ Last updated: 2026-10-05 for POS-021 Task Workability + Planning Correction.
   timezone configuration, shared bridge validation/serialization, and the
   canonical `CaptureService`; APPLIED, UNRESOLVED, and durable FAILED outcomes
   retain their existing semantics. The Work page sends only `raw_text`, shows
-  created names or unresolved/failure details, clears successful input, and
+  created names or unresolved reasons, clears successful input, and
   leaves recommendation and session state untouched.
 - POS-020 adds the read-only Machine Interface v1 `overview` operation and
   `GET /v1/overview`. The purpose-built contract derives active projects,
@@ -134,6 +139,10 @@ Last updated: 2026-10-05 for POS-021 Task Workability + Planning Correction.
   interprets execution mode without inventing durations, and Work/CLI capture
   confirmations show title, splittable vs one-sitting, supplied duration, and
   the warning when a one-sitting task still needs a duration.
+- POS-022 keeps detailed capture failure information durable and available to
+  internal/API consumers, while the normal browser Work capture surface displays
+  a concise retry message for FAILED captures instead of raw provider exception
+  bodies. UNRESOLVED results still show their human-readable reason.
 - Read-only full-state CLI inspection over one validated SQLite connection and
   explicit read transaction. All seven canonical entity groups are shown in
   deterministic ID order without initialization, migration, mutation,
@@ -223,19 +232,38 @@ Run on 2026-09-16 with Python 3.12.4 and pytest 8.4.2:
   requirements, official and overridden Groq base URLs, lazy client
   construction, structured parsing, refusals, malformed output, provider
   failures, CLI runtime wiring, durable Groq provider/model metadata, and a
-  canonical capture schema with neither nested `anyOf` constructs nor
-  structurally ambiguous object unions. The unified strict clock wire shape
-  preserves every date/project/clock/deadline alternative, while typed parsing
+  capture schema with no `anyOf` constructs. The fixed temporal provider wire
+  shape preserves TODAY/TOMORROW, weekdays, next weekdays, explicit dates,
+  missing-year dates, DATE deadlines, INSTANT deadlines, and strict clock
+  behavior by normalizing only at the adapter boundary; malformed date/deadline
+  combinations remain fail-closed invalid output. The unified strict clock wire
+  shape preserves every project/clock alternative, while typed parsing
   continues to reject invalid kind/hour/period combinations. The capture
   adapter narrowly maps only an APPLY wire response with
   `unresolved_reason=""` to canonical null; UNRESOLVED and all other empty text
   remain fail-closed. The project-reference wire field uses a simple
   integer/string/null type list; canonical parsing still admits only a positive
   integer, exact `NEW`, or null, and deterministic application still requires
-  `NEW` to correspond to a supplied new project. The only remaining schema
-  `anyOf` is the necessary, structurally distinct deadline date/instant union.
+  `NEW` to correspond to a supplied new project. Browser asset tests confirm
+  FAILED captures display a concise retry message without raw failure reasons.
   No live provider request was made by automated validation.
 - `git diff --check` — passed with exit code 0.
+
+Run for POS-022 on 2026-10-06 with Python 3.13.0 and pytest 8.4.2:
+
+- `.venv/bin/python -m pytest tests/test_openai_capture.py tests/test_capture.py -q`
+  — passed: 75 passed.
+- `.venv/bin/python -m pytest tests/test_http_api.py::test_work_page_assets_include_capture_without_client_time_context -q`
+  — passed: 1 passed.
+- `.venv/bin/python -m pytest tests/test_http_api.py -q` — passed: 54 passed
+  in 27.89s.
+- `.venv/bin/python -m pytest` — passed: 504 passed in 46.59s.
+- `.venv/bin/python -m compileall -q src tests` — passed.
+- `node --check src/personal_os/static/work.js` and
+  `node --check src/personal_os/static/state.js` — passed.
+- `git diff --check` — passed.
+- No real user data, live AI provider, calendar integration, commit, push,
+  merge, or deploy was used.
 
 Run for POS-021 on 2026-10-05 with Python 3.13.0 and pytest 8.4.2:
 

@@ -162,6 +162,24 @@ user meaning remains UNRESOLVED rather than being invented. This distinction is
 enforced at the interpreter contract; application code does not heuristically
 post-process provider-generated unresolved reasons.
 
+## 2026-10-06 — Fixed temporal provider wire shape
+
+Capture's canonical typed semantics still use `DateExpression`,
+`DeadlineIntent`, and deterministic local-time resolution. The production AI
+provider schema is intentionally simpler than that canonical model for temporal
+fields: date wire objects use a fixed tagged shape with separate nullable
+`weekday`, `date`, and `text` fields, and weekday names `MONDAY` through
+`SUNDAY` are converted deterministically to canonical ISO weekday integers at
+the adapter boundary.
+
+Deadline wire objects likewise use one fixed object shape with `kind`, `date`,
+and nullable `clock`. Canonical validation rejects malformed combinations such
+as a DATE deadline with a clock or an INSTANT deadline without one. The provider
+schema does not use temporal object unions or a single date field whose type
+alternates between string, integer, and null. This is a provider-facing
+robustness decision only; it does not add calendar integration, weaken
+canonical validation, or permit invented temporal facts.
+
 ## 2026-09-01 — Ephemeral concrete recommendation actions
 
 Deterministic logic continues to define the eligible candidate set and each

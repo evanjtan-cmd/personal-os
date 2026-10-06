@@ -84,7 +84,8 @@ function renderCaptureResult(result) {
     output.textContent = `Saved to Inbox #${result.inbox_item_id}: ${result.unresolved_reason}`;
     output.classList.add("unresolved");
   } else if (result.status === "FAILED") {
-    output.textContent = `Capture #${result.capture_id} failed (${result.failure_kind}): ${result.failure_reason}`;
+    const kind = result.failure_kind ? ` (${result.failure_kind})` : "";
+    output.textContent = `Capture failed while interpreting this item${kind}. Please try again.`;
     output.classList.add("failed");
   } else {
     throw new Error("Unexpected capture response. Refresh and try again.");
@@ -110,7 +111,7 @@ async function captureItem() {
     renderCaptureResult(result);
     if (result.status !== "FAILED") input.value = "";
   } catch (error) {
-    output.textContent = `${error.message} Check the server configuration, then try again.`;
+    output.textContent = "Capture failed while interpreting this item. Please try again.";
     output.className = "capture-result failed";
     output.hidden = false;
   } finally {

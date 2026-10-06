@@ -66,6 +66,27 @@ def date_ir(kind, value=None):
     return {"kind": kind, "value": value}
 
 
+def wire_date(kind: str, *, weekday: str | None = None, date: str | None = None, text: str | None = None) -> dict:
+    return {"kind": kind, "weekday": weekday, "date": date, "text": text}
+
+
+def wire_clock(kind: str, hour: int, minute: int, period: str | None = None) -> dict:
+    return {"kind": kind, "hour": hour, "minute": minute, "period": period}
+
+
+def provider_adapter(payload: dict) -> OpenAIResponsesCaptureInterpreter:
+    response = SimpleNamespace(
+        id="fake-response", model="fake-model", status="completed",
+        output=[], output_text=json.dumps(payload),
+    )
+    client = SimpleNamespace(
+        responses=SimpleNamespace(create=lambda **_kwargs: response)
+    )
+    return OpenAIResponsesCaptureInterpreter(
+        client=client, model="fake-model", provider="groq"
+    )
+
+
 def instant(day, clock):
     return {"date": day, "clock": clock}
 
@@ -188,6 +209,52 @@ def test_explicit_pm_commitment_resolves_to_utc(store: SQLiteStateStore) -> None
     commitment = store.get_fixed_commitment(result.commitment_ids[0])
     assert commitment.start_at == datetime(2026, 8, 29, 20, tzinfo=UTC)
     assert commitment.end_at is None
+
+
+def test_provider_wire_explicit_pm_commitment_resolves_to_utc(store: SQLiteStateStore) -> None:
+    payload = apply_payload(commitments=[{
+        "title": "Call Mike",
+        "start": {
+            "date": wire_date("TOMORROW"),
+            "clock": wire_clock("CLOCK_12", 4, 0, "PM"),
+        },
+        "hardness": "UNKNOWN",
+    }])
+
+    result = CaptureService(store, provider_adapter(payload)).capture_text(
+        "Call Mike tomorrow at 4 PM",
+        reference_time=REFERENCE,
+        timezone_name="America/New_York",
+    )
+
+    assert result.capture.status is CaptureStatus.APPLIED
+    commitment = store.get_fixed_commitment(result.commitment_ids[0])
+    assert commitment.start_at == datetime(2026, 8, 29, 20, tzinfo=UTC)
+    assert commitment.end_at is None
+
+
+def test_provider_wire_bare_hour_commitment_is_unresolved(store: SQLiteStateStore) -> None:
+    payload = apply_payload(commitments=[{
+        "title": "Call Mike",
+        "start": {
+            "date": wire_date("TOMORROW"),
+            "clock": wire_clock("BARE_HOUR", 4, 0),
+        },
+        "hardness": "UNKNOWN",
+    }])
+
+    result = CaptureService(store, provider_adapter(payload)).capture_text(
+        "Call Mike tomorrow at 4",
+        reference_time=REFERENCE,
+        timezone_name="America/New_York",
+    )
+
+    assert result.capture.status is CaptureStatus.UNRESOLVED
+    assert result.inbox_item_id is not None
+    assert store.get_inbox_item(result.inbox_item_id).unresolved_reason == (
+        "time is missing AM/PM or unambiguous 24-hour notation"
+    )
+    assert store.list_fixed_commitments() == []
 
 
 def test_two_dates_create_independently_completable_tasks(store: SQLiteStateStore) -> None:
