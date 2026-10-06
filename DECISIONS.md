@@ -165,12 +165,12 @@ post-process provider-generated unresolved reasons.
 ## 2026-10-06 — Fixed temporal provider wire shape
 
 Capture's canonical typed semantics still use `DateExpression`,
-`DeadlineIntent`, and deterministic local-time resolution. The production AI
-provider schema is intentionally simpler than that canonical model for temporal
-fields: date wire objects use a fixed tagged shape with separate nullable
-`weekday`, `date`, and `text` fields, and weekday names `MONDAY` through
-`SUNDAY` are converted deterministically to canonical ISO weekday integers at
-the adapter boundary.
+`ClockExpression`, `DeadlineIntent`, and deterministic local-time resolution.
+The production AI provider schema is intentionally simpler than that canonical
+model for temporal fields: date wire objects use a fixed tagged shape with
+separate nullable `weekday`, `date`, and `text` fields, and weekday names
+`MONDAY` through `SUNDAY` are converted deterministically to canonical ISO
+weekday integers at the adapter boundary.
 
 Deadline wire objects likewise use one fixed object shape with `kind`, `date`,
 and nullable `clock`. Canonical validation rejects malformed combinations such
@@ -179,6 +179,16 @@ schema does not use temporal object unions or a single date field whose type
 alternates between string, integer, and null. This is a provider-facing
 robustness decision only; it does not add calendar integration, weaken
 canonical validation, or permit invented temporal facts.
+
+Clock wire objects contain only the literal clock text copied from the user's
+input. The provider does not choose canonical `CLOCK_12`, `CLOCK_24`, or
+`BARE_HOUR`. The adapter parses supported literal forms deterministically:
+bare `3` and `3:45` become canonical `BARE_HOUR`, AM/PM forms become
+`CLOCK_12`, and 24-hour forms such as `15:45` become `CLOCK_24`. A zero-padded
+hour with minutes, such as `03:45`, is treated as explicit 24-hour notation at
+03:45. Unsupported clock text remains fail-closed invalid output; ambiguous
+bare clock text remains canonical uncertainty and is routed to UNRESOLVED by
+deterministic capture application.
 
 ## 2026-09-01 — Ephemeral concrete recommendation actions
 

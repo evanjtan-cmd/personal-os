@@ -1,6 +1,6 @@
 # Build State
 
-Last updated: 2026-10-06 for POS-022 Temporal Capture Robustness.
+Last updated: 2026-10-06 for POS-023 Clock Capture Robustness.
 
 ## Implemented
 
@@ -43,6 +43,13 @@ Last updated: 2026-10-06 for POS-022 Temporal Capture Robustness.
   ISO-weekday normalization at the adapter boundary, and fixed deadline objects
   with `kind`, `date`, and nullable `clock`. Canonical date/deadline semantics
   and fail-closed validation remain unchanged.
+- POS-023 simplifies provider clock capture to a literal clock-text wire field.
+  The provider copies explicit clock wording instead of selecting canonical
+  `CLOCK_12`, `CLOCK_24`, or `BARE_HOUR`; the adapter deterministically parses
+  supported forms before canonical validation. Bare `3`/`3:45` remain
+  unresolved clock uncertainty downstream, AM/PM text becomes canonical
+  12-hour time, `15:45` becomes canonical 24-hour time, and zero-padded
+  `03:45` is treated as explicit 24-hour notation.
 - Schedule-less actionable captures use canonical FLEXIBLE task semantics.
   Missing optional schedule, deadline, importance, duration, or project facts
   do not cause UNRESOLVED; genuine ambiguity in explicitly supplied meaning
@@ -236,9 +243,11 @@ Run on 2026-09-16 with Python 3.12.4 and pytest 8.4.2:
   shape preserves TODAY/TOMORROW, weekdays, next weekdays, explicit dates,
   missing-year dates, DATE deadlines, INSTANT deadlines, and strict clock
   behavior by normalizing only at the adapter boundary; malformed date/deadline
-  combinations remain fail-closed invalid output. The unified strict clock wire
-  shape preserves every project/clock alternative, while typed parsing
-  continues to reject invalid kind/hour/period combinations. The capture
+  combinations remain fail-closed invalid output. POS-023 provider tests
+  confirm clocks use a literal text wire field, the schema no longer exposes
+  canonical clock-kind choices, and malformed clock text fails closed while
+  canonical typed parsing continues to reject invalid kind/hour/period
+  combinations. The capture
   adapter narrowly maps only an APPLY wire response with
   `unresolved_reason=""` to canonical null; UNRESOLVED and all other empty text
   remain fail-closed. The project-reference wire field uses a simple
@@ -248,6 +257,19 @@ Run on 2026-09-16 with Python 3.12.4 and pytest 8.4.2:
   FAILED captures display a concise retry message without raw failure reasons.
   No live provider request was made by automated validation.
 - `git diff --check` — passed with exit code 0.
+
+Run for POS-023 on 2026-10-06 with Python 3.13.0 and pytest 8.4.2:
+
+- `.venv/bin/python -m pytest tests/test_openai_capture.py tests/test_capture.py -q`
+  — passed: 105 passed in 1.88s.
+- `.venv/bin/python -m pytest tests/test_http_api.py -q` — passed: 54 passed
+  in 28.15s.
+- `.venv/bin/python -m pytest` — passed: 534 passed in 46.50s.
+- `.venv/bin/python -m compileall -q src tests` — passed.
+- `node --check src/personal_os/static/work.js` — passed.
+- `git diff --check` — passed.
+- No real user data, live AI provider, calendar integration, commit, push,
+  merge, or deploy was used.
 
 Run for POS-022 on 2026-10-06 with Python 3.13.0 and pytest 8.4.2:
 
