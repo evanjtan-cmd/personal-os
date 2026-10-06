@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from personal_os.ai_provider import (
@@ -59,15 +60,9 @@ CLOCK_IR = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
-        "kind": {
-            "type": "string",
-            "enum": ["CLOCK_12", "CLOCK_24", "BARE_HOUR"],
-        },
-        "hour": {"type": "integer", "minimum": 0, "maximum": 23},
-        "minute": {"type": "integer", "minimum": 0, "maximum": 59},
-        "period": {"type": ["string", "null"], "enum": ["AM", "PM", None]},
+        "text": {"type": "string"},
     },
-    "required": ["kind", "hour", "minute", "period"],
+    "required": ["text"],
 }
 INSTANT_IR = {"type": "object", "additionalProperties": False, "properties": {"date": DATE_IR, "clock": CLOCK_IR}, "required": ["date", "clock"]}
 DEADLINE_IR = {
@@ -98,6 +93,12 @@ CAPTURE_SCHEMA: dict[str, Any] = {
     },
     "required": ["kind", "new_project", "tasks", "commitments", "unresolved_reason"],
 }
+
+
+_CLOCK_TEXT_RE = re.compile(
+    r"^\s*(?P<hour>\d{1,2})(?:\s*:\s*(?P<minute>\d{2}))?\s*(?P<period>a\.?m\.?|p\.?m\.?)?\s*$",
+    re.IGNORECASE,
+)
 
 
 def _wire_object(value: object, keys: set[str], label: str) -> dict[str, Any]:
@@ -131,7 +132,46 @@ def _normalize_date_wire(value: object) -> dict[str, Any]:
 
 def _normalize_instant_wire(value: object) -> dict[str, Any]:
     data = _wire_object(value, {"date", "clock"}, "date-time expression")
-    return {"date": _normalize_date_wire(data["date"]), "clock": data["clock"]}
+    return {
+        "date": _normalize_date_wire(data["date"]),
+        "clock": _normalize_clock_wire(data["clock"]),
+    }
+
+
+def _normalize_clock_wire(value: object) -> dict[str, Any]:
+    data = _wire_object(value, {"text"}, "clock expression")
+    text = data["text"]
+    if not isinstance(text, str):
+        raise InterpretationValidationError("clock text must be text")
+    match = _CLOCK_TEXT_RE.fullmatch(text)
+    if match is None:
+        raise InterpretationValidationError("clock text is unsupported")
+    hour_text = match.group("hour")
+    minute_text = match.group("minute")
+    period_text = match.group("period")
+    hour = int(hour_text)
+    minute = 0 if minute_text is None else int(minute_text)
+    if minute not in range(60):
+        raise InterpretationValidationError("clock text minute is invalid")
+    if period_text is not None:
+        period = period_text.replace(".", "").upper()
+        if hour not in range(1, 13):
+            raise InterpretationValidationError("12-hour clock text is invalid")
+        return {
+            "kind": "CLOCK_12", "hour": hour, "minute": minute,
+            "period": period,
+        }
+    if minute_text is None:
+        if hour not in range(1, 13):
+            raise InterpretationValidationError("bare clock hour is invalid")
+        return {"kind": "BARE_HOUR", "hour": hour, "minute": 0}
+    if hour_text.startswith("0") or hour >= 13:
+        if hour not in range(24):
+            raise InterpretationValidationError("24-hour clock text is invalid")
+        return {"kind": "CLOCK_24", "hour": hour, "minute": minute}
+    if hour not in range(1, 13):
+        raise InterpretationValidationError("bare clock text is invalid")
+    return {"kind": "BARE_HOUR", "hour": hour, "minute": minute}
 
 
 def _normalize_deadline_wire(value: object) -> dict[str, Any]:
@@ -148,7 +188,7 @@ def _normalize_deadline_wire(value: object) -> dict[str, Any]:
             "kind": "INSTANT",
             "value": {
                 "date": _normalize_date_wire(data["date"]),
-                "clock": data["clock"],
+                "clock": _normalize_clock_wire(data["clock"]),
             },
         }
     raise InterpretationValidationError("unsupported deadline")
@@ -267,7 +307,9 @@ class OpenAIResponsesCaptureInterpreter:
             "Meet Sam at 4 is UNRESOLVED because AM/PM cannot be inferred. Never infer hard facts. Never invent a date, time, deadline, "
             "importance, duration, project identity, recurrence, commitment hardness, or other hard fact. Use UNKNOWN "
             "commitment hardness unless the user's language explicitly establishes HARD or SOFT semantics. "
-            "Use BARE_HOUR for a bare clock hour, MISSING_YEAR for a date without a year, weekday names "
+            "For clock objects, copy only the explicit clock wording from the user's input into the text field, "
+            "such as 3:45, 3:45 PM, or 15:45. Do not add AM/PM, remove AM/PM, convert notation, or choose "
+            "CLOCK_12/CLOCK_24/BARE_HOUR yourself. Use MISSING_YEAR for a date without a year, weekday names "
             "MONDAY through SUNDAY for weekday dates, and UNRESOLVED for unsupported or uncertain meaning. "
             "For every date object, fill only the field matching its kind: weekday for WEEKDAY or NEXT_WEEKDAY, "
             "date for EXPLICIT_DATE, text for MISSING_YEAR, and nulls for TODAY or TOMORROW. For every deadline, "

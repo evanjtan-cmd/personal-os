@@ -292,8 +292,14 @@ the canonical typed intents. Temporal provider wire uses fixed tagged date and
 deadline objects: weekday dates carry weekday names that are deterministically
 converted to canonical ISO weekday integers, explicit dates and missing-year
 dates use their own text fields, and deadlines carry `kind`, `date`, and a
-nullable `clock`. Canonical validation still enforces valid DATE-versus-INSTANT
-deadline combinations and still rejects unsupported or invented temporal facts.
+nullable literal clock object. Clock wire carries only the explicit clock text
+copied from user input; the provider must not add AM/PM, remove AM/PM, convert
+notation, or choose canonical clock kinds. The adapter deterministically parses
+supported clock text into canonical semantics: `3` and `3:45` are bare-hour
+forms, AM/PM text is 12-hour time, `15:45` is 24-hour time, and zero-padded
+`03:45` is treated as explicit 24-hour notation. Canonical validation still
+enforces valid DATE-versus-INSTANT deadline combinations and still rejects
+unsupported or invented temporal facts.
 
 Relative dates are resolved deterministically from the capture's trusted,
 timezone-aware reference instant and IANA timezone. TODAY, TOMORROW, weekday,

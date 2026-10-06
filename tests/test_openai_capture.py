@@ -9,6 +9,7 @@ from personal_os.models import CaptureFailureKind
 from personal_os.openai_capture import (
     CAPTURE_SCHEMA,
     OpenAIResponsesCaptureInterpreter,
+    _normalize_clock_wire,
     _normalize_capture_wire_payload,
     _nullable,
 )
@@ -79,6 +80,9 @@ def test_adapter_uses_responses_strict_schema_and_disables_storage() -> None:
     assert "genuinely ambiguous, missing, or unsupported fact" in instructions
     assert "meet sam at 4 is unresolved" in instructions
     assert "never invent a date, time, deadline" in instructions
+    assert "copy only the explicit clock wording" in instructions
+    assert "do not add am/pm" in instructions
+    assert "convert notation" in instructions
     commitment = responses.kwargs["text"]["format"]["schema"]["properties"]["commitments"]["items"]
     assert "end" not in commitment["properties"]
 
@@ -110,8 +114,8 @@ def wire_date(kind: str, *, weekday: str | None = None, date: str | None = None,
     return {"kind": kind, "weekday": weekday, "date": date, "text": text}
 
 
-def wire_clock(kind: str, hour: int, minute: int, period: str | None = None) -> dict:
-    return {"kind": kind, "hour": hour, "minute": minute, "period": period}
+def wire_clock(text: str) -> dict:
+    return {"text": text}
 
 
 def wire_deadline(kind: str, day: dict, clock: dict | None = None) -> dict:
@@ -232,16 +236,16 @@ def test_capture_schema_preserves_fixed_date_project_clock_and_deadline_wire_sha
     }
     clock = deadline["properties"]["clock"]
     assert clock["type"] == ["object", "null"]
-    assert clock["properties"]["kind"]["enum"] == [
-        "CLOCK_12", "CLOCK_24", "BARE_HOUR"
-    ]
-    assert clock["properties"]["hour"] == {
-        "type": "integer", "minimum": 0, "maximum": 23
-    }
-    assert clock["properties"]["period"] == {
-        "type": ["string", "null"], "enum": ["AM", "PM", None]
-    }
-    assert clock["required"] == ["kind", "hour", "minute", "period"]
+    assert set(clock["properties"]) == {"text"}
+    assert clock["properties"]["text"] == {"type": "string"}
+    assert clock["required"] == ["text"]
+
+
+def test_capture_schema_no_longer_exposes_canonical_clock_choices() -> None:
+    schema_text = json.dumps(CAPTURE_SCHEMA)
+    assert "CLOCK_12" not in schema_text
+    assert "CLOCK_24" not in schema_text
+    assert "BARE_HOUR" not in schema_text
 
 
 def test_capture_schema_has_no_ambiguous_object_any_of_variants() -> None:
@@ -325,7 +329,7 @@ def test_instant_deadline_wire_converts_to_canonical_instant_expression() -> Non
     payload["tasks"][0]["deadline"] = wire_deadline(
         "INSTANT",
         wire_date("TOMORROW"),
-        wire_clock("CLOCK_12", 4, 0, "PM"),
+        wire_clock("4 PM"),
     )
 
     result = interpret(_adapter_for_payload(payload, provider="groq"))
@@ -342,10 +346,12 @@ def test_instant_deadline_wire_converts_to_canonical_instant_expression() -> Non
 @pytest.mark.parametrize(
     "deadline",
     [
-        wire_deadline("DATE", wire_date("TOMORROW"), wire_clock("CLOCK_12", 4, 0, "PM")),
+        wire_deadline("DATE", wire_date("TOMORROW"), wire_clock("4 PM")),
         wire_deadline("INSTANT", wire_date("TOMORROW"), None),
         wire_deadline("DATE", wire_date("WEEKDAY", weekday="Wednesday"), None),
         wire_deadline("DATE", wire_date("WEEKDAY", weekday="WEDNESDAY", date="2026-09-02"), None),
+        wire_deadline("INSTANT", wire_date("TOMORROW"), {"kind": "CLOCK_12", "hour": 4, "minute": 0, "period": None}),
+        wire_deadline("INSTANT", wire_date("TOMORROW"), wire_clock("quarter to four")),
     ],
 )
 def test_malformed_temporal_wire_combinations_fail_closed(deadline: dict) -> None:
@@ -356,6 +362,44 @@ def test_malformed_temporal_wire_combinations_fail_closed(deadline: dict) -> Non
         interpret(_adapter_for_payload(payload, provider="groq"))
 
     assert error.value.kind is CaptureFailureKind.INVALID_OUTPUT
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("3", {"kind": "BARE_HOUR", "hour": 3, "minute": 0}),
+        ("3:45", {"kind": "BARE_HOUR", "hour": 3, "minute": 45}),
+        ("10:30", {"kind": "BARE_HOUR", "hour": 10, "minute": 30}),
+        ("12:45", {"kind": "BARE_HOUR", "hour": 12, "minute": 45}),
+        ("3 PM", {"kind": "CLOCK_12", "hour": 3, "minute": 0, "period": "PM"}),
+        ("3:45 PM", {"kind": "CLOCK_12", "hour": 3, "minute": 45, "period": "PM"}),
+        (" 3 : 45 pm ", {"kind": "CLOCK_12", "hour": 3, "minute": 45, "period": "PM"}),
+        ("3am", {"kind": "CLOCK_12", "hour": 3, "minute": 0, "period": "AM"}),
+        ("15:45", {"kind": "CLOCK_24", "hour": 15, "minute": 45}),
+        ("03:45", {"kind": "CLOCK_24", "hour": 3, "minute": 45}),
+        ("09:30", {"kind": "CLOCK_24", "hour": 9, "minute": 30}),
+        ("00:30", {"kind": "CLOCK_24", "hour": 0, "minute": 30}),
+    ],
+)
+def test_clock_wire_text_normalizes_to_canonical_clock(text: str, expected: dict) -> None:
+    assert _normalize_clock_wire(wire_clock(text)) == expected
+
+
+def test_ambiguous_clock_wire_text_does_not_infer_am_pm() -> None:
+    assert _normalize_clock_wire(wire_clock("3:45")) == {
+        "kind": "BARE_HOUR",
+        "hour": 3,
+        "minute": 45,
+    }
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["", "   ", "noon", "quarter to four", "3:7", "3:75", "24:00", "13 PM", "0"],
+)
+def test_unsupported_clock_wire_text_fails_closed(text: str) -> None:
+    with pytest.raises(InterpretationValidationError, match="clock"):
+        _normalize_clock_wire(wire_clock(text))
 
 
 @pytest.mark.parametrize("project_id", [7, "NEW", None])
