@@ -106,6 +106,18 @@ def _adapter_for_payload(payload: dict, *, provider: str = "openai"):
     )
 
 
+def wire_date(kind: str, *, weekday: str | None = None, date: str | None = None, text: str | None = None) -> dict:
+    return {"kind": kind, "weekday": weekday, "date": date, "text": text}
+
+
+def wire_clock(kind: str, hour: int, minute: int, period: str | None = None) -> dict:
+    return {"kind": kind, "hour": hour, "minute": minute, "period": period}
+
+
+def wire_deadline(kind: str, day: dict, clock: dict | None = None) -> dict:
+    return {"kind": kind, "date": day, "clock": clock}
+
+
 def test_apply_with_null_reason_parses_normally() -> None:
     result = interpret(_adapter_for_payload(_applied_task_payload(None)))
     assert result.interpretation.unresolved_reason is None
@@ -153,31 +165,26 @@ def test_wire_normalization_is_exact_and_does_not_trim_or_discard_values() -> No
     whitespace = _applied_task_payload("   ")
     nonempty = _applied_task_payload("unexpected")
     unresolved = {**PAYLOAD, "unresolved_reason": ""}
-    assert _normalize_capture_wire_payload(whitespace) is whitespace
-    assert _normalize_capture_wire_payload(nonempty) is nonempty
-    assert _normalize_capture_wire_payload(unresolved) is unresolved
+    assert _normalize_capture_wire_payload(whitespace)["unresolved_reason"] == "   "
+    assert _normalize_capture_wire_payload(nonempty)["unresolved_reason"] == "unexpected"
+    assert _normalize_capture_wire_payload(unresolved)["unresolved_reason"] == ""
 
 
-def test_capture_schema_contains_no_nested_any_of() -> None:
-    nested_paths = []
+def test_capture_schema_contains_no_any_of() -> None:
+    paths = []
 
-    def walk(value, path: str = "$", *, inside_any_of: bool = False) -> None:
+    def walk(value, path: str = "$") -> None:
         if isinstance(value, dict):
-            has_any_of = "anyOf" in value
-            if has_any_of and inside_any_of:
-                nested_paths.append(path)
+            if "anyOf" in value:
+                paths.append(path)
             for key, child in value.items():
-                walk(
-                    child,
-                    f"{path}/{key}",
-                    inside_any_of=inside_any_of or has_any_of,
-                )
+                walk(child, f"{path}/{key}")
         elif isinstance(value, list):
             for index, child in enumerate(value):
-                walk(child, f"{path}/{index}", inside_any_of=inside_any_of)
+                walk(child, f"{path}/{index}")
 
     walk(CAPTURE_SCHEMA)
-    assert nested_paths == []
+    assert paths == []
 
 
 def test_nullable_flattens_union_and_uses_type_union_when_possible() -> None:
@@ -191,37 +198,40 @@ def test_nullable_flattens_union_and_uses_type_union_when_possible() -> None:
     }
 
 
-def test_capture_schema_preserves_date_project_clock_and_deadline_alternatives() -> None:
+def test_capture_schema_preserves_fixed_date_project_clock_and_deadline_wire_shapes() -> None:
     task = CAPTURE_SCHEMA["properties"]["tasks"]["items"]
     properties = task["properties"]
     assert properties["execution_mode"] == {
         "type": "string",
         "enum": ["SPLITTABLE", "ONE_SITTING"],
     }
-    date_value = (
+    date_wire = (
         properties["schedule"]["properties"]["dates"]["items"]
-        ["properties"]["value"]
+        ["properties"]
     )
-    assert date_value == {
-        "type": ["string", "integer", "null"],
-        "minimum": 1,
-        "maximum": 7,
-    }
+    assert set(date_wire) == {"kind", "weekday", "date", "text"}
+    assert date_wire["kind"]["enum"] == [
+        "TODAY", "TOMORROW", "WEEKDAY", "NEXT_WEEKDAY",
+        "EXPLICIT_DATE", "MISSING_YEAR",
+    ]
+    assert date_wire["weekday"]["enum"] == [
+        "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY",
+        "FRIDAY", "SATURDAY", "SUNDAY", None,
+    ]
     assert properties["schedule"]["type"] == ["object", "null"]
     assert properties["deadline"]["type"] == ["object", "null"]
     assert properties["project_id"] == {
         "type": ["integer", "string", "null"]
     }
 
-    deadline_variants = properties["deadline"]["properties"]["value"]["anyOf"]
-    assert deadline_variants[0]["properties"]["kind"]["enum"] == [
-        "TODAY", "TOMORROW", "WEEKDAY", "NEXT_WEEKDAY",
-        "EXPLICIT_DATE", "MISSING_YEAR",
-    ]
-    assert len(deadline_variants) == 2
-    instant = deadline_variants[1]
-    assert set(instant["properties"]) == {"date", "clock"}
-    clock = instant["properties"]["clock"]
+    deadline = properties["deadline"]
+    assert set(deadline["properties"]) == {"kind", "date", "clock"}
+    assert deadline["properties"]["kind"]["enum"] == ["DATE", "INSTANT"]
+    assert set(deadline["properties"]["date"]["properties"]) == {
+        "kind", "weekday", "date", "text",
+    }
+    clock = deadline["properties"]["clock"]
+    assert clock["type"] == ["object", "null"]
     assert clock["properties"]["kind"]["enum"] == [
         "CLOCK_12", "CLOCK_24", "BARE_HOUR"
     ]
@@ -261,28 +271,91 @@ def test_capture_schema_has_no_ambiguous_object_any_of_variants() -> None:
     assert ambiguous == []
 
 
-def test_only_remaining_any_of_is_structurally_distinct_deadline_union() -> None:
-    unions = []
+def test_weekday_name_wire_converts_to_canonical_iso_weekday() -> None:
+    payload = _applied_task_payload(None)
+    payload["tasks"][0]["schedule"] = {
+        "kind": "DAY",
+        "dates": [wire_date("WEEKDAY", weekday="WEDNESDAY")],
+    }
 
-    def walk(value, path: str = "$") -> None:
-        if isinstance(value, dict):
-            if "anyOf" in value:
-                unions.append((path, value["anyOf"]))
-            for key, child in value.items():
-                walk(child, f"{path}/{key}")
-        elif isinstance(value, list):
-            for index, child in enumerate(value):
-                walk(child, f"{path}/{index}")
+    result = interpret(_adapter_for_payload(payload, provider="groq"))
 
-    walk(CAPTURE_SCHEMA)
-    assert [path for path, _variants in unions] == [
-        "$/properties/tasks/items/properties/deadline/properties/value"
-    ]
-    variants = unions[0][1]
-    assert [set(variant["properties"]) for variant in variants] == [
-        {"kind", "value"}, {"date", "clock"}
-    ]
-    assert all(variant["type"] == "object" for variant in variants)
+    assert result.interpretation.to_dict()["tasks"][0]["schedule"] == {
+        "kind": "DAY",
+        "dates": [{"kind": "WEEKDAY", "value": 3}],
+    }
+
+
+@pytest.mark.parametrize(
+    "raw_text",
+    ["bio homework due Wednesday", "Finish chinese by Wednesday"],
+)
+def test_weekday_deadline_wire_for_ordinary_task_phrasing(raw_text: str) -> None:
+    payload = _applied_task_payload(None)
+    payload["tasks"][0]["title"] = raw_text.split(" due ")[0].removesuffix(" by Wednesday")
+    payload["tasks"][0]["deadline"] = wire_deadline(
+        "DATE", wire_date("WEEKDAY", weekday="WEDNESDAY")
+    )
+
+    result = _adapter_for_payload(payload, provider="groq").interpret(raw_text, projects=[])
+
+    assert result.interpretation.to_dict()["tasks"][0]["deadline"] == {
+        "kind": "DATE",
+        "value": {"kind": "WEEKDAY", "value": 3},
+    }
+
+
+def test_tomorrow_deadline_wire_converts_to_canonical_date_expression() -> None:
+    payload = _applied_task_payload(None)
+    payload["tasks"][0]["title"] = "Finish essay"
+    payload["tasks"][0]["deadline"] = wire_deadline(
+        "DATE", wire_date("TOMORROW")
+    )
+
+    result = interpret(_adapter_for_payload(payload, provider="groq"))
+
+    assert result.interpretation.to_dict()["tasks"][0]["deadline"] == {
+        "kind": "DATE",
+        "value": {"kind": "TOMORROW", "value": None},
+    }
+
+
+def test_instant_deadline_wire_converts_to_canonical_instant_expression() -> None:
+    payload = _applied_task_payload(None)
+    payload["tasks"][0]["deadline"] = wire_deadline(
+        "INSTANT",
+        wire_date("TOMORROW"),
+        wire_clock("CLOCK_12", 4, 0, "PM"),
+    )
+
+    result = interpret(_adapter_for_payload(payload, provider="groq"))
+
+    assert result.interpretation.to_dict()["tasks"][0]["deadline"] == {
+        "kind": "INSTANT",
+        "value": {
+            "date": {"kind": "TOMORROW", "value": None},
+            "clock": {"kind": "CLOCK_12", "hour": 4, "minute": 0, "period": "PM"},
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "deadline",
+    [
+        wire_deadline("DATE", wire_date("TOMORROW"), wire_clock("CLOCK_12", 4, 0, "PM")),
+        wire_deadline("INSTANT", wire_date("TOMORROW"), None),
+        wire_deadline("DATE", wire_date("WEEKDAY", weekday="Wednesday"), None),
+        wire_deadline("DATE", wire_date("WEEKDAY", weekday="WEDNESDAY", date="2026-09-02"), None),
+    ],
+)
+def test_malformed_temporal_wire_combinations_fail_closed(deadline: dict) -> None:
+    payload = _applied_task_payload(None)
+    payload["tasks"][0]["deadline"] = deadline
+
+    with pytest.raises(InterpretationError) as error:
+        interpret(_adapter_for_payload(payload, provider="groq"))
+
+    assert error.value.kind is CaptureFailureKind.INVALID_OUTPUT
 
 
 @pytest.mark.parametrize("project_id", [7, "NEW", None])
