@@ -161,10 +161,11 @@ It is not an export or synchronization interface.
 
 POS-020 adds a distinct Machine Interface `overview` read model for thin user
 interfaces. It derives active projects, OPEN/BLOCKED tasks, unresolved Inbox
-items, and the current active session from one `read_state_snapshot()` result.
-It exposes only those explicitly designed current-state fields, requires no
-clock, timezone, or provider configuration, and is not the CLI full-state view
-or a generic serialization of `StateSnapshot`.
+items, scheduled fixed commitments, bounded closed Task/commitment history, and
+the current active session from one `read_state_snapshot()` result. It exposes
+only those explicitly designed current-state fields, uses the adapter's trusted
+clock for commitment temporal classification, and is not the CLI full-state
+view or a generic serialization of `StateSnapshot`.
 
 ## Machine Interface v1
 
@@ -172,23 +173,30 @@ The human CLI remains a dogfood interface rather than a machine-readable API.
 `personal-os-bridge` provides the stable local machine boundary with integer
 protocol version 1 and the operations `capture`, `recommend`, `start`,
 `feedback`, `active`, `overview`, `resolve_inbox`, `dismiss_inbox`,
-`correct_task_status`, and the narrow `update_task_planning` operation, plus
-the canonical `activate` operation for availability-now triggers. Requests
-cannot supply authoritative current/reference timestamps. Recommendation
-remains read-only and its concrete action remains ephemeral; only a start
-request that supplies the action persists it in session history. Start and
-feedback reuse the authoritative session service and therefore do not duplicate
-eligibility, availability, duration, MUST-gating, or Task-transition policy.
-Capture delegates interpretation and persistence to the canonical capture
-service, using the bridge's trusted clock and explicit timezone configuration.
-Bridge v1 deliberately excludes full-state output, database initialization,
-HTTP, and transport-specific configuration.
+`correct_task_status`, `configure_commitment_protection`,
+`cancel_commitment`, and the narrow `update_task_planning` operation, plus the
+canonical `activate` operation for availability-now triggers. Requests cannot
+supply authoritative current/reference timestamps. Recommendation remains
+read-only and its concrete action remains ephemeral; only a start request that
+supplies the action persists it in session history. Start and feedback reuse
+the authoritative session service and therefore do not duplicate eligibility,
+availability, duration, MUST-gating, or Task-transition policy. Capture
+delegates interpretation and persistence to the canonical capture service,
+using the bridge's trusted clock and explicit timezone configuration. Bridge v1
+deliberately excludes full-state output, database initialization, HTTP, and
+transport-specific configuration.
 
 Overview is read-only and serializes a deliberately bounded current-state
-contract from one coherent canonical snapshot. It excludes commitments, rules,
-capture history and interpretation details, closed sessions, provider metadata,
-and other full-state/debug information. The loopback HTTP adapter exposes this
-same operation as `GET /v1/overview`; it does not duplicate overview policy.
+contract from one coherent canonical snapshot. It includes active projects,
+unresolved Inbox items, OPEN/BLOCKED Tasks, active session, scheduled
+future/active fixed commitments, closed Task history, and past/cancelled
+commitment history. Commitment FUTURE/ACTIVE/PAST state is derived from the
+adapter's trusted server clock rather than from caller input or a stored
+COMPLETED state. History is bounded to the most recent 20 entries per designed
+history list with deterministic ordering. It excludes rules, capture history
+and interpretation details, closed sessions, provider metadata, and other
+full-state/debug information. The loopback HTTP adapter exposes this same
+operation as `GET /v1/overview`; it does not duplicate overview policy.
 The `update_task_planning` operation, also exposed to the browser as
 `POST /v1/task-planning`, may update only `execution_mode` and
 `estimated_minutes` for planning correction. It is not generic Task CRUD.
@@ -200,9 +208,19 @@ UNRESOLVED capture application. A FAILED replacement capture leaves the
 original Inbox item unresolved. `dismiss_inbox`, exposed as
 `POST /v1/dismiss-inbox`, only resolves an Inbox item and invokes no AI.
 `correct_task_status`, exposed as `POST /v1/task-status`, permits only
-OPEN/BLOCKED to COMPLETED, OPEN/BLOCKED to CANCELLED, and BLOCKED to OPEN, and
-rejects correction for a task with an active session. These operations are not
-generic Task or Inbox CRUD.
+OPEN/BLOCKED to COMPLETED, OPEN/BLOCKED to CANCELLED, BLOCKED to OPEN, and
+COMPLETED/CANCELLED back to OPEN for explicit Reopen correction. It rejects
+correction for a task with an active session. These operations are not generic
+Task or Inbox CRUD.
+`configure_commitment_protection`, exposed as
+`POST /v1/commitment-protection`, may configure only whether a SCHEDULED fixed
+commitment protects work time. A positive explicit duration makes it HARD and
+sets `end_at = start_at + duration`; `null` makes it SOFT while preserving any
+known end. It does not allow newly configured HARD commitments without an end
+and does not invent duration. `cancel_commitment`, exposed as
+`POST /v1/cancel-commitment`, moves SCHEDULED to CANCELLED without physical
+deletion and rejects already CANCELLED commitments. These operations are not
+generic Commitment CRUD.
 
 Activation first returns the current active session and associated Task without
 invoking recommendation. When no session is active, it delegates unchanged to
@@ -259,7 +277,12 @@ it becomes overdue during its calendar day.
 Fixed commitments remain distinct from tasks. They have a required known start
 and may have an unknown end. An end is never invented and, when present, must be
 after the start. HARD, SOFT, and UNKNOWN classifications are explicit; UNKNOWN
-is the default because a timed event is not automatically hard.
+is the default because a timed event is not automatically hard. They also have a
+canonical lifecycle status: SCHEDULED or CANCELLED. Existing commitments migrate
+to SCHEDULED. Past/upcoming/active commitment display state is derived from
+trusted time and stored start/end facts; fixed commitments do not acquire a
+stored COMPLETED lifecycle state. CANCELLED commitments are historical state,
+not physical deletion, and never constrain availability.
 
 ### Rules and unresolved inbox items
 

@@ -50,6 +50,11 @@ class CommitmentHardness(StrEnum):
     SOFT = "SOFT"
 
 
+class FixedCommitmentStatus(StrEnum):
+    SCHEDULED = "SCHEDULED"
+    CANCELLED = "CANCELLED"
+
+
 class CaptureStatus(StrEnum):
     RECEIVED = "RECEIVED"
     APPLIED = "APPLIED"
@@ -321,6 +326,7 @@ class FixedCommitment:
     created_at: datetime
     updated_at: datetime
     source_capture_id: int | None = None
+    status: FixedCommitmentStatus = FixedCommitmentStatus.SCHEDULED
 
     def __post_init__(self) -> None:
         start = normalize_instant(self.start_at, "start_at")
@@ -333,6 +339,7 @@ class FixedCommitment:
         object.__setattr__(self, "start_at", start)
         object.__setattr__(self, "end_at", end)
         object.__setattr__(self, "hardness", require_enum(self.hardness, CommitmentHardness, "hardness"))
+        object.__setattr__(self, "status", require_enum(self.status, FixedCommitmentStatus, "status"))
         object.__setattr__(self, "created_at", created)
         object.__setattr__(self, "updated_at", updated)
         object.__setattr__(self, "source_capture_id", None if self.source_capture_id is None else require_identifier(self.source_capture_id, "source_capture_id"))

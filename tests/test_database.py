@@ -11,6 +11,7 @@ from personal_os.database import (
     V4_TABLE_DDL,
     V5_TABLE_DDL,
     V6_TABLE_DDL,
+    V7_TABLE_DDL,
     V2_TABLE_DDL,
     V3_TABLE_DDL,
     DatabaseInitializationError,
@@ -58,31 +59,31 @@ def read_v2_data(path: Path) -> dict[str, dict[str, object]]:
     return result
 
 
-def test_fresh_database_migrates_through_version_7(tmp_path: Path) -> None:
+def test_fresh_database_migrates_through_version_8(tmp_path: Path) -> None:
     path = tmp_path / "runtime" / "personal_os.db"
 
     version = initialize_database(path)
 
-    assert version == CURRENT_SCHEMA_VERSION == 7
-    assert read_version(path) == 7
+    assert version == CURRENT_SCHEMA_VERSION == 8
+    assert read_version(path) == 8
     assert user_objects(path) == sorted(TABLE_DDL)
 
 
-def test_existing_version_1_migrates_to_version_7(tmp_path: Path) -> None:
+def test_existing_version_1_migrates_to_version_8(tmp_path: Path) -> None:
     path = tmp_path / "version1.db"
     with sqlite3.connect(path) as connection:
         connection.execute("PRAGMA user_version = 1")
 
-    assert initialize_database(path) == 7
+    assert initialize_database(path) == 8
     assert user_objects(path) == sorted(TABLE_DDL)
 
 
-def test_populated_version_2_migrates_to_version_7_without_losing_data(tmp_path: Path) -> None:
+def test_populated_version_2_migrates_to_version_8_without_losing_data(tmp_path: Path) -> None:
     path = tmp_path / "version2.db"
     create_populated_v2(path)
     original = read_v2_data(path)
 
-    assert initialize_database(path) == 7
+    assert initialize_database(path) == 8
     with sqlite3.connect(path) as connection:
         for table, expected in original.items():
             columns = ", ".join(expected)
@@ -91,10 +92,10 @@ def test_populated_version_2_migrates_to_version_7_without_losing_data(tmp_path:
             assert dict(zip(expected, row, strict=True)) == expected
         assert connection.execute("SELECT id,name,description,status,source_capture_id FROM projects").fetchone() == (11, "College", "Applications", "ACTIVE", None)
         assert connection.execute("SELECT id,title,project_id,status,importance,schedule_mode,day_date,deadline_date,estimated_minutes,execution_mode,source_capture_id FROM tasks").fetchone() == (21, "Draft essay", 11, "OPEN", "MUST", "DAY", "2026-09-05", "2026-09-10", 45, "SPLITTABLE", None)
-        assert connection.execute("SELECT id,title,start_at,end_at,hardness,source_capture_id FROM fixed_commitments").fetchone() == (31, "Appointment", "2026-09-02T14:00:00.000000Z", None, "HARD", None)
+        assert connection.execute("SELECT id,title,start_at,end_at,hardness,status,source_capture_id FROM fixed_commitments").fetchone() == (31, "Appointment", "2026-09-02T14:00:00.000000Z", None, "HARD", "SCHEDULED", None)
         assert connection.execute("SELECT id,kind,parameters_json,enabled FROM rules").fetchone() == (41, "hours", '{\"start\":9}', 1)
         assert connection.execute("SELECT id,raw_text,unresolved_reason,resolved_at,source_capture_id FROM inbox_items").fetchone() == (51, "Maybe Tuesday", "ambiguous", None, None)
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 8
         task_fks = {(row[2], row[3], row[4], row[6]) for row in connection.execute("PRAGMA foreign_key_list(tasks)")}
         assert task_fks == {("projects", "project_id", "id", "RESTRICT"), ("captures", "source_capture_id", "id", "RESTRICT")}
 
@@ -125,19 +126,19 @@ def test_failed_migration_3_rolls_back_schema_and_preserves_all_v2_data(tmp_path
         assert connection.execute("SELECT id,raw_text FROM inbox_items").fetchone() == (51, "Maybe Tuesday")
 
 
-def test_repeated_version_7_initialization_is_idempotent(tmp_path: Path) -> None:
+def test_repeated_version_8_initialization_is_idempotent(tmp_path: Path) -> None:
     path = tmp_path / "personal_os.db"
     initialize_database(path)
     first_bytes = path.read_bytes()
 
-    assert initialize_database(path) == 7
+    assert initialize_database(path) == 8
     assert path.read_bytes() == first_bytes
 
 
 def test_newer_schema_version_fails_without_mutation(tmp_path: Path) -> None:
     path = tmp_path / "future.db"
     with sqlite3.connect(path) as connection:
-        connection.execute("PRAGMA user_version = 8")
+        connection.execute("PRAGMA user_version = 9")
     original = path.read_bytes()
 
     with pytest.raises(DatabaseInitializationError, match="newer than supported"):
@@ -172,7 +173,7 @@ def test_malformed_version_2_schema_is_rejected(tmp_path: Path) -> None:
     assert read_version(path) == 2
 
 
-def test_altered_version_7_table_is_rejected(tmp_path: Path) -> None:
+def test_altered_version_8_table_is_rejected(tmp_path: Path) -> None:
     path = tmp_path / "altered.db"
     initialize_database(path)
     with sqlite3.connect(path) as connection:
@@ -240,15 +241,18 @@ def create_populated_v3(path: Path) -> dict[str, tuple]:
     return before
 
 
-def test_populated_version_3_migrates_to_7_without_changing_existing_rows(tmp_path: Path) -> None:
+def test_populated_version_3_migrates_to_8_without_changing_existing_rows(tmp_path: Path) -> None:
     path = tmp_path / "version3.db"
     before = create_populated_v3(path)
-    assert initialize_database(path) == 7
+    assert initialize_database(path) == 8
     with sqlite3.connect(path) as connection:
         for table, rows in before.items():
             columns = [row[1] for row in connection.execute(f"PRAGMA table_info({table})")]
+            added_columns = {"execution_mode"}
+            if table == "fixed_commitments":
+                added_columns.add("status")
             original_columns = [
-                column for column in columns if column != "execution_mode"
+                column for column in columns if column not in added_columns
             ]
             assert tuple(connection.execute(
                 f"SELECT {', '.join(original_columns)} FROM {table}"
@@ -256,6 +260,9 @@ def test_populated_version_3_migrates_to_7_without_changing_existing_rows(tmp_pa
         assert connection.execute(
             "SELECT execution_mode FROM tasks WHERE id = 3"
         ).fetchone()[0] == "SPLITTABLE"
+        assert connection.execute(
+            "SELECT status FROM fixed_commitments WHERE id = 4"
+        ).fetchone()[0] == "SCHEDULED"
         assert connection.execute("SELECT * FROM sessions").fetchall() == []
         fk = connection.execute("PRAGMA foreign_key_list(sessions)").fetchone()
         assert (fk[2], fk[3], fk[4], fk[6]) == ("tasks", "task_id", "id", "RESTRICT")
@@ -313,7 +320,7 @@ def create_populated_v4(path: Path) -> None:
         connection.execute("PRAGMA user_version = 4")
 
 
-def test_valid_v4_schema_is_validated_and_migrates_losslessly_to_v7(
+def test_valid_v4_schema_is_validated_and_migrates_losslessly_to_v8(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "version4.db"
@@ -321,7 +328,7 @@ def test_valid_v4_schema_is_validated_and_migrates_losslessly_to_v7(
     with open_database(path, require_existing=True) as connection:
         database.validate_schema(connection, 4)
 
-    assert initialize_database(path) == 7
+    assert initialize_database(path) == 8
 
     with sqlite3.connect(path) as connection:
         connection.row_factory = sqlite3.Row
@@ -339,7 +346,7 @@ def test_valid_v4_schema_is_validated_and_migrates_losslessly_to_v7(
         assert tuple(connection.execute(
             "SELECT id,title,execution_mode FROM tasks"
         ).fetchone()) == (7, "Task", "SPLITTABLE")
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 8
 
 
 def test_failed_migration_5_rolls_back_to_intact_version_4(
@@ -438,16 +445,16 @@ def create_populated_v6(path: Path) -> None:
         connection.execute("PRAGMA user_version = 6")
 
 
-def test_populated_version_6_migrates_to_7_with_cancelled_status_and_history(
+def test_populated_version_6_migrates_to_8_with_cancelled_status_and_history(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "version6.db"
     create_populated_v6(path)
 
-    assert initialize_database(path) == 7
+    assert initialize_database(path) == 8
 
     with open_database(path, require_existing=True) as connection:
-        database.validate_schema(connection, 7)
+        database.validate_schema(connection, 8)
         task = connection.execute(
             """SELECT id,title,project_id,status,importance,schedule_mode,
                       day_date,deadline_date,estimated_minutes,execution_mode
@@ -465,7 +472,7 @@ def test_populated_version_6_migrates_to_7_with_cancelled_status_and_history(
         assert connection.execute(
             "SELECT status FROM tasks WHERE id=7"
         ).fetchone()[0] == "CANCELLED"
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 8
 
 
 def test_v7_migration_fk_violation_rolls_back_to_intact_version_6(
@@ -523,16 +530,112 @@ def test_failed_migration_7_rolls_back_to_intact_version_6(
         ).fetchone()) == (7, "Draft essay", "ONE_SITTING")
 
 
-def test_populated_version_5_migrates_to_7_with_task_execution_mode_and_history(
+def create_populated_v7(path: Path) -> None:
+    stamp = "2026-09-01T12:00:00.000000Z"
+    ended = "2026-09-01T12:45:00.000000Z"
+    with sqlite3.connect(path) as connection:
+        for ddl in V7_TABLE_DDL.values():
+            connection.execute(ddl)
+        connection.execute(
+            "INSERT INTO captures (id,raw_text,status,reference_time,timezone_name,interpretation_json,interpretation_version,created_at,updated_at) VALUES (1,'Captured','APPLIED',?,'UTC','{}',1,?,?)",
+            (stamp, stamp, stamp),
+        )
+        connection.execute(
+            """INSERT INTO projects
+               (id,name,description,status,created_at,updated_at,source_capture_id)
+               VALUES (2,'Project','Description','ACTIVE',?,?,1)""",
+            (stamp, stamp),
+        )
+        connection.execute(
+            """INSERT INTO tasks
+               (id,title,project_id,status,importance,schedule_mode,day_date,
+                deadline_date,estimated_minutes,created_at,updated_at,
+                source_capture_id,execution_mode)
+               VALUES (7,'Draft essay',2,'OPEN','MUST','DAY','2026-09-05',
+                       '2026-09-10',45,?,?,1,'ONE_SITTING')""",
+            (stamp, stamp),
+        )
+        connection.execute(
+            """INSERT INTO fixed_commitments
+               (id,title,start_at,end_at,hardness,created_at,updated_at,
+                source_capture_id)
+               VALUES (8,'Appointment','2026-09-02T14:00:00.000000Z',
+                       '2026-09-02T15:00:00.000000Z','HARD',?,?,1)""",
+            (stamp, stamp),
+        )
+        connection.execute(
+            """INSERT INTO sessions
+               (id,task_id,planned_minutes,started_at,ended_at,outcome,
+                start_reason,result_note,active_slot,selected_action)
+               VALUES (11,7,45,?,?,'PROGRESS','because','progressed',NULL,
+                       'Draft the essay section.')""",
+            (stamp, ended),
+        )
+        connection.execute("PRAGMA user_version = 7")
+
+
+def test_populated_version_7_migrates_to_8_with_scheduled_commitments(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "version7.db"
+    create_populated_v7(path)
+
+    assert initialize_database(path) == 8
+
+    with open_database(path, require_existing=True) as connection:
+        database.validate_schema(connection, 8)
+        assert tuple(connection.execute(
+            "SELECT id,title,hardness,status,source_capture_id FROM fixed_commitments"
+        ).fetchone()) == (8, "Appointment", "HARD", "SCHEDULED", 1)
+        assert tuple(connection.execute(
+            "SELECT id,title,status,source_capture_id FROM tasks"
+        ).fetchone()) == (7, "Draft essay", "OPEN", 1)
+        assert tuple(connection.execute(
+            "SELECT id,task_id,selected_action FROM sessions"
+        ).fetchone()) == (11, 7, "Draft the essay section.")
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_failed_migration_8_rolls_back_to_intact_version_7(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "failed-v8.db"
+    create_populated_v7(path)
+
+    def fail(connection: sqlite3.Connection) -> None:
+        connection.execute("ALTER TABLE fixed_commitments ADD COLUMN partial TEXT")
+        raise RuntimeError("migration 8 failed")
+
+    monkeypatch.setitem(database.MIGRATIONS, 8, fail)
+    with pytest.raises(RuntimeError, match="migration 8 failed"):
+        initialize_database(path)
+
+    assert read_version(path) == 7
+    assert user_objects(path) == sorted(V7_TABLE_DDL)
+    with open_database(path, require_existing=True) as connection:
+        database.validate_schema(connection, 7)
+        assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(fixed_commitments)")
+        }
+        assert "partial" not in columns
+        assert "status" not in columns
+        assert tuple(connection.execute(
+            "SELECT id,title,hardness,source_capture_id FROM fixed_commitments"
+        ).fetchone()) == (8, "Appointment", "HARD", 1)
+
+
+def test_populated_version_5_migrates_to_8_with_task_execution_mode_and_history(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "version5.db"
     create_populated_v5(path)
 
-    assert initialize_database(path) == 7
+    assert initialize_database(path) == 8
 
     with open_database(path, require_existing=True) as connection:
-        database.validate_schema(connection, 7)
+        database.validate_schema(connection, 8)
         task = connection.execute(
             """SELECT id,title,project_id,status,importance,schedule_mode,
                       day_date,deadline_date,estimated_minutes,execution_mode
@@ -558,7 +661,7 @@ def test_populated_version_5_migrates_to_7_with_task_execution_mode_and_history(
                 "active reason", None, 1, "Keep drafting.",
             ),
         ]
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 8
 
 
 def test_failed_migration_6_rolls_back_to_intact_version_5(

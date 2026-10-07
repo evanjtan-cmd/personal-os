@@ -19,6 +19,8 @@ from personal_os.database import initialize_database
 from personal_os.models import (
     CaptureFailureKind,
     CaptureStatus,
+    CommitmentHardness,
+    FixedCommitmentStatus,
     ProjectStatus,
     TaskExecutionMode,
     TaskImportance,
@@ -162,6 +164,19 @@ def test_invalid_protocol_envelope_is_rejected(
             "status": "COMPLETED",
             "title": "Rename",
         },
+        {
+            "version": 1,
+            "operation": "configure_commitment_protection",
+            "commitment_id": 1,
+            "duration_minutes": 30,
+            "hardness": "HARD",
+        },
+        {
+            "version": 1,
+            "operation": "cancel_commitment",
+            "commitment_id": 1,
+            "delete": True,
+        },
     ],
 )
 def test_unknown_fields_are_rejected_for_every_operation(
@@ -227,6 +242,29 @@ def test_unknown_fields_are_rejected_for_every_operation(
             "task_id": 1,
             "status": "BLOCKED",
         },
+        {
+            "version": 1,
+            "operation": "configure_commitment_protection",
+            "commitment_id": 1,
+        },
+        {
+            "version": 1,
+            "operation": "configure_commitment_protection",
+            "commitment_id": 1,
+            "duration_minutes": 0,
+        },
+        {
+            "version": 1,
+            "operation": "configure_commitment_protection",
+            "commitment_id": 1,
+            "duration_minutes": 30,
+            "current_time": "now",
+        },
+        {
+            "version": 1,
+            "operation": "cancel_commitment",
+            "commitment_id": True,
+        },
     ],
 )
 def test_invalid_request_never_constructs_runtime(payload: dict[str, object]) -> None:
@@ -245,7 +283,7 @@ def test_invalid_request_never_constructs_runtime(payload: dict[str, object]) ->
     runtime_factory.assert_not_called()
 
 
-def test_overview_serializes_filtered_coherent_snapshot_without_clock_or_ai() -> None:
+def test_overview_serializes_state_visibility_with_trusted_clock_no_ai() -> None:
     runtime = fake_runtime()
     snapshot = SimpleNamespace(
         projects=(
@@ -277,6 +315,7 @@ def test_overview_serializes_filtered_coherent_snapshot_without_clock_or_ai() ->
                 deadline_at=None,
                 estimated_minutes=45,
                 execution_mode=TaskExecutionMode.SPLITTABLE,
+                updated_at=NOW - timedelta(minutes=5),
             ),
             SimpleNamespace(
                 id=11,
@@ -292,6 +331,7 @@ def test_overview_serializes_filtered_coherent_snapshot_without_clock_or_ai() ->
                 deadline_at=datetime(2026, 10, 3, 16, tzinfo=UTC),
                 estimated_minutes=None,
                 execution_mode=TaskExecutionMode.ONE_SITTING,
+                updated_at=NOW - timedelta(minutes=4),
             ),
             SimpleNamespace(
                 id=12,
@@ -307,6 +347,61 @@ def test_overview_serializes_filtered_coherent_snapshot_without_clock_or_ai() ->
                 deadline_at=None,
                 estimated_minutes=None,
                 execution_mode=TaskExecutionMode.SPLITTABLE,
+                updated_at=NOW - timedelta(minutes=3),
+            ),
+            SimpleNamespace(
+                id=13,
+                title="Cancelled task",
+                status=TaskStatus.CANCELLED,
+                importance=TaskImportance.COULD,
+                project_id=None,
+                schedule_mode=TaskScheduleMode.FLEXIBLE,
+                day_date=None,
+                window_start=None,
+                window_end=None,
+                deadline_date=None,
+                deadline_at=None,
+                estimated_minutes=None,
+                execution_mode=TaskExecutionMode.SPLITTABLE,
+                updated_at=NOW - timedelta(minutes=2),
+            ),
+        ),
+        fixed_commitments=(
+            SimpleNamespace(
+                id=40,
+                title="Future unclear hold",
+                start_at=NOW + timedelta(hours=1),
+                end_at=None,
+                hardness=CommitmentHardness.UNKNOWN,
+                status=FixedCommitmentStatus.SCHEDULED,
+                updated_at=NOW - timedelta(minutes=6),
+            ),
+            SimpleNamespace(
+                id=41,
+                title="Active appointment",
+                start_at=NOW - timedelta(minutes=5),
+                end_at=NOW + timedelta(minutes=55),
+                hardness=CommitmentHardness.HARD,
+                status=FixedCommitmentStatus.SCHEDULED,
+                updated_at=NOW - timedelta(minutes=7),
+            ),
+            SimpleNamespace(
+                id=42,
+                title="Past class",
+                start_at=NOW - timedelta(hours=2),
+                end_at=NOW - timedelta(hours=1),
+                hardness=CommitmentHardness.HARD,
+                status=FixedCommitmentStatus.SCHEDULED,
+                updated_at=NOW - timedelta(hours=1),
+            ),
+            SimpleNamespace(
+                id=43,
+                title="Cancelled appointment",
+                start_at=NOW + timedelta(hours=3),
+                end_at=NOW + timedelta(hours=4),
+                hardness=CommitmentHardness.HARD,
+                status=FixedCommitmentStatus.CANCELLED,
+                updated_at=NOW - timedelta(minutes=1),
             ),
         ),
         inbox_items=(
@@ -339,7 +434,7 @@ def test_overview_serializes_filtered_coherent_snapshot_without_clock_or_ai() ->
     )
     runtime.store.read_state_snapshot.return_value = snapshot
     runtime_factory = Mock(return_value=runtime)
-    clock = Mock(side_effect=AssertionError("overview must not read the clock"))
+    clock = Mock(return_value=NOW)
 
     status, response = bridge.process_request(
         {"version": 1, "operation": "overview"},
@@ -349,72 +444,43 @@ def test_overview_serializes_filtered_coherent_snapshot_without_clock_or_ai() ->
     )
 
     assert status == 0
-    assert response == {
-        "version": 1,
-        "ok": True,
-        "operation": "overview",
-        "result": {
-            "projects": [
-                {"id": 1, "name": "College", "description": "Applications"}
-            ],
-            "tasks": [
-                {
-                    "id": 10,
-                    "title": "Draft essay",
-                    "status": "OPEN",
-                    "importance": "MUST",
-                    "project_id": 1,
-                    "project_name": "College",
-                    "schedule": {
-                        "mode": "FLEXIBLE",
-                        "day_date": None,
-                        "window_start": None,
-                        "window_end": None,
-                    },
-                    "deadline": {"kind": "DATE", "date": "2026-10-15"},
-                    "execution_mode": "SPLITTABLE",
-                    "estimated_minutes": 45,
-                },
-                {
-                    "id": 11,
-                    "title": "Call adviser",
-                    "status": "BLOCKED",
-                    "importance": "SHOULD",
-                    "project_id": None,
-                    "project_name": None,
-                    "schedule": {
-                        "mode": "DAY",
-                        "day_date": "2026-10-02",
-                        "window_start": None,
-                        "window_end": None,
-                    },
-                    "deadline": {
-                        "kind": "INSTANT",
-                        "at": "2026-10-03T16:00:00.000000Z",
-                    },
-                    "execution_mode": "ONE_SITTING",
-                    "estimated_minutes": None,
-                },
-            ],
-            "inbox": [{
-                "id": 20,
-                "raw_text": "Call Mike at 4",
-                "unresolved_reason": "time is missing AM/PM",
-                "source_capture_id": 8,
-            }],
-            "active_session": {
-                "session_id": 30,
-                "task_id": 10,
-                "task_title": "Draft essay",
-                "planned_minutes": 25,
-                "selected_action": "Draft the introduction.",
-                "started_at": "2026-09-01T14:00:00.000000Z",
-            },
-        },
+    result = response["result"]
+    assert response["ok"] is True
+    assert result["projects"] == [
+        {"id": 1, "name": "College", "description": "Applications"}
+    ]
+    assert [task["id"] for task in result["tasks"]] == [10, 11]
+    assert {task["id"]: task["status"] for task in result["task_history"]} == {
+        13: "CANCELLED",
+        12: "COMPLETED",
     }
+    assert result["tasks"][0]["deadline"] == {"kind": "DATE", "date": "2026-10-15"}
+    assert result["inbox"] == [{
+        "id": 20,
+        "raw_text": "Call Mike at 4",
+        "unresolved_reason": "time is missing AM/PM",
+        "source_capture_id": 8,
+    }]
+    assert result["active_session"] == {
+        "session_id": 30,
+        "task_id": 10,
+        "task_title": "Draft essay",
+        "planned_minutes": 25,
+        "selected_action": "Draft the introduction.",
+        "started_at": "2026-09-01T14:00:00.000000Z",
+    }
+    assert [item["id"] for item in result["commitments"]] == [41, 40]
+    assert result["commitments"][0]["temporal_status"] == "ACTIVE"
+    assert result["commitments"][0]["protection_needs_input"] is False
+    assert result["commitments"][1]["temporal_status"] == "FUTURE"
+    assert result["commitments"][1]["protection_needs_input"] is True
+    assert [item["id"] for item in result["commitment_history"]] == [43, 42]
+    assert result["commitment_history"][0]["status"] == "CANCELLED"
+    assert result["commitment_history"][1]["temporal_status"] == "PAST"
+    assert result["history_limit"] == bridge.HISTORY_LIMIT
     runtime_factory.assert_called_once_with()
     runtime.store.read_state_snapshot.assert_called_once_with()
-    clock.assert_not_called()
+    clock.assert_called_once_with()
     runtime.capture_service.capture_text.assert_not_called()
     runtime.recommendation_service.recommend.assert_not_called()
     runtime.session_service.start_session.assert_not_called()
@@ -484,10 +550,128 @@ def test_task_status_correction_uses_narrow_store_operation(tmp_path: Path) -> N
     assert store.get_task(task.id).status is TaskStatus.CANCELLED
 
 
+def test_task_status_correction_reopens_completed_task(tmp_path: Path) -> None:
+    database_path = tmp_path / DEFAULT_DATABASE_FILENAME
+    initialize_database(database_path)
+    store = SQLiteStateStore(database_path, clock=lambda: NOW)
+    task = store.create_task("Study for ACT", status=TaskStatus.COMPLETED)
+    runtime = fake_runtime()
+    runtime.store = store
+
+    status, response, _ = invoke(
+        {
+            "version": 1,
+            "operation": "correct_task_status",
+            "task_id": task.id,
+            "status": "OPEN",
+        },
+        runtime,
+    )
+
+    assert status == 0
+    assert response["result"]["status"] == "OPEN"
+    assert store.get_task(task.id).status is TaskStatus.OPEN
+
+
+def test_commitment_protection_operation_configures_bounded_hard(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / DEFAULT_DATABASE_FILENAME
+    initialize_database(database_path)
+    store = SQLiteStateStore(database_path, clock=lambda: NOW)
+    commitment = store.create_fixed_commitment(
+        "Appointment", NOW + timedelta(hours=1)
+    )
+    runtime = fake_runtime()
+    runtime.store = store
+
+    status, response, _ = invoke(
+        {
+            "version": 1,
+            "operation": "configure_commitment_protection",
+            "commitment_id": commitment.id,
+            "duration_minutes": 45,
+        },
+        runtime,
+    )
+
+    assert status == 0
+    assert response["result"] == {
+        "commitment_id": commitment.id,
+        "title": "Appointment",
+        "status": "SCHEDULED",
+        "hardness": "HARD",
+        "start_at": "2026-09-01T15:00:00.000000Z",
+        "end_at": "2026-09-01T15:45:00.000000Z",
+    }
+    updated = store.get_fixed_commitment(commitment.id)
+    assert updated.hardness is CommitmentHardness.HARD
+    assert updated.end_at == commitment.start_at + timedelta(minutes=45)
+
+
+def test_commitment_protection_operation_configures_no_reservation(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / DEFAULT_DATABASE_FILENAME
+    initialize_database(database_path)
+    store = SQLiteStateStore(database_path, clock=lambda: NOW)
+    commitment = store.create_fixed_commitment(
+        "Appointment", NOW + timedelta(hours=1),
+        end_at=NOW + timedelta(hours=2),
+    )
+    runtime = fake_runtime()
+    runtime.store = store
+
+    status, response, _ = invoke(
+        {
+            "version": 1,
+            "operation": "configure_commitment_protection",
+            "commitment_id": commitment.id,
+            "duration_minutes": None,
+        },
+        runtime,
+    )
+
+    assert status == 0
+    assert response["result"]["hardness"] == "SOFT"
+    assert response["result"]["end_at"] == "2026-09-01T16:00:00.000000Z"
+    updated = store.get_fixed_commitment(commitment.id)
+    assert updated.hardness is CommitmentHardness.SOFT
+    assert updated.end_at == commitment.end_at
+
+
+def test_cancel_commitment_operation_is_historical_not_delete(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / DEFAULT_DATABASE_FILENAME
+    initialize_database(database_path)
+    store = SQLiteStateStore(database_path, clock=lambda: NOW)
+    commitment = store.create_fixed_commitment("Appointment", NOW)
+    runtime = fake_runtime()
+    runtime.store = store
+
+    status, response, _ = invoke(
+        {
+            "version": 1,
+            "operation": "cancel_commitment",
+            "commitment_id": commitment.id,
+        },
+        runtime,
+    )
+
+    assert status == 0
+    assert response["result"] == {
+        "commitment_id": commitment.id,
+        "title": "Appointment",
+        "status": "CANCELLED",
+    }
+    assert store.get_fixed_commitment(commitment.id).status is FixedCommitmentStatus.CANCELLED
+
+
 def test_overview_without_active_session_returns_null() -> None:
     runtime = fake_runtime()
     runtime.store.read_state_snapshot.return_value = SimpleNamespace(
-        projects=(), tasks=(), inbox_items=(), sessions=()
+        projects=(), tasks=(), fixed_commitments=(), inbox_items=(), sessions=()
     )
 
     status, response, _ = invoke(
@@ -498,6 +682,10 @@ def test_overview_without_active_session_returns_null() -> None:
     assert response["result"] == {
         "projects": [],
         "tasks": [],
+        "task_history": [],
+        "commitments": [],
+        "commitment_history": [],
+        "history_limit": bridge.HISTORY_LIMIT,
         "inbox": [],
         "active_session": None,
     }

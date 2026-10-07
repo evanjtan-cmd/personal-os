@@ -8,8 +8,8 @@ import pytest
 from personal_os.database import TABLE_DDL, initialize_database
 from personal_os.errors import PersistenceError
 from personal_os.models import (
-    CommitmentHardness, ProjectStatus, TaskExecutionMode, TaskImportance, TaskScheduleMode,
-    TaskStatus,
+    CommitmentHardness, ProjectStatus, TaskExecutionMode, TaskImportance,
+    TaskScheduleMode, TaskStatus,
 )
 from personal_os.recommendation import RecommendationService, allowed_durations
 from personal_os.recommendation_types import (
@@ -114,6 +114,23 @@ def test_active_hard_commitment_skips_ranker(store, end, reason) -> None:
     result = RecommendationService(store, ranker).recommend(RecommendationContext(NOW, "UTC"))
     assert result.deterministic_reason is reason
     assert not ranker.calls
+
+
+def test_cancelled_hard_commitment_is_ignored_by_recommendation(store) -> None:
+    task = store.create_task("Task", estimated_minutes=2)
+    commitment = store.create_fixed_commitment(
+        "Cancelled meeting", NOW, end_at=NOW + timedelta(hours=1),
+        hardness=CommitmentHardness.HARD,
+    )
+    store.cancel_commitment(commitment.id)
+    ranker = Ranker()
+
+    result = RecommendationService(store, ranker).recommend(
+        RecommendationContext(NOW, "UTC")
+    )
+
+    assert result.task == task
+    assert len(ranker.calls) == 1
 
 
 def test_explicit_short_task_can_be_ranked_and_must_gate(store) -> None:
@@ -337,7 +354,7 @@ def test_snapshot_is_coherent_and_schema_remains_current_version(store) -> None:
     projects, tasks, commitments = store.read_recommendation_snapshot()
     assert (projects, tasks, commitments) == ([project], [task], [commitment])
     with sqlite3.connect(store.database_path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 8
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
     assert tables == set(TABLE_DDL)
 

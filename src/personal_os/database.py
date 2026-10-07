@@ -8,7 +8,7 @@ from pathlib import Path
 
 from personal_os.errors import PersonalOSError
 
-CURRENT_SCHEMA_VERSION = 7
+CURRENT_SCHEMA_VERSION = 8
 
 
 class DatabaseInitializationError(PersonalOSError):
@@ -230,6 +230,26 @@ TABLE_DDL = {
     name: _ddl_after_add_cancelled_status(name, ddl)
     for name, ddl in V6_TABLE_DDL.items()
 }
+V7_TABLE_DDL: dict[str, str] = TABLE_DDL
+
+
+def _ddl_after_add_commitment_status(name: str, ddl: str) -> str:
+    if name != "fixed_commitments":
+        return ddl
+    marker = "            created_at TEXT NOT NULL"
+    return ddl.replace(
+        marker,
+        "            status TEXT NOT NULL DEFAULT 'SCHEDULED'\n"
+        "                CHECK(status IN ('SCHEDULED', 'CANCELLED')),\n"
+        + marker,
+        1,
+    )
+
+
+TABLE_DDL = {
+    name: _ddl_after_add_commitment_status(name, ddl)
+    for name, ddl in V7_TABLE_DDL.items()
+}
 
 Migration = Callable[[sqlite3.Connection], None]
 
@@ -298,6 +318,24 @@ def _migration_7(connection: sqlite3.Connection) -> None:
     connection.execute("DROP TABLE tasks_v6")
 
 
+def _migration_8(connection: sqlite3.Connection) -> None:
+    """Add canonical fixed-commitment lifecycle status."""
+
+    columns = (
+        "id, title, start_at, end_at, hardness, created_at, updated_at, "
+        "source_capture_id"
+    )
+    connection.execute("ALTER TABLE fixed_commitments RENAME TO fixed_commitments_v7")
+    connection.execute(TABLE_DDL["fixed_commitments"])
+    connection.execute(
+        f"""INSERT INTO fixed_commitments (
+                {columns}, status
+            )
+            SELECT {columns}, 'SCHEDULED' FROM fixed_commitments_v7"""
+    )
+    connection.execute("DROP TABLE fixed_commitments_v7")
+
+
 MIGRATIONS: dict[int, Migration] = {
     1: _migration_1,
     2: _migration_2,
@@ -306,6 +344,7 @@ MIGRATIONS: dict[int, Migration] = {
     5: _migration_5,
     6: _migration_6,
     7: _migration_7,
+    8: _migration_8,
 }
 
 
@@ -367,7 +406,7 @@ def validate_schema(connection: sqlite3.Connection, version: int) -> None:
                 f"schema version {version} contains unexpected objects: {names}"
             )
         return
-    if version not in (2, 3, 4, 5, 6, 7):
+    if version not in (2, 3, 4, 5, 6, 7, 8):
         raise DatabaseInitializationError(f"unsupported schema version {version}")
     expected_tables = {
         2: V2_TABLE_DDL,
@@ -375,7 +414,8 @@ def validate_schema(connection: sqlite3.Connection, version: int) -> None:
         4: V4_TABLE_DDL,
         5: V5_TABLE_DDL,
         6: V6_TABLE_DDL,
-        7: TABLE_DDL,
+        7: V7_TABLE_DDL,
+        8: TABLE_DDL,
     }[version]
     if set(objects) != set(expected_tables):
         expected = ", ".join(sorted(expected_tables))
@@ -396,7 +436,7 @@ def validate_schema(connection: sqlite3.Connection, version: int) -> None:
         "fixed_commitments": [] if version == 2 else [("captures", "source_capture_id", "id", "NO ACTION", "RESTRICT")],
         "inbox_items": [] if version == 2 else [("captures", "source_capture_id", "id", "NO ACTION", "RESTRICT")],
     }
-    if version in (4, 5, 6, 7):
+    if version in (4, 5, 6, 7, 8):
         expected_fks["sessions"] = [
             ("tasks", "task_id", "id", "NO ACTION", "RESTRICT")
         ]
@@ -407,7 +447,7 @@ def validate_schema(connection: sqlite3.Connection, version: int) -> None:
         )
         if actual != sorted(expected):
             raise DatabaseInitializationError(f"{table} has incompatible foreign-key metadata")
-    if version in (4, 5, 6, 7):
+    if version in (4, 5, 6, 7, 8):
         unique_active_slot = False
         for index in connection.execute("PRAGMA index_list(sessions)"):
             if int(index["unique"]) != 1:

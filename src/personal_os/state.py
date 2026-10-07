@@ -7,7 +7,7 @@ import json
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +24,7 @@ from personal_os.models import (
     Capture,
     CaptureFailureKind,
     CaptureStatus,
+    FixedCommitmentStatus,
     FixedCommitment,
     InboxItem,
     Project,
@@ -178,6 +179,7 @@ class SQLiteStateStore:
                 created_at=parse_instant(row["created_at"], "created_at"),
                 updated_at=parse_instant(row["updated_at"], "updated_at"),
                 source_capture_id=row["source_capture_id"],
+                status=FixedCommitmentStatus(row["status"]),
             ),
             "fixed commitment",
         )
@@ -274,12 +276,13 @@ class SQLiteStateStore:
     def _insert_fixed_commitment(
         self, connection: sqlite3.Connection, *, title: str, start_at: datetime,
         end_at: datetime | None, hardness: CommitmentHardness,
+        status: FixedCommitmentStatus = FixedCommitmentStatus.SCHEDULED,
         source_capture_id: int | None = None,
     ) -> FixedCommitment:
         now = serialize_instant(self._now())
         cursor = connection.execute(
-            "INSERT INTO fixed_commitments (title, start_at, end_at, hardness, created_at, updated_at, source_capture_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (title, serialize_instant(start_at), None if end_at is None else serialize_instant(end_at), hardness.value, now, now, source_capture_id),
+            "INSERT INTO fixed_commitments (title, start_at, end_at, hardness, status, created_at, updated_at, source_capture_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (title, serialize_instant(start_at), None if end_at is None else serialize_instant(end_at), hardness.value, status.value, now, now, source_capture_id),
         )
         return self._commitment_from_row(self._row_or_missing(connection, "fixed_commitments", cursor.lastrowid, "fixed commitment"))
 
@@ -432,6 +435,8 @@ class SQLiteStateStore:
                 TaskStatus.COMPLETED,
                 TaskStatus.CANCELLED,
             },
+            TaskStatus.COMPLETED: {TaskStatus.OPEN},
+            TaskStatus.CANCELLED: {TaskStatus.OPEN},
         }
         with self._transaction() as connection:
             current = self._task_from_row(
@@ -461,15 +466,17 @@ class SQLiteStateStore:
     def create_fixed_commitment(
         self, title: str, start_at: datetime, *, end_at: datetime | None = None,
         hardness: CommitmentHardness = CommitmentHardness.UNKNOWN,
+        status: FixedCommitmentStatus = FixedCommitmentStatus.SCHEDULED,
     ) -> FixedCommitment:
         title = require_text(title, "title")
         start = normalize_instant(start_at, "start_at")
         end = optional_instant(end_at, "end_at")
         hardness = require_enum(hardness, CommitmentHardness, "hardness")  # type: ignore[assignment]
+        status = require_enum(status, FixedCommitmentStatus, "status")  # type: ignore[assignment]
         if end is not None and start >= end:
             raise DomainValidationError("start_at must be before end_at")
         with self._transaction() as connection:
-            return self._insert_fixed_commitment(connection, title=title, start_at=start, end_at=end, hardness=hardness)
+            return self._insert_fixed_commitment(connection, title=title, start_at=start, end_at=end, hardness=hardness, status=status)
 
     def get_fixed_commitment(self, commitment_id: int) -> FixedCommitment:
         with self._connection() as connection:
@@ -655,7 +662,7 @@ class SQLiteStateStore:
     def update_fixed_commitment(
         self, commitment_id: int, *, title: object = _OMITTED,
         start_at: object = _OMITTED, end_at: object = _OMITTED,
-        hardness: object = _OMITTED,
+        hardness: object = _OMITTED, status: object = _OMITTED,
     ) -> FixedCommitment:
         with self._transaction() as connection:
             current = self._commitment_from_row(self._row_or_missing(connection, "fixed_commitments", commitment_id, "fixed commitment"))
@@ -663,13 +670,89 @@ class SQLiteStateStore:
             new_start = current.start_at if start_at is _OMITTED else normalize_instant(start_at, "start_at")
             new_end = current.end_at if end_at is _OMITTED else optional_instant(end_at, "end_at")
             new_hardness = current.hardness if hardness is _OMITTED else require_enum(hardness, CommitmentHardness, "hardness")
+            new_status = current.status if status is _OMITTED else require_enum(status, FixedCommitmentStatus, "status")
             if new_end is not None and new_start >= new_end:
                 raise DomainValidationError("start_at must be before end_at")
             connection.execute(
-                "UPDATE fixed_commitments SET title = ?, start_at = ?, end_at = ?, hardness = ?, updated_at = ? WHERE id = ?",
-                (new_title, serialize_instant(new_start), None if new_end is None else serialize_instant(new_end), new_hardness.value, serialize_instant(self._now()), commitment_id),
+                "UPDATE fixed_commitments SET title = ?, start_at = ?, end_at = ?, hardness = ?, status = ?, updated_at = ? WHERE id = ?",
+                (new_title, serialize_instant(new_start), None if new_end is None else serialize_instant(new_end), new_hardness.value, new_status.value, serialize_instant(self._now()), commitment_id),
             )
             return self._commitment_from_row(self._row_or_missing(connection, "fixed_commitments", commitment_id, "fixed commitment"))
+
+    def configure_commitment_protection(
+        self, commitment_id: int, *, duration_minutes: object,
+    ) -> FixedCommitment:
+        if duration_minutes is None:
+            target_hardness = CommitmentHardness.SOFT
+        else:
+            if (
+                isinstance(duration_minutes, bool)
+                or not isinstance(duration_minutes, int)
+                or duration_minutes <= 0
+            ):
+                raise DomainValidationError(
+                    "duration_minutes must be a positive integer or None"
+                )
+            target_hardness = CommitmentHardness.HARD
+        with self._transaction() as connection:
+            current = self._commitment_from_row(
+                self._row_or_missing(
+                    connection, "fixed_commitments", commitment_id,
+                    "fixed commitment",
+                )
+            )
+            if current.status is not FixedCommitmentStatus.SCHEDULED:
+                raise DomainValidationError(
+                    f"commitment {current.id} is not scheduled"
+                )
+            if duration_minutes is None:
+                end_at = current.end_at
+            else:
+                end_at = current.start_at + timedelta(minutes=duration_minutes)
+            connection.execute(
+                """UPDATE fixed_commitments
+                   SET hardness = ?, end_at = ?, updated_at = ?
+                   WHERE id = ?""",
+                (
+                    target_hardness.value,
+                    None if end_at is None else serialize_instant(end_at),
+                    serialize_instant(self._now()),
+                    current.id,
+                ),
+            )
+            return self._commitment_from_row(
+                self._row_or_missing(
+                    connection, "fixed_commitments", current.id,
+                    "fixed commitment",
+                )
+            )
+
+    def cancel_commitment(self, commitment_id: int) -> FixedCommitment:
+        with self._transaction() as connection:
+            current = self._commitment_from_row(
+                self._row_or_missing(
+                    connection, "fixed_commitments", commitment_id,
+                    "fixed commitment",
+                )
+            )
+            if current.status is FixedCommitmentStatus.CANCELLED:
+                raise DomainValidationError(
+                    f"commitment {current.id} is already cancelled"
+                )
+            connection.execute(
+                "UPDATE fixed_commitments SET status = ?, updated_at = ? WHERE id = ?",
+                (
+                    FixedCommitmentStatus.CANCELLED.value,
+                    serialize_instant(self._now()),
+                    current.id,
+                ),
+            )
+            return self._commitment_from_row(
+                self._row_or_missing(
+                    connection, "fixed_commitments", current.id,
+                    "fixed commitment",
+                )
+            )
 
     def create_rule(self, kind: str, parameters: dict[str, Any] | None = None, *, enabled: bool = True) -> Rule:
         kind = require_text(kind, "kind")

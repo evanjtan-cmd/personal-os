@@ -1,6 +1,6 @@
 # Build State
 
-Last updated: 2026-10-06 for POS-024 State Triage & Low-Friction Maintenance.
+Last updated: 2026-10-06 for POS-025 Complete State Visibility & Commitment Protection.
 
 ## Implemented
 
@@ -8,12 +8,12 @@ Last updated: 2026-10-06 for POS-024 State Triage & Low-Friction Maintenance.
   dogfood CLI over the completed application services.
 - External runtime data at `~/.personal-os/personal_os.db`, overrideable through
   `PERSONAL_OS_DATA_DIR`.
-- Standard-library SQLite schema version 7 with explicit ordered migrations,
+- Standard-library SQLite schema version 8 with explicit ordered migrations,
   strict version-specific schema validation, transactional rollback, and
   verified foreign-key enforcement.
-- Fresh 0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 initialization, existing
-  version-1/version-2/version-3/version-4/version-5/version-6 migration, and
-  idempotent current-version initialization.
+- Fresh 0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 initialization, existing
+  version-1/version-2/version-3/version-4/version-5/version-6/version-7
+  migration, and idempotent current-version initialization.
 - Typed, validated application records and SQLite create/get/list/update
   operations for:
   - projects;
@@ -25,8 +25,8 @@ Last updated: 2026-10-06 for POS-024 State Triage & Low-Friction Maintenance.
   UNSPECIFIED/MUST/SHOULD/COULD importance, FLEXIBLE/DAY/WINDOW scheduling,
   SPLITTABLE/ONE_SITTING execution mode, mutually exclusive date-only or
   exact-time deadlines, and positive estimated durations.
-- Fixed commitments with explicit UNKNOWN/HARD/SOFT classification and optional
-  ends.
+- Fixed commitments with SCHEDULED/CANCELLED lifecycle status, explicit
+  UNKNOWN/HARD/SOFT protection classification, and optional ends.
 - Canonical UTC instant storage, calendar-date storage, canonical JSON-object
   rule parameters, and one-way inbox resolution.
 - A concrete state store with explicit bootstrap boundaries, parameterized SQL,
@@ -134,11 +134,13 @@ Last updated: 2026-10-06 for POS-024 State Triage & Low-Friction Maintenance.
   leaves recommendation and session state untouched.
 - POS-020 adds the read-only Machine Interface v1 `overview` operation and
   `GET /v1/overview`. The purpose-built contract derives active projects,
-  OPEN/BLOCKED tasks, unresolved Inbox items, and the active session from one
-  coherent `read_state_snapshot()` result without clock, timezone, provider,
-  AI, or mutation. A dedicated compact State page at `/state` loads and
-  refreshes that overview, uses safe DOM text insertion, and shares clear Work
-  and State navigation without changing the POS-019 Work flow.
+  OPEN/BLOCKED tasks, unresolved Inbox items, scheduled fixed commitments,
+  bounded closed Task/commitment history, and the active session from one
+  coherent `read_state_snapshot()` result without provider, AI, or mutation.
+  Commitment temporal classification uses the adapter's trusted server clock,
+  never caller-supplied time. A dedicated compact State page at `/state` loads
+  and refreshes that overview, uses safe DOM text insertion, and shares clear
+  Work and State navigation without changing the POS-019 Work flow.
 - POS-021 extends overview tasks with execution mode and estimated minutes,
   adds Machine Interface v1 `update_task_planning` plus loopback
   `POST /v1/task-planning` for updating only those two planning facts, and adds
@@ -163,6 +165,26 @@ Last updated: 2026-10-06 for POS-024 State Triage & Low-Friction Maintenance.
   Unblock, and preserves planning correction in a collapsed More area. Work now
   offers inline unresolved capture resolution/dismissal and asks only for a
   missing duration on applied ONE_SITTING tasks.
+- POS-025 adds schema version 8 fixed-commitment lifecycle status. Existing
+  commitments migrate to SCHEDULED; CANCELLED commitments are historical state,
+  are not physically deleted, and never constrain availability. Fixed
+  commitments do not gain a stored COMPLETED state; past/upcoming/active
+  display is derived from trusted time and stored start/end facts.
+- POS-025 adds narrow commitment maintenance operations.
+  `configure_commitment_protection` marks a SCHEDULED commitment HARD only when
+  the user supplies a
+  positive explicit duration, setting `end_at = start_at + duration`; choosing
+  no reservation marks it SOFT while preserving any known end. It does not
+  invent durations or newly create HARD/null-end commitments. `cancel_commitment`
+  moves SCHEDULED to CANCELLED and rejects already CANCELLED rows.
+- POS-025 extends narrow Task lifecycle correction with explicit Reopen:
+  COMPLETED→OPEN and CANCELLED→OPEN are allowed, while active-session
+  protection and all POS-024 transitions remain intact.
+- POS-025 extends the browser State page order to Needs input, Active session,
+  Upcoming commitments, Active tasks, Active projects, and History. Needs input
+  now includes UNKNOWN future/active commitment protection and HARD/null-end
+  protection problems; Upcoming commitments expose Cancel but not Done; History
+  shows completed/removed Tasks with Reopen and past/cancelled commitments.
 - POS-022 keeps detailed capture failure information durable and available to
   internal/API consumers, while the normal browser Work capture surface displays
   a concise retry message for FAILED captures instead of raw provider exception
@@ -196,13 +218,14 @@ Last updated: 2026-10-06 for POS-024 State Triage & Low-Friction Maintenance.
 
 Run on 2026-10-06 with Python 3.13.0 and pytest 8.4.2:
 
-- `.venv/bin/python -m pytest` — passed: 577 passed, 0 failed.
-- `.venv/bin/python -m compileall -q src tests` — passed with exit code 0.
-- `node --check src/personal_os/static/work.js` — passed with exit code 0.
-- `node --check src/personal_os/static/state.js` — passed with exit code 0.
-- `git diff --check` — passed with exit code 0.
-- HTTP tests used local loopback test servers bound to `127.0.0.1`; no live AI
-  provider was called.
+- `python -m pytest` — passed: 612 passed in 65.05s.
+- `python -m compileall -q src tests` — passed.
+- `node --check src/personal_os/static/work.js` — passed.
+- `node --check src/personal_os/static/state.js` — passed.
+- `git diff --check` — passed.
+- No live AI provider was called. An earlier managed-sandbox attempt could not
+  bind loopback for HTTP tests, but the normal-laptop validation above is the
+  authoritative result.
 
 After POS-008, the configured real provider passed the full dogfood loop for a
 schedule-less FLEXIBLE `Study for ACT` task: capture, structured state,
