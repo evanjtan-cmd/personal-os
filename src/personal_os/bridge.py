@@ -49,7 +49,9 @@ class _ValidatedRequest:
     raw_text: str | None = None
     available_minutes: int | None = None
     timezone: str | None = None
+    inbox_item_id: int | None = None
     task_id: int | None = None
+    task_status: TaskStatus | None = None
     planned_minutes: int | None = None
     execution_mode: TaskExecutionMode | None = None
     estimated_minutes: int | None = None
@@ -197,11 +199,23 @@ def _capture(
         reference_time=now,
         timezone_name=get_timezone_name(request.timezone, environ),
     )
+    return _serialize_capture_result(result, runtime)
+
+
+def _serialize_capture_result(
+    result, runtime: PersonalOSRuntime, *,
+    resolved_inbox_item_id: int | None = None,
+) -> dict[str, object]:
     capture = result.capture
     response: dict[str, object] = {
         "capture_id": capture.id,
         "status": capture.status.value,
     }
+    if (
+        resolved_inbox_item_id is not None
+        and capture.status in {CaptureStatus.APPLIED, CaptureStatus.UNRESOLVED}
+    ):
+        response["resolved_inbox_item_id"] = resolved_inbox_item_id
     if capture.status is CaptureStatus.APPLIED:
         tasks = [runtime.store.get_task(task_id) for task_id in result.task_ids]
         response.update(
@@ -250,6 +264,34 @@ def _capture(
     else:
         raise RuntimeError("capture service returned a non-final capture")
     return response
+
+
+def _resolve_inbox(
+    request: _ValidatedRequest, runtime: PersonalOSRuntime, *, now: datetime,
+    environ: Mapping[str, str] | None,
+) -> dict[str, object]:
+    assert request.inbox_item_id is not None and request.raw_text is not None
+    result = runtime.capture_service.resolve_inbox_text(
+        request.inbox_item_id,
+        request.raw_text,
+        reference_time=now,
+        timezone_name=get_timezone_name(request.timezone, environ),
+    )
+    return _serialize_capture_result(
+        result, runtime, resolved_inbox_item_id=request.inbox_item_id
+    )
+
+
+def _dismiss_inbox(
+    request: _ValidatedRequest, runtime: PersonalOSRuntime,
+) -> dict[str, object]:
+    assert request.inbox_item_id is not None
+    item = runtime.store.resolve_inbox_item(request.inbox_item_id)
+    return {
+        "inbox_item_id": item.id,
+        "resolved": True,
+        "resolved_at": None if item.resolved_at is None else serialize_instant(item.resolved_at),
+    }
 
 
 def _recommend(
@@ -357,6 +399,20 @@ def _update_task_planning(
         "title": task.title,
         "execution_mode": task.execution_mode.value,
         "estimated_minutes": task.estimated_minutes,
+    }
+
+
+def _correct_task_status(
+    request: _ValidatedRequest, runtime: PersonalOSRuntime,
+) -> dict[str, object]:
+    assert request.task_id is not None and request.task_status is not None
+    task = runtime.store.correct_task_status(
+        request.task_id, status=request.task_status
+    )
+    return {
+        "task_id": task.id,
+        "title": task.title,
+        "status": task.status.value,
     }
 
 
@@ -480,7 +536,8 @@ def _validate_request(request: object) -> _ValidatedRequest:
         raise InvalidRequestError("operation must be supplied as text")
     if operation not in {
         "capture", "recommend", "start", "feedback", "active", "activate",
-        "overview", "update_task_planning",
+        "overview", "update_task_planning", "resolve_inbox", "dismiss_inbox",
+        "correct_task_status",
     }:
         raise InvalidRequestError(f"unknown operation: {operation}")
 
@@ -495,6 +552,29 @@ def _validate_request(request: object) -> _ValidatedRequest:
             raw_text=_required_text(request, "raw_text"),
             timezone=_explicit_timezone(request),
         )
+    if operation == "resolve_inbox":
+        _require_fields(
+            request,
+            required={"version", "operation", "inbox_item_id", "raw_text"},
+            optional={"timezone"},
+        )
+        inbox_item_id = _integer(request, "inbox_item_id", positive=True)
+        assert inbox_item_id is not None
+        return _ValidatedRequest(
+            operation=operation,
+            inbox_item_id=inbox_item_id,
+            raw_text=_required_text(request, "raw_text"),
+            timezone=_explicit_timezone(request),
+        )
+    if operation == "dismiss_inbox":
+        _require_fields(
+            request,
+            required={"version", "operation", "inbox_item_id"},
+            optional=set(),
+        )
+        inbox_item_id = _integer(request, "inbox_item_id", positive=True)
+        assert inbox_item_id is not None
+        return _ValidatedRequest(operation=operation, inbox_item_id=inbox_item_id)
     if operation == "activate":
         _require_fields(
             request,
@@ -578,6 +658,30 @@ def _validate_request(request: object) -> _ValidatedRequest:
                 request, "estimated_minutes"
             ),
         )
+    if operation == "correct_task_status":
+        _require_fields(
+            request,
+            required={"version", "operation", "task_id", "status"},
+            optional=set(),
+        )
+        task_id = _integer(request, "task_id", positive=True)
+        assert task_id is not None
+        raw_status = request["status"]
+        if not isinstance(raw_status, str):
+            raise InvalidRequestError("status must be OPEN, COMPLETED, or CANCELLED")
+        try:
+            task_status = TaskStatus(raw_status)
+        except ValueError as exc:
+            raise InvalidRequestError(
+                "status must be OPEN, COMPLETED, or CANCELLED"
+            ) from exc
+        if task_status not in {
+            TaskStatus.OPEN, TaskStatus.COMPLETED, TaskStatus.CANCELLED,
+        }:
+            raise InvalidRequestError("status must be OPEN, COMPLETED, or CANCELLED")
+        return _ValidatedRequest(
+            operation=operation, task_id=task_id, task_status=task_status
+        )
     _require_fields(request, required={"version", "operation"}, optional=set())
     return _ValidatedRequest(operation=operation)
 
@@ -598,9 +702,15 @@ def handle_request(
         return operation, _active(runtime)
     if operation == "update_task_planning":
         return operation, _update_task_planning(request, runtime)
+    if operation == "dismiss_inbox":
+        return operation, _dismiss_inbox(request, runtime)
+    if operation == "correct_task_status":
+        return operation, _correct_task_status(request, runtime)
     now = clock()
     if operation == "capture":
         return operation, _capture(request, runtime, now=now, environ=environ)
+    if operation == "resolve_inbox":
+        return operation, _resolve_inbox(request, runtime, now=now, environ=environ)
     if operation == "recommend":
         return operation, _recommend(request, runtime, now=now, environ=environ)
     if operation == "activate":

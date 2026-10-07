@@ -36,6 +36,13 @@ function setCapturePending(value) {
   byId("capture-button").disabled = value;
 }
 
+function element(tag, text, className) {
+  const node = document.createElement(tag);
+  if (text !== undefined) node.textContent = text;
+  if (className) node.className = className;
+  return node;
+}
+
 async function request(path, body) {
   const response = await fetch(path, {
     method: "POST",
@@ -68,24 +75,136 @@ function describeCapturedTask(task) {
   return `${task.title} — ${mode}${duration}${note}`;
 }
 
-function renderCaptureResult(result) {
+function oneSittingNeedsDuration(task) {
+  return task.execution_mode === "ONE_SITTING" && task.estimated_minutes === null;
+}
+
+function renderDurationQuestion(task, reloadText) {
+  const form = document.createElement("form");
+  form.className = "inline-form";
+  const label = element("label", "Duration in minutes");
+  const input = document.createElement("input");
+  input.type = "number";
+  input.min = "1";
+  input.step = "1";
+  input.inputMode = "numeric";
+  input.required = true;
+  label.append(input);
+  const save = element("button", "Save", "button primary");
+  save.type = "submit";
+  const message = element("p", "", "form-message");
+  message.hidden = true;
+  form.append(label, save, message);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    message.hidden = true;
+    save.disabled = true;
+    try {
+      await request("/v1/task-planning", {
+        task_id: task.id,
+        execution_mode: task.execution_mode,
+        estimated_minutes: Number(input.value),
+      });
+      message.textContent = reloadText;
+      message.hidden = false;
+      form.replaceChildren(message);
+    } catch (error) {
+      message.textContent = `${error.message} Refresh state, then try again.`;
+      message.hidden = false;
+      save.disabled = false;
+    }
+  });
+  return form;
+}
+
+function renderInboxFollowup(result, rawText) {
+  const wrap = element("div", undefined, "resolution-box");
+  wrap.append(
+    element("p", `Saved to Inbox #${result.inbox_item_id}.`),
+    element("p", result.unresolved_reason),
+  );
+  const form = document.createElement("form");
+  form.className = "resolve-form";
+  const label = element("label", "Edit & resolve");
+  const input = document.createElement("textarea");
+  input.rows = 3;
+  input.required = true;
+  input.value = rawText;
+  label.append(input);
+  const actions = element("div", undefined, "inline-actions");
+  const resolve = element("button", "Edit & resolve", "button primary");
+  resolve.type = "submit";
+  const dismiss = element("button", "Dismiss", "button");
+  dismiss.type = "button";
+  actions.append(resolve, dismiss);
+  const message = element("p", "", "form-message");
+  message.hidden = true;
+  form.append(label, actions, message);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    message.hidden = true;
+    resolve.disabled = true;
+    dismiss.disabled = true;
+    try {
+      const resolved = await request("/v1/resolve-inbox", {
+        inbox_item_id: result.inbox_item_id,
+        raw_text: input.value,
+      });
+      renderCaptureResult(resolved, input.value);
+    } catch (error) {
+      message.textContent = `${error.message} Refresh state, then try again.`;
+      message.hidden = false;
+      resolve.disabled = false;
+      dismiss.disabled = false;
+    }
+  });
+  dismiss.addEventListener("click", async () => {
+    message.hidden = true;
+    resolve.disabled = true;
+    dismiss.disabled = true;
+    try {
+      await request("/v1/dismiss-inbox", { inbox_item_id: result.inbox_item_id });
+      const output = byId("capture-result");
+      output.className = "capture-result";
+      output.replaceChildren(element("p", "Dismissed."));
+    } catch (error) {
+      message.textContent = `${error.message} Refresh state, then try again.`;
+      message.hidden = false;
+      resolve.disabled = false;
+      dismiss.disabled = false;
+    }
+  });
+  wrap.append(form);
+  return wrap;
+}
+
+function renderCaptureResult(result, rawText) {
   const output = byId("capture-result");
   output.className = "capture-result";
+  output.replaceChildren();
   if (result.status === "APPLIED") {
     const created = [
       result.project?.name,
       ...result.tasks.map(describeCapturedTask),
       ...result.commitments.map((commitment) => commitment.title),
     ].filter(Boolean);
-    output.textContent = created.length
+    output.append(element("p", created.length
       ? `Captured: ${created.join("; ")}`
-      : "Captured.";
+      : "Captured."));
+    for (const task of result.tasks.filter(oneSittingNeedsDuration)) {
+      const followup = element("div", undefined, "resolution-box");
+      followup.append(
+        element("p", `${task.title} needs a duration before recommendation.`),
+        renderDurationQuestion(task, "Duration saved."),
+      );
+      output.append(followup);
+    }
   } else if (result.status === "UNRESOLVED") {
-    output.textContent = `Saved to Inbox #${result.inbox_item_id}: ${result.unresolved_reason}`;
+    output.append(renderInboxFollowup(result, rawText));
     output.classList.add("unresolved");
   } else if (result.status === "FAILED") {
     const kind = result.failure_kind ? ` (${result.failure_kind})` : "";
-    output.textContent = `Capture failed while interpreting this item${kind}. Please try again.`;
+    output.append(element("p", `Capture failed while interpreting this item${kind}. Please try again.`));
     output.classList.add("failed");
   } else {
     throw new Error("Unexpected capture response. Refresh and try again.");
@@ -108,7 +227,7 @@ async function captureItem() {
   setCapturePending(true);
   try {
     const result = await request("/v1/capture", { raw_text: rawText });
-    renderCaptureResult(result);
+    renderCaptureResult(result, rawText);
     if (result.status !== "FAILED") input.value = "";
   } catch (error) {
     output.textContent = "Capture failed while interpreting this item. Please try again.";

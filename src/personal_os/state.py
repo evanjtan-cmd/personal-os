@@ -423,6 +423,41 @@ class SQLiteStateStore:
             estimated_minutes=estimated_minutes,
         )
 
+    def correct_task_status(self, task_id: int, *, status: object) -> Task:
+        target = require_enum(status, TaskStatus, "status")
+        allowed = {
+            TaskStatus.OPEN: {TaskStatus.COMPLETED, TaskStatus.CANCELLED},
+            TaskStatus.BLOCKED: {
+                TaskStatus.OPEN,
+                TaskStatus.COMPLETED,
+                TaskStatus.CANCELLED,
+            },
+        }
+        with self._transaction() as connection:
+            current = self._task_from_row(
+                self._row_or_missing(connection, "tasks", task_id, "task")
+            )
+            active = connection.execute(
+                "SELECT id FROM sessions WHERE active_slot = 1 AND task_id = ?",
+                (current.id,),
+            ).fetchone()
+            if active is not None:
+                raise DomainValidationError(
+                    f"task {current.id} has an active session"
+                )
+            if target not in allowed.get(current.status, set()):
+                raise DomainValidationError(
+                    f"cannot change task {current.id} from {current.status.value} "
+                    f"to {target.value}"
+                )
+            connection.execute(
+                "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
+                (target.value, serialize_instant(self._now()), current.id),
+            )
+            return self._task_from_row(
+                self._row_or_missing(connection, "tasks", current.id, "task")
+            )
+
     def create_fixed_commitment(
         self, title: str, start_at: datetime, *, end_at: datetime | None = None,
         hardness: CommitmentHardness = CommitmentHardness.UNKNOWN,
@@ -710,6 +745,20 @@ class SQLiteStateStore:
             )
             return self._inbox_from_row(self._row_or_missing(connection, "inbox_items", item_id, "inbox item"))
 
+    @staticmethod
+    def _resolve_unresolved_inbox_row(
+        connection: sqlite3.Connection, *, item_id: int, now: str,
+    ) -> None:
+        row = SQLiteStateStore._row_or_missing(
+            connection, "inbox_items", item_id, "inbox item"
+        )
+        if row["resolved_at"] is not None:
+            raise DomainValidationError(f"inbox item {item_id} is already resolved")
+        connection.execute(
+            "UPDATE inbox_items SET resolved_at = ?, updated_at = ? WHERE id = ?",
+            (now, now, item_id),
+        )
+
     def _capture_from_row(self, row: sqlite3.Row) -> Capture:
         def decode() -> Capture:
             interpretation = None
@@ -831,12 +880,17 @@ class SQLiteStateStore:
     def apply_unresolved_capture(
         self, capture_id: int, reason: str, *, interpretation: dict[str, Any],
         model_provider: str, model_name: str, model_response_id: str | None,
+        superseded_inbox_item_id: int | None = None,
     ) -> tuple[Capture, InboxItem]:
         reason = require_text(reason, "unresolved_reason")
         with self._transaction() as connection:
             row = self._row_or_missing(connection, "captures", capture_id, "capture")
             self._ensure_received(connection, capture_id)
             now = serialize_instant(self._now())
+            if superseded_inbox_item_id is not None:
+                self._resolve_unresolved_inbox_row(
+                    connection, item_id=superseded_inbox_item_id, now=now
+                )
             inbox = self._insert_inbox_item(
                 connection, raw_text=row["raw_text"], unresolved_reason=reason,
                 source_capture_id=capture_id,
@@ -854,10 +908,15 @@ class SQLiteStateStore:
         self, capture_id: int, *, interpretation: dict[str, Any], model_provider: str,
         model_name: str, model_response_id: str | None, project: dict[str, Any] | None,
         tasks: list[dict[str, Any]], commitments: list[dict[str, Any]],
+        superseded_inbox_item_id: int | None = None,
     ) -> tuple[Capture, Project | None, list[Task], list[FixedCommitment]]:
         with self._transaction() as connection:
             self._ensure_received(connection, capture_id)
             now = serialize_instant(self._now())
+            if superseded_inbox_item_id is not None:
+                self._resolve_unresolved_inbox_row(
+                    connection, item_id=superseded_inbox_item_id, now=now
+                )
             created_project = None
             if project is not None:
                 created_project = self._insert_project(

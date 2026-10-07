@@ -213,6 +213,74 @@ def test_task_planning_update_round_trips_only_planning_fields(
     assert cleared.importance is TaskImportance.MUST
 
 
+def test_cancelled_task_round_trips(store: SQLiteStateStore) -> None:
+    task = store.create_task("Abandoned", status=TaskStatus.CANCELLED)
+
+    assert store.get_task(task.id).status is TaskStatus.CANCELLED
+    assert store.list_tasks() == [task]
+
+
+@pytest.mark.parametrize(
+    ("initial", "target"),
+    [
+        (TaskStatus.OPEN, TaskStatus.COMPLETED),
+        (TaskStatus.BLOCKED, TaskStatus.COMPLETED),
+        (TaskStatus.OPEN, TaskStatus.CANCELLED),
+        (TaskStatus.BLOCKED, TaskStatus.CANCELLED),
+        (TaskStatus.BLOCKED, TaskStatus.OPEN),
+    ],
+)
+def test_task_lifecycle_correction_allows_only_required_transitions(
+    store: SQLiteStateStore, initial: TaskStatus, target: TaskStatus,
+) -> None:
+    task = store.create_task("Correct me", status=initial)
+
+    updated = store.correct_task_status(task.id, status=target)
+
+    assert updated.status is target
+    assert updated.title == task.title
+    assert updated.updated_at > task.updated_at
+
+
+@pytest.mark.parametrize(
+    ("initial", "target"),
+    [
+        (TaskStatus.OPEN, TaskStatus.OPEN),
+        (TaskStatus.COMPLETED, TaskStatus.OPEN),
+        (TaskStatus.CANCELLED, TaskStatus.OPEN),
+        (TaskStatus.COMPLETED, TaskStatus.CANCELLED),
+        (TaskStatus.CANCELLED, TaskStatus.COMPLETED),
+    ],
+)
+def test_task_lifecycle_correction_rejects_other_transitions(
+    store: SQLiteStateStore, initial: TaskStatus, target: TaskStatus,
+) -> None:
+    task = store.create_task("Do not correct me", status=initial)
+
+    with pytest.raises(DomainValidationError, match="cannot change"):
+        store.correct_task_status(task.id, status=target)
+
+    assert store.get_task(task.id).status is initial
+
+
+def test_task_lifecycle_correction_rejects_active_session_task(
+    store: SQLiteStateStore,
+) -> None:
+    task = store.create_task("Active")
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            """INSERT INTO sessions
+               (task_id,planned_minutes,started_at,active_slot)
+               VALUES (?,25,'2026-09-01T12:00:00.000000Z',1)""",
+            (task.id,),
+        )
+
+    with pytest.raises(DomainValidationError, match="active session"):
+        store.correct_task_status(task.id, status=TaskStatus.COMPLETED)
+
+    assert store.get_task(task.id).status is TaskStatus.OPEN
+
+
 def test_task_nonexistent_project_is_rejected(store: SQLiteStateStore) -> None:
     with pytest.raises(EntityNotFoundError, match="project 999"):
         store.create_task("Impossible", project_id=999)

@@ -279,6 +279,7 @@ def test_candidate_filtering_sort_and_bound_happen_before_ai(store) -> None:
     completed_project = store.create_project("Done", status=ProjectStatus.COMPLETED)
     store.create_task("Project task", project_id=completed_project.id)
     store.create_task("Blocked", status=TaskStatus.BLOCKED)
+    store.create_task("Cancelled", status=TaskStatus.CANCELLED)
     store.create_task("Future", schedule_mode=TaskScheduleMode.DAY, day_date=date(2026, 9, 3))
     ids = []
     ids.append(store.create_task("Flexible could", importance=TaskImportance.COULD).id)
@@ -336,7 +337,7 @@ def test_snapshot_is_coherent_and_schema_remains_current_version(store) -> None:
     projects, tasks, commitments = store.read_recommendation_snapshot()
     assert (projects, tasks, commitments) == ([project], [task], [commitment])
     with sqlite3.connect(store.database_path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 7
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
     assert tables == set(TABLE_DDL)
 

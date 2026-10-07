@@ -12,7 +12,7 @@ import pytest
 import personal_os.bridge as bridge
 from personal_os.activation import WorkActivationService
 from personal_os.activation_types import WorkActivationResultKind
-from personal_os.capture import CaptureService
+from personal_os.capture import CaptureService, InterpretationError
 from personal_os.capture_types import InterpretationResponse, parse_interpretation
 from personal_os.config import DEFAULT_DATABASE_FILENAME, TIMEZONE_ENV_VAR
 from personal_os.database import initialize_database
@@ -142,6 +142,26 @@ def test_invalid_protocol_envelope_is_rejected(
             "estimated_minutes": None,
             "title": "Rename",
         },
+        {
+            "version": 1,
+            "operation": "resolve_inbox",
+            "inbox_item_id": 1,
+            "raw_text": "Corrected",
+            "extra": True,
+        },
+        {
+            "version": 1,
+            "operation": "dismiss_inbox",
+            "inbox_item_id": 1,
+            "raw_text": "Nope",
+        },
+        {
+            "version": 1,
+            "operation": "correct_task_status",
+            "task_id": 1,
+            "status": "COMPLETED",
+            "title": "Rename",
+        },
     ],
 )
 def test_unknown_fields_are_rejected_for_every_operation(
@@ -192,6 +212,20 @@ def test_unknown_fields_are_rejected_for_every_operation(
             "task_id": 1,
             "execution_mode": "SPLITTABLE",
             "estimated_minutes": 0,
+        },
+        {"version": 1, "operation": "resolve_inbox", "inbox_item_id": 1},
+        {
+            "version": 1,
+            "operation": "resolve_inbox",
+            "inbox_item_id": True,
+            "raw_text": "Corrected",
+        },
+        {"version": 1, "operation": "dismiss_inbox", "inbox_item_id": 0},
+        {
+            "version": 1,
+            "operation": "correct_task_status",
+            "task_id": 1,
+            "status": "BLOCKED",
         },
     ],
 )
@@ -423,6 +457,33 @@ def test_update_task_planning_updates_only_planning_fields(tmp_path: Path) -> No
     assert updated.estimated_minutes == 180
 
 
+def test_task_status_correction_uses_narrow_store_operation(tmp_path: Path) -> None:
+    database_path = tmp_path / DEFAULT_DATABASE_FILENAME
+    initialize_database(database_path)
+    store = SQLiteStateStore(database_path, clock=lambda: NOW)
+    task = store.create_task("Drop this")
+    runtime = fake_runtime()
+    runtime.store = store
+
+    status, response, _ = invoke(
+        {
+            "version": 1,
+            "operation": "correct_task_status",
+            "task_id": task.id,
+            "status": "CANCELLED",
+        },
+        runtime,
+    )
+
+    assert status == 0
+    assert response["result"] == {
+        "task_id": task.id,
+        "title": "Drop this",
+        "status": "CANCELLED",
+    }
+    assert store.get_task(task.id).status is TaskStatus.CANCELLED
+
+
 def test_overview_without_active_session_returns_null() -> None:
     runtime = fake_runtime()
     runtime.store.read_state_snapshot.return_value = SimpleNamespace(
@@ -588,6 +649,112 @@ def test_capture_unresolved_response_matches_persisted_inbox_item(
     assert result["unresolved_reason"] == inbox.unresolved_reason
     assert inbox.raw_text == "Call Mike tomorrow at 4"
     assert inbox.source_capture_id == result["capture_id"]
+
+
+def test_resolve_inbox_delegates_with_trusted_time_and_serializes_result() -> None:
+    runtime = fake_runtime()
+    runtime.capture_service.resolve_inbox_text.return_value = SimpleNamespace(
+        capture=SimpleNamespace(id=15, status=CaptureStatus.APPLIED),
+        project_id=None,
+        task_ids=(41,),
+        commitment_ids=(),
+        inbox_item_id=None,
+    )
+    runtime.store.get_task.return_value = SimpleNamespace(
+        id=41,
+        title="Call Mike tomorrow at 4 PM",
+        execution_mode=TaskExecutionMode.SPLITTABLE,
+        estimated_minutes=None,
+    )
+
+    status, response, _ = invoke(
+        {
+            "version": 1,
+            "operation": "resolve_inbox",
+            "inbox_item_id": 5,
+            "raw_text": "Call Mike tomorrow at 4 PM",
+        },
+        runtime,
+        environ={TIMEZONE_ENV_VAR: "America/New_York"},
+    )
+
+    assert status == 0
+    runtime.capture_service.resolve_inbox_text.assert_called_once_with(
+        5,
+        "Call Mike tomorrow at 4 PM",
+        reference_time=NOW,
+        timezone_name="America/New_York",
+    )
+    assert response["operation"] == "resolve_inbox"
+    assert response["result"]["resolved_inbox_item_id"] == 5
+    assert response["result"]["tasks"][0]["title"] == "Call Mike tomorrow at 4 PM"
+
+
+def test_failed_resolve_inbox_response_does_not_claim_resolution(
+    tmp_path: Path,
+) -> None:
+    class FailingInterpreter:
+        def interpret(self, raw_text, *, projects):
+            raise InterpretationError(
+                CaptureFailureKind.PROVIDER_ERROR,
+                "provider down",
+                provider="fake",
+                model="fake-model",
+                response_id="response-1",
+            )
+
+    database_path = tmp_path / DEFAULT_DATABASE_FILENAME
+    initialize_database(database_path)
+    store = SQLiteStateStore(database_path, clock=lambda: NOW)
+    item = store.create_inbox_item(
+        "Call Mike tomorrow at 4", "time is missing AM/PM"
+    )
+    runtime = fake_runtime()
+    runtime.store = store
+    runtime.capture_service = CaptureService(store, FailingInterpreter())
+
+    status, response, _ = invoke(
+        {
+            "version": 1,
+            "operation": "resolve_inbox",
+            "inbox_item_id": item.id,
+            "raw_text": "Call Mike tomorrow at 4 PM",
+            "timezone": "UTC",
+        },
+        runtime,
+    )
+
+    assert status == 0
+    assert response["result"] == {
+        "capture_id": 1,
+        "status": "FAILED",
+        "failure_kind": "PROVIDER_ERROR",
+        "failure_reason": "provider down",
+    }
+    assert "resolved_inbox_item_id" not in response["result"]
+    assert store.get_inbox_item(item.id).is_resolved is False
+
+
+def test_dismiss_inbox_resolves_without_capture_or_clock(tmp_path: Path) -> None:
+    database_path = tmp_path / DEFAULT_DATABASE_FILENAME
+    initialize_database(database_path)
+    store = SQLiteStateStore(database_path, clock=lambda: NOW)
+    item = store.create_inbox_item("Ignore this", "not actionable")
+    runtime = fake_runtime()
+    runtime.store = store
+
+    status, response, _ = invoke(
+        {"version": 1, "operation": "dismiss_inbox", "inbox_item_id": item.id},
+        runtime,
+        now=datetime(2030, 1, 1, tzinfo=UTC),
+    )
+
+    assert status == 0
+    assert response["result"]["inbox_item_id"] == item.id
+    assert response["result"]["resolved"] is True
+    assert store.get_inbox_item(item.id).is_resolved
+    assert store.list_captures() == []
+    runtime.capture_service.capture_text.assert_not_called()
 
 
 def test_capture_failed_is_a_successful_durable_result() -> None:

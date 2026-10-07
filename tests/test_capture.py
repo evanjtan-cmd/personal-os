@@ -421,6 +421,107 @@ def test_missing_year_and_recurrence_are_unresolved(store: SQLiteStateStore) -> 
     assert first.capture.status is second.capture.status is CaptureStatus.UNRESOLVED
 
 
+def test_revised_inbox_resolution_applied_resolves_superseded_item(
+    store: SQLiteStateStore,
+) -> None:
+    original = store.create_inbox_item(
+        "Call Mike tomorrow at 4", "time is missing AM/PM"
+    )
+    payload = apply_payload(tasks=[task("Call Mike tomorrow at 4 PM")])
+
+    result = CaptureService(store, FakeInterpreter(payload)).resolve_inbox_text(
+        original.id,
+        "Call Mike tomorrow at 4 PM",
+        reference_time=REFERENCE,
+        timezone_name="UTC",
+    )
+
+    assert result.capture.status is CaptureStatus.APPLIED
+    assert result.inbox_item_id is None
+    assert store.get_inbox_item(original.id).is_resolved
+    assert [item for item in store.list_inbox_items() if not item.is_resolved] == []
+    captured_task = store.get_task(result.task_ids[0])
+    assert captured_task.source_capture_id == result.capture.id
+    assert result.capture.raw_text == "Call Mike tomorrow at 4 PM"
+
+
+def test_revised_inbox_resolution_unresolved_replaces_superseded_item(
+    store: SQLiteStateStore,
+) -> None:
+    original = store.create_inbox_item(
+        "Call Mike tomorrow at 4", "time is missing AM/PM"
+    )
+    payload = {
+        "kind": "UNRESOLVED",
+        "new_project": None,
+        "tasks": [],
+        "commitments": [],
+        "unresolved_reason": "date is missing",
+    }
+
+    result = CaptureService(store, FakeInterpreter(payload)).resolve_inbox_text(
+        original.id,
+        "Call Mike at 4 PM",
+        reference_time=REFERENCE,
+        timezone_name="UTC",
+    )
+
+    assert result.capture.status is CaptureStatus.UNRESOLVED
+    assert result.inbox_item_id is not None
+    assert result.inbox_item_id != original.id
+    assert store.get_inbox_item(original.id).is_resolved
+    unresolved = [item for item in store.list_inbox_items() if not item.is_resolved]
+    assert len(unresolved) == 1
+    assert unresolved[0].id == result.inbox_item_id
+    assert unresolved[0].source_capture_id == result.capture.id
+    assert unresolved[0].raw_text == "Call Mike at 4 PM"
+
+
+def test_revised_inbox_resolution_failed_leaves_original_unresolved(
+    store: SQLiteStateStore,
+) -> None:
+    original = store.create_inbox_item(
+        "Call Mike tomorrow at 4", "time is missing AM/PM"
+    )
+
+    result = CaptureService(
+        store,
+        FakeInterpreter(error=InterpretationError(
+            CaptureFailureKind.PROVIDER_ERROR, "provider down"
+        )),
+    ).resolve_inbox_text(
+        original.id,
+        "Call Mike tomorrow at 4 PM",
+        reference_time=REFERENCE,
+        timezone_name="UTC",
+    )
+
+    assert result.capture.status is CaptureStatus.FAILED
+    assert store.get_inbox_item(original.id).is_resolved is False
+    assert [item.id for item in store.list_inbox_items()] == [original.id]
+
+
+def test_revised_inbox_resolution_invalid_target_skips_provider_and_capture(
+    store: SQLiteStateStore,
+) -> None:
+    original = store.create_inbox_item(
+        "Call Mike tomorrow at 4", "time is missing AM/PM"
+    )
+    store.resolve_inbox_item(original.id)
+    fake = FakeInterpreter(apply_payload(tasks=[task("Call Mike")]))
+
+    with pytest.raises(DomainValidationError, match="already resolved"):
+        CaptureService(store, fake).resolve_inbox_text(
+            original.id,
+            "Call Mike tomorrow at 4 PM",
+            reference_time=REFERENCE,
+            timezone_name="UTC",
+        )
+
+    assert fake.projects is None
+    assert store.list_captures() == []
+
+
 @pytest.mark.parametrize("kind", list(CaptureFailureKind))
 def test_classified_interpreter_failures_preserve_raw_without_inbox(store: SQLiteStateStore, kind: CaptureFailureKind) -> None:
     result = CaptureService(store, FakeInterpreter(error=InterpretationError(kind, "failure"))).capture_text("raw input", reference_time=REFERENCE, timezone_name="UTC")

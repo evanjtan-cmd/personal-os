@@ -34,6 +34,8 @@ def evaluate_task(
         reasons.append(EligibilityReason.STATUS_BLOCKED)
     elif task.status is TaskStatus.COMPLETED:
         reasons.append(EligibilityReason.STATUS_COMPLETED)
+    elif task.status is TaskStatus.CANCELLED:
+        reasons.append(EligibilityReason.STATUS_CANCELLED)
     if task.project_id is not None and projects[task.project_id].status is ProjectStatus.COMPLETED:
         reasons.append(EligibilityReason.PROJECT_COMPLETED)
 

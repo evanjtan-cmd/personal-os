@@ -176,7 +176,7 @@ def test_product_command_does_not_migrate_stale_database(
 
     assert main([command]) == 1
 
-    assert "not current version 6" in capsys.readouterr().err
+    assert "not current version 7" in capsys.readouterr().err
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
 

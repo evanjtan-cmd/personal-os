@@ -326,3 +326,26 @@ it must not invent an estimate from world knowledge. ONE_SITTING with unknown
 duration is valid persisted state, and a narrow planning update operation may
 correct only execution mode and estimated minutes without adding generic task
 CRUD.
+
+## 2026-10-06 — State triage uses narrow historical corrections
+
+CANCELLED is a canonical Task status for intentionally removed or abandoned
+work. It is historical state, not physical deletion and not completion, and it
+is never recommendation-eligible. User-facing maintenance may expose only the
+required lifecycle corrections: OPEN/BLOCKED to COMPLETED, OPEN/BLOCKED to
+CANCELLED, and BLOCKED to OPEN. A task with an active session cannot be
+corrected through this path.
+
+Normal optional planning facts are progressively disclosed. SPLITTABLE,
+FLEXIBLE, UNSPECIFIED, and unknown SPLITTABLE duration are ordinary defaults,
+not primary triage prompts. State and Work should demand input only for facts
+that block useful behavior, such as unresolved capture meaning or a missing
+duration on ONE_SITTING work; broader planning correction remains secondary.
+
+Inbox resolution supersedes the prior unresolved item atomically at final
+capture application. A revised complete text is persisted as a new durable
+Capture and interpreted through the canonical capture service. If it APPLIES,
+derived state creation and old-Inbox resolution share one final transaction. If
+it remains UNRESOLVED, the replacement Inbox item and old-Inbox resolution
+share one final transaction so exactly one unresolved item remains. If it
+FAILS, the original Inbox item remains unresolved.

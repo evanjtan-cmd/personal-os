@@ -100,8 +100,11 @@ FINISHED atomically closes the session and completes its Task. PROGRESS closes
 the session while leaving the Task OPEN and does not touch its update timestamp.
 BLOCKED closes the session and blocks the Task. Matching preexisting COMPLETED
 or BLOCKED state is accepted for its corresponding outcome, while conflicting
-state is not overwritten. Result text remains uninterpreted session history;
-POS-005 adds no feedback AI, automatic next action, or project mutation.
+state is not overwritten. CANCELLED is a distinct historical Task state for
+intentionally removed or abandoned work; it is not completion, is never
+recommendation-eligible, and is not physical deletion. Result text remains
+uninterpreted session history; POS-005 adds no feedback AI, automatic next
+action, or project mutation.
 
 ## Interfaces and reference data
 
@@ -168,17 +171,18 @@ or a generic serialization of `StateSnapshot`.
 The human CLI remains a dogfood interface rather than a machine-readable API.
 `personal-os-bridge` provides the stable local machine boundary with integer
 protocol version 1 and the operations `capture`, `recommend`, `start`,
-`feedback`, `active`, `overview`, and the narrow `update_task_planning`
-operation, plus the canonical `activate` operation for availability-now
-triggers. Requests cannot supply authoritative current/reference timestamps.
-Recommendation remains read-only and its concrete action remains ephemeral;
-only a start request that supplies the action persists it in session history.
-Start and feedback reuse the authoritative session service and therefore do not
-duplicate eligibility, availability, duration, MUST-gating, or Task-transition
-policy. Capture delegates interpretation and persistence to the canonical
-capture service, using the bridge's trusted clock and explicit timezone
-configuration. Bridge v1 deliberately excludes full-state output, database
-initialization, HTTP, and transport-specific configuration.
+`feedback`, `active`, `overview`, `resolve_inbox`, `dismiss_inbox`,
+`correct_task_status`, and the narrow `update_task_planning` operation, plus
+the canonical `activate` operation for availability-now triggers. Requests
+cannot supply authoritative current/reference timestamps. Recommendation
+remains read-only and its concrete action remains ephemeral; only a start
+request that supplies the action persists it in session history. Start and
+feedback reuse the authoritative session service and therefore do not duplicate
+eligibility, availability, duration, MUST-gating, or Task-transition policy.
+Capture delegates interpretation and persistence to the canonical capture
+service, using the bridge's trusted clock and explicit timezone configuration.
+Bridge v1 deliberately excludes full-state output, database initialization,
+HTTP, and transport-specific configuration.
 
 Overview is read-only and serializes a deliberately bounded current-state
 contract from one coherent canonical snapshot. It excludes commitments, rules,
@@ -188,6 +192,17 @@ same operation as `GET /v1/overview`; it does not duplicate overview policy.
 The `update_task_planning` operation, also exposed to the browser as
 `POST /v1/task-planning`, may update only `execution_mode` and
 `estimated_minutes` for planning correction. It is not generic Task CRUD.
+The `resolve_inbox` operation, exposed to the browser as
+`POST /v1/resolve-inbox`, accepts an unresolved Inbox item ID and revised
+complete capture text, creates a new durable capture before provider inference,
+and resolves the superseded Inbox item atomically only during final APPLIED or
+UNRESOLVED capture application. A FAILED replacement capture leaves the
+original Inbox item unresolved. `dismiss_inbox`, exposed as
+`POST /v1/dismiss-inbox`, only resolves an Inbox item and invokes no AI.
+`correct_task_status`, exposed as `POST /v1/task-status`, permits only
+OPEN/BLOCKED to COMPLETED, OPEN/BLOCKED to CANCELLED, and BLOCKED to OPEN, and
+rejects correction for a task with an active session. These operations are not
+generic Task or Inbox CRUD.
 
 Activation first returns the current active session and associated Task without
 invoking recommendation. When no session is active, it delegates unchanged to
@@ -221,9 +236,9 @@ recommendation, sessions, or product-facing interfaces.
 ### Projects and tasks
 
 Projects are ACTIVE or COMPLETED planning containers and are never executable
-recommendations. Tasks are executable work items with OPEN, BLOCKED, or
-COMPLETED status and distinct UNSPECIFIED, MUST, SHOULD, and COULD importance.
-UNSPECIFIED is the default and must not silently become SHOULD.
+recommendations. Tasks are executable work items with OPEN, BLOCKED, COMPLETED,
+or CANCELLED status and distinct UNSPECIFIED, MUST, SHOULD, and COULD
+importance. UNSPECIFIED is the default and must not silently become SHOULD.
 
 Task scheduling uses one of:
 
@@ -329,9 +344,9 @@ through Machine Interface v1 and the loopback HTTP adapter.
 
 POS-004 adds a read-only Python recommendation service over one coherent state
 snapshot. OPEN standalone tasks and tasks under ACTIVE projects can qualify;
-BLOCKED or COMPLETED tasks and tasks under COMPLETED projects cannot. FLEXIBLE
-tasks qualify, future DAY tasks do not, missed DAY tasks remain eligible with
-days-late metadata, and WINDOW eligibility is half-open at
+BLOCKED, COMPLETED, or CANCELLED tasks and tasks under COMPLETED projects
+cannot. FLEXIBLE tasks qualify, future DAY tasks do not, missed DAY tasks
+remain eligible with days-late metadata, and WINDOW eligibility is half-open at
 `start <= now < end`. Date deadlines are classified against the trusted local
 date and exact deadlines against their UTC instant, but neither removes a task.
 

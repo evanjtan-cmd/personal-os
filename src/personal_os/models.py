@@ -23,6 +23,7 @@ class TaskStatus(StrEnum):
     OPEN = "OPEN"
     BLOCKED = "BLOCKED"
     COMPLETED = "COMPLETED"
+    CANCELLED = "CANCELLED"
 
 
 class TaskImportance(StrEnum):
