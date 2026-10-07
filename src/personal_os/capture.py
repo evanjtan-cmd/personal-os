@@ -117,6 +117,33 @@ class CaptureService:
         self.store, self.interpreter, self.project_candidate_limit = store, interpreter, project_candidate_limit
 
     def capture_text(self, raw_text: str, *, reference_time: datetime, timezone_name: str) -> CaptureResult:
+        return self._capture_text(
+            raw_text,
+            reference_time=reference_time,
+            timezone_name=timezone_name,
+            superseded_inbox_item_id=None,
+        )
+
+    def resolve_inbox_text(
+        self, inbox_item_id: int, raw_text: str, *,
+        reference_time: datetime, timezone_name: str,
+    ) -> CaptureResult:
+        existing = self.store.get_inbox_item(inbox_item_id)
+        if existing.is_resolved:
+            raise DomainValidationError(
+                f"inbox item {existing.id} is already resolved"
+            )
+        return self._capture_text(
+            raw_text,
+            reference_time=reference_time,
+            timezone_name=timezone_name,
+            superseded_inbox_item_id=existing.id,
+        )
+
+    def _capture_text(
+        self, raw_text: str, *, reference_time: datetime,
+        timezone_name: str, superseded_inbox_item_id: int | None,
+    ) -> CaptureResult:
         raw = require_text(raw_text, "raw_text", preserve=True)
         reference = normalize_instant(reference_time, "reference_time")
         try:
@@ -142,7 +169,10 @@ class CaptureService:
             return CaptureResult(failed)
 
         try:
-            return self._apply(capture, response, zone, candidates, all_projects)
+            return self._apply(
+                capture, response, zone, candidates, all_projects,
+                superseded_inbox_item_id=superseded_inbox_item_id,
+            )
         except PersistenceError:
             raise
         except InterpretationError as exc:
@@ -160,16 +190,30 @@ class CaptureService:
             )
             return CaptureResult(failed)
 
-    def _apply(self, capture: Capture, response: InterpretationResponse, zone: ZoneInfo, candidates: list[dict[str, object]], all_projects: list) -> CaptureResult:
+    def _apply(
+        self, capture: Capture, response: InterpretationResponse, zone: ZoneInfo,
+        candidates: list[dict[str, object]], all_projects: list, *,
+        superseded_inbox_item_id: int | None,
+    ) -> CaptureResult:
         interpretation = response.interpretation
         payload = interpretation.to_dict()
         if interpretation.outcome is InterpretationOutcome.UNRESOLVED:
-            finalized, inbox = self.store.apply_unresolved_capture(capture.id, interpretation.unresolved_reason, interpretation=payload, model_provider=response.provider, model_name=response.model, model_response_id=response.response_id)
+            finalized, inbox = self.store.apply_unresolved_capture(
+                capture.id, interpretation.unresolved_reason,
+                interpretation=payload, model_provider=response.provider,
+                model_name=response.model,
+                model_response_id=response.response_id,
+                superseded_inbox_item_id=superseded_inbox_item_id,
+            )
             return CaptureResult(finalized, inbox_item_id=inbox.id)
         new_project = interpretation.new_project
         if new_project is not None:
             if any(item.name.casefold() == new_project.name.casefold() for item in all_projects):
-                return self._unresolved(capture, response, payload, "new project name collides with an existing project")
+                return self._unresolved(
+                    capture, response, payload,
+                    "new project name collides with an existing project",
+                    superseded_inbox_item_id=superseded_inbox_item_id,
+                )
             if not any(item.project.kind is ProjectReferenceKind.NEW for item in interpretation.tasks):
                 raise InterpretationError(CaptureFailureKind.INVALID_OUTPUT, "new project is not referenced by a captured task")
         candidate_ids = {item["id"] for item in candidates}
@@ -184,11 +228,11 @@ class CaptureService:
             deadline_date = deadline_at = None
             if intent.deadline.kind is DeadlineKind.DATE:
                 resolved = _date_from_ir(intent.deadline.date, local_reference)
-                if isinstance(resolved, _Unresolved): return self._unresolved(capture, response, payload, resolved.reason)
+                if isinstance(resolved, _Unresolved): return self._unresolved(capture, response, payload, resolved.reason, superseded_inbox_item_id=superseded_inbox_item_id)
                 deadline_date = resolved
             elif intent.deadline.kind is DeadlineKind.INSTANT:
                 resolved = _instant_from_ir(intent.deadline.instant, local_reference, zone)
-                if isinstance(resolved, _Unresolved): return self._unresolved(capture, response, payload, resolved.reason)
+                if isinstance(resolved, _Unresolved): return self._unresolved(capture, response, payload, resolved.reason, superseded_inbox_item_id=superseded_inbox_item_id)
                 deadline_at = resolved
             base = {"title": intent.title, "project_id": project_id, "status": TaskStatus.OPEN, "importance": intent.importance,
                     "deadline_date": deadline_date, "deadline_at": deadline_at,
@@ -198,7 +242,7 @@ class CaptureService:
                 resolved_dates = []
                 for expression in intent.schedule.dates:
                     resolved = _date_from_ir(expression, local_reference)
-                    if isinstance(resolved, _Unresolved): return self._unresolved(capture, response, payload, resolved.reason)
+                    if isinstance(resolved, _Unresolved): return self._unresolved(capture, response, payload, resolved.reason, superseded_inbox_item_id=superseded_inbox_item_id)
                     if resolved not in resolved_dates: resolved_dates.append(resolved)
                 tasks.extend({**base, "schedule_mode": TaskScheduleMode.DAY, "day_date": day, "window_start": None, "window_end": None} for day in resolved_dates)
             elif intent.schedule.kind is TaskScheduleKind.THIS_WEEKEND:
@@ -209,14 +253,23 @@ class CaptureService:
         commitments = []
         for intent in interpretation.commitments:
             start = _instant_from_ir(intent.start, local_reference, zone)
-            if isinstance(start, _Unresolved): return self._unresolved(capture, response, payload, start.reason)
-            if start < capture.reference_time: return self._unresolved(capture, response, payload, "fixed commitment resolves into the past")
+            if isinstance(start, _Unresolved): return self._unresolved(capture, response, payload, start.reason, superseded_inbox_item_id=superseded_inbox_item_id)
+            if start < capture.reference_time: return self._unresolved(capture, response, payload, "fixed commitment resolves into the past", superseded_inbox_item_id=superseded_inbox_item_id)
             commitments.append({"title": intent.title, "start_at": start, "end_at": None, "hardness": intent.hardness})
         finalized, project, made_tasks, made_commitments = self.store.apply_resolved_capture(
             capture.id, interpretation=payload, model_provider=response.provider, model_name=response.model,
-            model_response_id=response.response_id, project=None if new_project is None else {"name": new_project.name, "description": new_project.description}, tasks=tasks, commitments=commitments)
+            model_response_id=response.response_id, project=None if new_project is None else {"name": new_project.name, "description": new_project.description}, tasks=tasks, commitments=commitments,
+            superseded_inbox_item_id=superseded_inbox_item_id)
         return CaptureResult(finalized, None if project is None else project.id, tuple(item.id for item in made_tasks), tuple(item.id for item in made_commitments))
 
-    def _unresolved(self, capture: Capture, response: InterpretationResponse, payload: dict, reason: str) -> CaptureResult:
-        finalized, inbox = self.store.apply_unresolved_capture(capture.id, reason, interpretation=payload, model_provider=response.provider, model_name=response.model, model_response_id=response.response_id)
+    def _unresolved(
+        self, capture: Capture, response: InterpretationResponse, payload: dict,
+        reason: str, *, superseded_inbox_item_id: int | None,
+    ) -> CaptureResult:
+        finalized, inbox = self.store.apply_unresolved_capture(
+            capture.id, reason, interpretation=payload,
+            model_provider=response.provider, model_name=response.model,
+            model_response_id=response.response_id,
+            superseded_inbox_item_id=superseded_inbox_item_id,
+        )
         return CaptureResult(finalized, inbox_item_id=inbox.id)

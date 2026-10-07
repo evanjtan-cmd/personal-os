@@ -44,6 +44,7 @@ def commitment(identifier, start, end, hardness) -> FixedCommitment:
         (TaskStatus.OPEN, True, EligibilityReason.ELIGIBLE),
         (TaskStatus.BLOCKED, False, EligibilityReason.STATUS_BLOCKED),
         (TaskStatus.COMPLETED, False, EligibilityReason.STATUS_COMPLETED),
+        (TaskStatus.CANCELLED, False, EligibilityReason.STATUS_CANCELLED),
     ],
 )
 def test_status_eligibility(status, eligible, reason) -> None:

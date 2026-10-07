@@ -1,6 +1,6 @@
 # Build State
 
-Last updated: 2026-10-06 for POS-023 Clock Capture Robustness.
+Last updated: 2026-10-06 for POS-024 State Triage & Low-Friction Maintenance.
 
 ## Implemented
 
@@ -8,12 +8,12 @@ Last updated: 2026-10-06 for POS-023 Clock Capture Robustness.
   dogfood CLI over the completed application services.
 - External runtime data at `~/.personal-os/personal_os.db`, overrideable through
   `PERSONAL_OS_DATA_DIR`.
-- Standard-library SQLite schema version 6 with explicit ordered migrations,
+- Standard-library SQLite schema version 7 with explicit ordered migrations,
   strict version-specific schema validation, transactional rollback, and
   verified foreign-key enforcement.
-- Fresh 0 → 1 → 2 → 3 → 4 → 5 → 6 initialization, existing
-  version-1/version-2/version-3/version-4/version-5 migration, and idempotent
-  current-version initialization.
+- Fresh 0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 initialization, existing
+  version-1/version-2/version-3/version-4/version-5/version-6 migration, and
+  idempotent current-version initialization.
 - Typed, validated application records and SQLite create/get/list/update
   operations for:
   - projects;
@@ -21,10 +21,10 @@ Last updated: 2026-10-06 for POS-023 Clock Capture Robustness.
   - fixed commitments;
   - structured rules;
   - inbox/unresolved items.
-- Task OPEN/BLOCKED/COMPLETED status, UNSPECIFIED/MUST/SHOULD/COULD importance,
-  FLEXIBLE/DAY/WINDOW scheduling, SPLITTABLE/ONE_SITTING execution mode,
-  mutually exclusive date-only or exact-time deadlines, and positive estimated
-  durations.
+- Task OPEN/BLOCKED/COMPLETED/CANCELLED status,
+  UNSPECIFIED/MUST/SHOULD/COULD importance, FLEXIBLE/DAY/WINDOW scheduling,
+  SPLITTABLE/ONE_SITTING execution mode, mutually exclusive date-only or
+  exact-time deadlines, and positive estimated durations.
 - Fixed commitments with explicit UNKNOWN/HARD/SOFT classification and optional
   ends.
 - Canonical UTC instant storage, calendar-date storage, canonical JSON-object
@@ -146,6 +146,23 @@ Last updated: 2026-10-06 for POS-023 Clock Capture Robustness.
   interprets execution mode without inventing durations, and Work/CLI capture
   confirmations show title, splittable vs one-sitting, supplied duration, and
   the warning when a one-sitting task still needs a duration.
+- POS-024 adds canonical CANCELLED task state through schema version 7 and a
+  narrow task lifecycle correction operation. OPEN/BLOCKED tasks may be marked
+  Done or Remove, and BLOCKED tasks may be unblocked; tasks with an active
+  session reject lifecycle correction. CANCELLED tasks are historical closed
+  state, are not physically deleted, and are never recommendation-eligible.
+- POS-024 adds narrow Inbox maintenance operations. `resolve_inbox` creates a
+  new durable capture from revised complete text, reuses the canonical capture
+  interpreter, and atomically resolves the superseded Inbox item during final
+  APPLIED or UNRESOLVED capture application. Failed replacement captures leave
+  the prior Inbox item unresolved. `dismiss_inbox` resolves an Inbox item
+  without creating state or invoking AI.
+- POS-024 changes the browser State and Work surfaces to exception-first
+  triage. State puts unresolved Inbox items and ONE_SITTING/null-duration tasks
+  in Needs input, keeps ordinary task cards compact, exposes Done/Remove/
+  Unblock, and preserves planning correction in a collapsed More area. Work now
+  offers inline unresolved capture resolution/dismissal and asks only for a
+  missing duration on applied ONE_SITTING tasks.
 - POS-022 keeps detailed capture failure information durable and available to
   internal/API consumers, while the normal browser Work capture surface displays
   a concise retry message for FAILED captures instead of raw provider exception
@@ -176,6 +193,16 @@ Last updated: 2026-10-06 for POS-023 Clock Capture Robustness.
   preferences, or temporary context
 
 ## Validation
+
+Run on 2026-10-06 with Python 3.13.0 and pytest 8.4.2:
+
+- `.venv/bin/python -m pytest` — passed: 577 passed, 0 failed.
+- `.venv/bin/python -m compileall -q src tests` — passed with exit code 0.
+- `node --check src/personal_os/static/work.js` — passed with exit code 0.
+- `node --check src/personal_os/static/state.js` — passed with exit code 0.
+- `git diff --check` — passed with exit code 0.
+- HTTP tests used local loopback test servers bound to `127.0.0.1`; no live AI
+  provider was called.
 
 After POS-008, the configured real provider passed the full dogfood loop for a
 schedule-less FLEXIBLE `Study for ACT` task: capture, structured state,

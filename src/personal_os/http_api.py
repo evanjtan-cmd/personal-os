@@ -20,6 +20,8 @@ ACTIVATE_PATH = "/v1/activate"
 OVERVIEW_PATH = "/v1/overview"
 POST_OPERATIONS = {
     "/v1/capture": ("capture", {"raw_text", "timezone"}),
+    "/v1/resolve-inbox": ("resolve_inbox", {"inbox_item_id", "raw_text", "timezone"}),
+    "/v1/dismiss-inbox": ("dismiss_inbox", {"inbox_item_id"}),
     ACTIVATE_PATH: ("activate", {"timezone", "time_cap_minutes"}),
     "/v1/start": (
         "start",
@@ -30,6 +32,7 @@ POST_OPERATIONS = {
         "update_task_planning",
         {"task_id", "execution_mode", "estimated_minutes"},
     ),
+    "/v1/task-status": ("correct_task_status", {"task_id", "status"}),
 }
 STATIC_FILES = {
     "/": ("work.html", "text/html; charset=utf-8"),

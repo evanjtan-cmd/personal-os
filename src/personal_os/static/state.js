@@ -31,20 +31,8 @@ function formatDeadline(deadline) {
   return `Deadline: ${formatInstant(deadline.at)}`;
 }
 
-function formatPlanning(task) {
-  const split = task.execution_mode === "ONE_SITTING"
-    ? "Needs one sitting"
-    : "Can be split across work sessions";
-  const duration = task.estimated_minutes === null
-    ? "Duration not set"
-    : `${task.estimated_minutes} min total`;
-  return `${split} · ${duration}`;
-}
-
-function planningWarning(task) {
-  return task.execution_mode === "ONE_SITTING" && task.estimated_minutes === null
-    ? "Needs a duration before it can be recommended."
-    : null;
+function needsDuration(task) {
+  return task.execution_mode === "ONE_SITTING" && task.estimated_minutes === null;
 }
 
 function list(items, renderItem) {
@@ -65,6 +53,136 @@ async function postJson(path, body) {
     throw new Error(envelope.error?.message || `Request failed (${response.status})`);
   }
   return envelope.result;
+}
+
+function renderDurationQuestion(task) {
+  const form = document.createElement("form");
+  form.className = "inline-form";
+  const label = element("label", "Duration in minutes");
+  const input = document.createElement("input");
+  input.name = "estimated_minutes";
+  input.type = "number";
+  input.min = "1";
+  input.step = "1";
+  input.inputMode = "numeric";
+  input.required = true;
+  label.append(input);
+  const message = element("p", "", "form-message");
+  message.hidden = true;
+  const save = element("button", "Save", "button primary");
+  save.type = "submit";
+  form.append(label, save, message);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    message.hidden = true;
+    save.disabled = true;
+    try {
+      await postJson("/v1/task-planning", {
+        task_id: task.id,
+        execution_mode: task.execution_mode,
+        estimated_minutes: Number(input.value),
+      });
+      await loadOverview();
+    } catch (caught) {
+      message.textContent = `${caught.message} Refresh state, then try again.`;
+      message.hidden = false;
+    } finally {
+      save.disabled = false;
+    }
+  });
+  return form;
+}
+
+function renderInboxControls(entry) {
+  const wrap = element("div", undefined, "resolution-box");
+  const form = document.createElement("form");
+  form.className = "resolve-form";
+  const label = element("label", "Edit & resolve");
+  const input = document.createElement("textarea");
+  input.name = "raw_text";
+  input.rows = 3;
+  input.required = true;
+  input.value = entry.raw_text;
+  label.append(input);
+  const actions = element("div", undefined, "inline-actions");
+  const resolve = element("button", "Edit & resolve", "button primary");
+  resolve.type = "submit";
+  const dismiss = element("button", "Dismiss", "button");
+  dismiss.type = "button";
+  actions.append(resolve, dismiss);
+  const message = element("p", "", "form-message");
+  message.hidden = true;
+  form.append(label, actions, message);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    message.hidden = true;
+    resolve.disabled = true;
+    dismiss.disabled = true;
+    try {
+      await postJson("/v1/resolve-inbox", {
+        inbox_item_id: entry.id,
+        raw_text: input.value,
+      });
+      await loadOverview();
+    } catch (caught) {
+      message.textContent = `${caught.message} Refresh state, then try again.`;
+      message.hidden = false;
+    } finally {
+      resolve.disabled = false;
+      dismiss.disabled = false;
+    }
+  });
+  dismiss.addEventListener("click", async () => {
+    message.hidden = true;
+    resolve.disabled = true;
+    dismiss.disabled = true;
+    try {
+      await postJson("/v1/dismiss-inbox", { inbox_item_id: entry.id });
+      await loadOverview();
+    } catch (caught) {
+      message.textContent = `${caught.message} Refresh state, then try again.`;
+      message.hidden = false;
+    } finally {
+      resolve.disabled = false;
+      dismiss.disabled = false;
+    }
+  });
+  wrap.append(form);
+  return wrap;
+}
+
+function renderNeedsInput(result) {
+  const target = byId("needs-input");
+  const items = [];
+  for (const entry of result.inbox) {
+    items.push({ kind: "inbox", entry });
+  }
+  for (const task of result.tasks.filter(needsDuration)) {
+    items.push({ kind: "duration", task });
+  }
+  if (!items.length) {
+    target.replaceChildren(empty("Nothing needs input."));
+    return;
+  }
+  target.replaceChildren(list(items, (item) => {
+    const node = element("li", undefined, "state-item");
+    if (item.kind === "inbox") {
+      node.append(
+        element("p", "Inbox", "item-status"),
+        element("h3", item.entry.raw_text),
+        element("p", item.entry.unresolved_reason),
+        renderInboxControls(item.entry),
+      );
+    } else {
+      node.append(
+        element("p", "Duration needed", "item-status"),
+        element("h3", item.task.title),
+        element("p", "Needs a duration before recommendation."),
+        renderDurationQuestion(item.task),
+      );
+    }
+    return node;
+  }));
 }
 
 function renderActive(session) {
@@ -96,27 +214,59 @@ function renderTasks(tasks) {
       undefined,
       `state-item${task.status === "BLOCKED" ? " blocked" : ""}`,
     );
-    const context = [task.importance, task.project_name].filter(Boolean).join(" · ");
-    item.append(
-      element("p", task.status, "item-status"),
-      element("h3", task.title),
-      element("p", context || "No project or importance set"),
-      element("p", formatSchedule(task.schedule)),
-    );
+    const facts = [];
+    if (task.project_name) facts.push(task.project_name);
+    if (task.importance !== "UNSPECIFIED") facts.push(task.importance);
+    if (task.schedule.mode !== "FLEXIBLE") facts.push(formatSchedule(task.schedule));
     const deadline = formatDeadline(task.deadline);
-    if (deadline) item.append(element("p", deadline));
-    item.append(element("p", formatPlanning(task)));
-    const warning = planningWarning(task);
-    if (warning) item.append(element("p", warning, "planning-warning"));
+    if (deadline) facts.push(deadline);
+    if (task.execution_mode === "ONE_SITTING") facts.push("ONE_SITTING");
+    if (task.estimated_minutes !== null) facts.push(`${task.estimated_minutes} min`);
+    if (task.status === "BLOCKED") facts.push("BLOCKED");
+    item.append(
+      element("h3", task.title),
+      element("p", facts.join(" · ") || "Open", "meta"),
+    );
+    item.append(renderTaskActions(task));
     item.append(renderPlanningEditor(task));
     return item;
   }));
 }
 
+function renderTaskActions(task) {
+  const actions = element("div", undefined, "inline-actions");
+  const done = element("button", "Done", "button primary");
+  done.type = "button";
+  const remove = element("button", "Remove", "button");
+  remove.type = "button";
+  actions.append(done, remove);
+  if (task.status === "BLOCKED") {
+    const unblock = element("button", "Unblock", "button");
+    unblock.type = "button";
+    unblock.addEventListener("click", () => correctTaskStatus(task, "OPEN", actions));
+    actions.append(unblock);
+  }
+  done.addEventListener("click", () => correctTaskStatus(task, "COMPLETED", actions));
+  remove.addEventListener("click", () => correctTaskStatus(task, "CANCELLED", actions));
+  return actions;
+}
+
+async function correctTaskStatus(task, status, container) {
+  for (const button of container.querySelectorAll("button")) button.disabled = true;
+  try {
+    await postJson("/v1/task-status", { task_id: task.id, status });
+    await loadOverview();
+  } catch (caught) {
+    const message = element("p", `${caught.message} Refresh state, then try again.`, "form-message");
+    container.after(message);
+    for (const button of container.querySelectorAll("button")) button.disabled = false;
+  }
+}
+
 function renderPlanningEditor(task) {
   const details = document.createElement("details");
   details.className = "planning-editor";
-  details.append(element("summary", "Edit planning"));
+  details.append(element("summary", "More"));
 
   const form = document.createElement("form");
   form.dataset.taskId = String(task.id);
@@ -178,22 +328,6 @@ function renderPlanningEditor(task) {
   return details;
 }
 
-function renderInbox(items) {
-  const target = byId("inbox");
-  if (!items.length) {
-    target.replaceChildren(empty("No unresolved inbox items."));
-    return;
-  }
-  target.replaceChildren(list(items, (entry) => {
-    const item = element("li", undefined, "state-item");
-    item.append(
-      element("h3", entry.raw_text),
-      element("p", entry.unresolved_reason),
-    );
-    return item;
-  }));
-}
-
 function renderProjects(projects) {
   const target = byId("projects");
   if (!projects.length) {
@@ -220,9 +354,9 @@ async function loadOverview() {
     if (!response.ok || !envelope.ok) {
       throw new Error(envelope.error?.message || `Request failed (${response.status})`);
     }
+    renderNeedsInput(envelope.result);
     renderActive(envelope.result.active_session);
     renderTasks(envelope.result.tasks);
-    renderInbox(envelope.result.inbox);
     renderProjects(envelope.result.projects);
     byId("overview").hidden = false;
   } catch (caught) {

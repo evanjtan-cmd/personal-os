@@ -300,6 +300,27 @@ def test_task_planning_endpoint_updates_only_planning_fields(api) -> None:
     runtime_factory.assert_called_once_with()
 
 
+def test_task_status_endpoint_updates_allowed_lifecycle(api) -> None:
+    _, store, _, runtime_factory = api
+    task = store.create_task("Remove this")
+
+    status, response, _ = request(
+        api,
+        {"task_id": task.id, "status": "CANCELLED"},
+        path="/v1/task-status",
+    )
+
+    assert status == 200
+    assert response["operation"] == "correct_task_status"
+    assert response["result"] == {
+        "task_id": task.id,
+        "title": "Remove this",
+        "status": "CANCELLED",
+    }
+    assert store.get_task(task.id).status is TaskStatus.CANCELLED
+    runtime_factory.assert_called_once_with()
+
+
 def test_overview_enforces_host_and_get_only(api) -> None:
     status, response, _ = request(
         api,
@@ -398,6 +419,82 @@ def test_capture_uses_configured_timezone_when_http_omits_it(
         assert capture.reference_time == NOW
         assert capture.timezone_name == "America/New_York"
         assert store.get_task(1).day_date.isoformat() == "2026-09-22"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_resolve_and_dismiss_inbox_endpoints_use_narrow_operations(
+    tmp_path: Path,
+) -> None:
+    class FakeInterpreter:
+        def interpret(self, raw_text, *, projects):
+            assert raw_text == "Call Mike tomorrow at 4 PM"
+            return InterpretationResponse(
+                parse_interpretation({
+                    "kind": "APPLY",
+                    "new_project": None,
+                    "tasks": [{
+                        "title": "Call Mike tomorrow at 4 PM",
+                        "project_id": None,
+                        "importance": "UNSPECIFIED",
+                        "estimated_minutes": None,
+                        "execution_mode": "SPLITTABLE",
+                        "schedule": None,
+                        "deadline": None,
+                    }],
+                    "commitments": [],
+                    "unresolved_reason": None,
+                }),
+                "fake",
+                "fake-model",
+                "fake-response",
+            )
+
+    path = tmp_path / "resolve-http.db"
+    initialize_database(path)
+    store = SQLiteStateStore(path, clock=lambda: NOW)
+    first = store.create_inbox_item("Call Mike tomorrow at 4", "time is missing AM/PM")
+    second = store.create_inbox_item("Ignore this", "not actionable")
+    runtime_factory = Mock(return_value=SimpleNamespace(
+        store=store,
+        capture_service=CaptureService(store, FakeInterpreter()),
+    ))
+    server = create_server(
+        0,
+        runtime_factory=runtime_factory,
+        clock=lambda: NOW,
+        environ={"PERSONAL_OS_TIMEZONE": "UTC"},
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        local_api = (server, store, None, runtime_factory)
+        status, resolved, _ = request(
+            local_api,
+            {
+                "inbox_item_id": first.id,
+                "raw_text": "Call Mike tomorrow at 4 PM",
+            },
+            path="/v1/resolve-inbox",
+        )
+        assert status == 200
+        assert resolved["operation"] == "resolve_inbox"
+        assert resolved["result"]["status"] == "APPLIED"
+        assert resolved["result"]["resolved_inbox_item_id"] == first.id
+        assert store.get_inbox_item(first.id).is_resolved
+
+        status, dismissed, _ = request(
+            local_api,
+            {"inbox_item_id": second.id},
+            path="/v1/dismiss-inbox",
+        )
+        assert status == 200
+        assert dismissed["operation"] == "dismiss_inbox"
+        assert dismissed["result"]["resolved"] is True
+        assert store.get_inbox_item(second.id).is_resolved
+        assert len(store.list_captures()) == 1
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -538,10 +635,17 @@ def test_start_revalidates_stale_recommendation(api) -> None:
         ("/v1/capture", {"raw_text": "   "}),
         ("/v1/capture", {"raw_text": 42}),
         ("/v1/capture", {"raw_text": "Study", "current_time": "now"}),
+        ("/v1/resolve-inbox", {"inbox_item_id": 1}),
+        ("/v1/resolve-inbox", {"inbox_item_id": 1, "raw_text": "Corrected", "current_time": "now"}),
+        ("/v1/dismiss-inbox", {"inbox_item_id": 0}),
+        ("/v1/dismiss-inbox", {"inbox_item_id": 1, "raw_text": "No"}),
         ("/v1/task-planning", {"task_id": 1, "execution_mode": "SPLITTABLE"}),
         ("/v1/task-planning", {"task_id": 1, "execution_mode": "MAYBE", "estimated_minutes": None}),
         ("/v1/task-planning", {"task_id": 1, "execution_mode": "SPLITTABLE", "estimated_minutes": 0}),
         ("/v1/task-planning", {"task_id": 1, "execution_mode": "SPLITTABLE", "estimated_minutes": None, "title": "Rename"}),
+        ("/v1/task-status", {"task_id": 1, "status": "BLOCKED"}),
+        ("/v1/task-status", {"task_id": 1}),
+        ("/v1/task-status", {"task_id": 1, "status": "COMPLETED", "title": "Rename"}),
     ],
 )
 def test_new_endpoints_reject_invalid_bodies_before_runtime(api, path, body) -> None:
@@ -558,7 +662,11 @@ def test_feedback_without_session_is_structured_error(api) -> None:
 
 
 @pytest.mark.parametrize(
-    "path", ["/v1/activate", "/v1/start", "/v1/feedback", "/v1/capture", "/v1/task-planning"]
+    "path", [
+        "/v1/activate", "/v1/start", "/v1/feedback", "/v1/capture",
+        "/v1/resolve-inbox", "/v1/dismiss-inbox", "/v1/task-planning",
+        "/v1/task-status",
+    ]
 )
 def test_host_and_cross_origin_requests_are_rejected(api, path) -> None:
     body = {
@@ -566,7 +674,10 @@ def test_host_and_cross_origin_requests_are_rejected(api, path) -> None:
         "/v1/start": {"task_id": 1, "planned_minutes": 5},
         "/v1/feedback": {"outcome": "PROGRESS"},
         "/v1/capture": {"raw_text": "Study for ACT"},
+        "/v1/resolve-inbox": {"inbox_item_id": 1, "raw_text": "Study for ACT"},
+        "/v1/dismiss-inbox": {"inbox_item_id": 1},
         "/v1/task-planning": {"task_id": 1, "execution_mode": "SPLITTABLE", "estimated_minutes": None},
+        "/v1/task-status": {"task_id": 1, "status": "COMPLETED"},
     }[path]
     for header in (
         {"Host": "example.com"},
@@ -648,6 +759,9 @@ def test_work_page_assets_include_capture_without_client_time_context() -> None:
     assert 'id="capture-text"' in html
     assert 'id="capture-button"' in html
     assert 'request("/v1/capture", { raw_text: rawText })' in script
+    assert 'request("/v1/resolve-inbox"' in script
+    assert 'request("/v1/dismiss-inbox"' in script
+    assert 'request("/v1/task-planning"' in script
     assert "raw_text" in script
     assert "reference_time" not in script
     assert "current_time" not in script
@@ -671,10 +785,16 @@ def test_state_page_assets_use_overview_and_safe_dom_rendering() -> None:
     assert "createElement" in script
     assert "innerHTML" not in script
     assert 'postJson("/v1/task-planning"' in script
+    assert 'postJson("/v1/resolve-inbox"' in script
+    assert 'postJson("/v1/dismiss-inbox"' in script
+    assert 'postJson("/v1/task-status"' in script
     assert "Can this be split across work sessions?" in script
     assert "No, it needs one sitting" in script
-    assert "Needs a duration before it can be recommended." in script
-    for section in ("active-session", "tasks", "inbox", "projects"):
+    assert "Needs a duration before recommendation." in script
+    assert "Nothing needs input." in script
+    assert "needsDuration" in script
+    assert "formatPlanning(task)" not in script
+    for section in ("needs-input", "active-session", "tasks", "projects"):
         assert f'id="{section}"' in state_html
 
 

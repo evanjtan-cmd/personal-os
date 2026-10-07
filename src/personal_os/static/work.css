@@ -28,6 +28,7 @@ h2 { margin-bottom: 10px; font-size: 25px; line-height: 1.25; overflow-wrap: any
 .capture h2 { font-size: 20px; }
 .capture-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 12px; }
 .capture-result { margin: 15px 0 0; padding-left: 12px; border-left: 3px solid #24745b; color: #315c4d; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.capture-result p:last-child { margin-bottom: 0; }
 .capture-result.unresolved { border-color: #98711d; color: #735716; }
 .capture-result.failed { border-color: #b54334; color: #79372f; }
 .controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 12px; padding: 28px 0; border-bottom: 1px solid #cbd4cd; }
@@ -72,6 +73,11 @@ input:focus, textarea:focus, select:focus, button:focus-visible, summary:focus-v
 .planning-editor summary { width: fit-content; color: #17634c; font-size: 14px; font-weight: 700; cursor: pointer; }
 .planning-editor form { display: grid; gap: 12px; max-width: 420px; margin-top: 12px; padding: 14px 0 2px; }
 .planning-actions { display: flex; gap: 8px; }
+.inline-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.inline-form { display: grid; grid-template-columns: minmax(120px, 220px) auto; align-items: end; gap: 10px; margin-top: 12px; }
+.inline-form .form-message { grid-column: 1 / -1; }
+.resolution-box { max-width: 560px; margin-top: 12px; }
+.resolve-form { display: grid; gap: 10px; margin-top: 10px; }
 .form-message { margin: 0; color: #79372f !important; }
 .empty-state { margin: 0; color: #68736c; font-size: 14px; }
 
@@ -80,7 +86,7 @@ input:focus, textarea:focus, select:focus, button:focus-visible, summary:focus-v
   .page-heading { margin: 30px 0 24px; }
   h1 { font-size: 29px; }
   h2 { font-size: 23px; }
-  .capture-form, .controls { grid-template-columns: minmax(0, 1fr); }
+  .capture-form, .controls, .inline-form { grid-template-columns: minmax(0, 1fr); }
   .capture-form .button,
   .controls .button { grid-column: 1 / -1; grid-row: auto; }
   .feedback-actions .button { flex: 1 1 130px; }

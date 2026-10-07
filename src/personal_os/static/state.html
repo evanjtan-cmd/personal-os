@@ -30,6 +30,12 @@
     <p id="state-progress" class="progress" role="status">Loading state...</p>
 
     <div id="overview" class="overview" aria-live="polite" hidden>
+      <section class="overview-section" aria-labelledby="needs-heading">
+        <p class="eyebrow">TRIAGE</p>
+        <h2 id="needs-heading">Needs input</h2>
+        <div id="needs-input"></div>
+      </section>
+
       <section class="overview-section" aria-labelledby="active-heading">
         <p class="eyebrow">NOW</p>
         <h2 id="active-heading">Active session</h2>
@@ -38,14 +44,8 @@
 
       <section class="overview-section" aria-labelledby="tasks-heading">
         <p class="eyebrow">ACTIONABLE</p>
-        <h2 id="tasks-heading">Tasks</h2>
+        <h2 id="tasks-heading">Active tasks</h2>
         <div id="tasks"></div>
-      </section>
-
-      <section class="overview-section" aria-labelledby="inbox-heading">
-        <p class="eyebrow">UNRESOLVED</p>
-        <h2 id="inbox-heading">Inbox</h2>
-        <div id="inbox"></div>
       </section>
 
       <section class="overview-section" aria-labelledby="projects-heading">
