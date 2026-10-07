@@ -19,6 +19,8 @@ from personal_os.config import get_timezone_name
 from personal_os.errors import PersonalOSError
 from personal_os.models import (
     CaptureStatus,
+    CommitmentHardness,
+    FixedCommitmentStatus,
     ProjectStatus,
     TaskExecutionMode,
     TaskStatus,
@@ -33,6 +35,7 @@ from personal_os.runtime import PersonalOSRuntime, build_runtime
 from personal_os.session_types import SessionOutcome
 
 PROTOCOL_VERSION = 1
+HISTORY_LIMIT = 20
 
 
 class InvalidRequestError(Exception):
@@ -52,6 +55,8 @@ class _ValidatedRequest:
     inbox_item_id: int | None = None
     task_id: int | None = None
     task_status: TaskStatus | None = None
+    commitment_id: int | None = None
+    duration_minutes: int | None = None
     planned_minutes: int | None = None
     execution_mode: TaskExecutionMode | None = None
     estimated_minutes: int | None = None
@@ -416,6 +421,39 @@ def _correct_task_status(
     }
 
 
+def _configure_commitment_protection(
+    request: _ValidatedRequest, runtime: PersonalOSRuntime,
+) -> dict[str, object]:
+    assert request.commitment_id is not None
+    commitment = runtime.store.configure_commitment_protection(
+        request.commitment_id, duration_minutes=request.duration_minutes
+    )
+    return {
+        "commitment_id": commitment.id,
+        "title": commitment.title,
+        "status": commitment.status.value,
+        "hardness": commitment.hardness.value,
+        "start_at": serialize_instant(commitment.start_at),
+        "end_at": (
+            None
+            if commitment.end_at is None
+            else serialize_instant(commitment.end_at)
+        ),
+    }
+
+
+def _cancel_commitment(
+    request: _ValidatedRequest, runtime: PersonalOSRuntime,
+) -> dict[str, object]:
+    assert request.commitment_id is not None
+    commitment = runtime.store.cancel_commitment(request.commitment_id)
+    return {
+        "commitment_id": commitment.id,
+        "title": commitment.title,
+        "status": commitment.status.value,
+    }
+
+
 def _active(
     runtime: PersonalOSRuntime,
 ) -> dict[str, object]:
@@ -434,54 +472,137 @@ def _active(
     }
 
 
-def _overview(runtime: PersonalOSRuntime) -> dict[str, object]:
+def _deadline_for_task(task) -> dict[str, object] | None:
+    if task.deadline_date is not None:
+        return {
+            "kind": "DATE",
+            "date": task.deadline_date.isoformat(),
+        }
+    if task.deadline_at is not None:
+        return {
+            "kind": "INSTANT",
+            "at": serialize_instant(task.deadline_at),
+        }
+    return None
+
+
+def _task_overview(task, project_names: dict[int, str]) -> dict[str, object]:
+    return {
+        "id": task.id,
+        "title": task.title,
+        "status": task.status.value,
+        "importance": task.importance.value,
+        "project_id": task.project_id,
+        "project_name": project_names.get(task.project_id),
+        "schedule": {
+            "mode": task.schedule_mode.value,
+            "day_date": (
+                None if task.day_date is None else task.day_date.isoformat()
+            ),
+            "window_start": (
+                None
+                if task.window_start is None
+                else serialize_instant(task.window_start)
+            ),
+            "window_end": (
+                None
+                if task.window_end is None
+                else serialize_instant(task.window_end)
+            ),
+        },
+        "deadline": _deadline_for_task(task),
+        "execution_mode": task.execution_mode.value,
+        "estimated_minutes": task.estimated_minutes,
+        "updated_at": serialize_instant(task.updated_at),
+    }
+
+
+def _commitment_temporal_status(commitment, now: datetime) -> str:
+    if commitment.status is FixedCommitmentStatus.CANCELLED:
+        return "CANCELLED"
+    if commitment.end_at is not None:
+        if commitment.end_at <= now:
+            return "PAST"
+        if commitment.start_at <= now:
+            return "ACTIVE"
+        return "FUTURE"
+    if commitment.start_at > now:
+        return "FUTURE"
+    if commitment.hardness is CommitmentHardness.HARD:
+        return "ACTIVE"
+    return "PAST"
+
+
+def _serialize_commitment(commitment, *, now: datetime) -> dict[str, object]:
+    temporal_status = _commitment_temporal_status(commitment, now)
+    needs_input = (
+        commitment.status is FixedCommitmentStatus.SCHEDULED
+        and temporal_status in {"FUTURE", "ACTIVE"}
+        and (
+            commitment.hardness is CommitmentHardness.UNKNOWN
+            or (
+                commitment.hardness is CommitmentHardness.HARD
+                and commitment.end_at is None
+            )
+        )
+    )
+    return {
+        "id": commitment.id,
+        "title": commitment.title,
+        "status": commitment.status.value,
+        "start_at": serialize_instant(commitment.start_at),
+        "end_at": (
+            None
+            if commitment.end_at is None
+            else serialize_instant(commitment.end_at)
+        ),
+        "hardness": commitment.hardness.value,
+        "temporal_status": temporal_status,
+        "protection_needs_input": needs_input,
+        "updated_at": serialize_instant(commitment.updated_at),
+    }
+
+
+def _commitment_history_sort_key(item: dict[str, object]) -> tuple[str, int]:
+    sort_at = item["updated_at"]
+    if item["temporal_status"] == "PAST":
+        sort_at = item["end_at"] or item["start_at"]
+    assert isinstance(sort_at, str)
+    assert isinstance(item["id"], int)
+    return sort_at, item["id"]
+
+
+def _overview(runtime: PersonalOSRuntime, *, now: datetime) -> dict[str, object]:
     snapshot = runtime.store.read_state_snapshot()
     project_names = {project.id: project.name for project in snapshot.projects}
     task_titles = {task.id: task.title for task in snapshot.tasks}
 
     tasks = []
+    task_history = []
     for task in snapshot.tasks:
-        if task.status not in {TaskStatus.OPEN, TaskStatus.BLOCKED}:
-            continue
-        if task.deadline_date is not None:
-            deadline: dict[str, object] | None = {
-                "kind": "DATE",
-                "date": task.deadline_date.isoformat(),
-            }
-        elif task.deadline_at is not None:
-            deadline = {
-                "kind": "INSTANT",
-                "at": serialize_instant(task.deadline_at),
-            }
+        serialized = _task_overview(task, project_names)
+        if task.status in {TaskStatus.OPEN, TaskStatus.BLOCKED}:
+            tasks.append(serialized)
+        elif task.status in {TaskStatus.COMPLETED, TaskStatus.CANCELLED}:
+            task_history.append(serialized)
+
+    commitments = []
+    commitment_history = []
+    for commitment in getattr(snapshot, "fixed_commitments", ()):
+        serialized = _serialize_commitment(commitment, now=now)
+        if commitment.status is FixedCommitmentStatus.SCHEDULED and serialized[
+            "temporal_status"
+        ] in {"FUTURE", "ACTIVE"}:
+            commitments.append(serialized)
         else:
-            deadline = None
-        tasks.append({
-            "id": task.id,
-            "title": task.title,
-            "status": task.status.value,
-            "importance": task.importance.value,
-            "project_id": task.project_id,
-            "project_name": project_names.get(task.project_id),
-            "schedule": {
-                "mode": task.schedule_mode.value,
-                "day_date": (
-                    None if task.day_date is None else task.day_date.isoformat()
-                ),
-                "window_start": (
-                    None
-                    if task.window_start is None
-                    else serialize_instant(task.window_start)
-                ),
-                "window_end": (
-                    None
-                    if task.window_end is None
-                    else serialize_instant(task.window_end)
-                ),
-            },
-            "deadline": deadline,
-            "execution_mode": task.execution_mode.value,
-            "estimated_minutes": task.estimated_minutes,
-        })
+            commitment_history.append(serialized)
+
+    task_history.sort(
+        key=lambda item: (str(item["updated_at"]), int(item["id"])),
+        reverse=True,
+    )
+    commitments.sort(key=lambda item: (str(item["start_at"]), int(item["id"])))
+    commitment_history.sort(key=_commitment_history_sort_key, reverse=True)
 
     active_session = next(
         (session for session in snapshot.sessions if session.is_active), None
@@ -497,6 +618,10 @@ def _overview(runtime: PersonalOSRuntime) -> dict[str, object]:
             if project.status is ProjectStatus.ACTIVE
         ],
         "tasks": tasks,
+        "task_history": task_history[:HISTORY_LIMIT],
+        "commitments": commitments,
+        "commitment_history": commitment_history[:HISTORY_LIMIT],
+        "history_limit": HISTORY_LIMIT,
         "inbox": [
             {
                 "id": item.id,
@@ -537,7 +662,8 @@ def _validate_request(request: object) -> _ValidatedRequest:
     if operation not in {
         "capture", "recommend", "start", "feedback", "active", "activate",
         "overview", "update_task_planning", "resolve_inbox", "dismiss_inbox",
-        "correct_task_status",
+        "correct_task_status", "configure_commitment_protection",
+        "cancel_commitment",
     }:
         raise InvalidRequestError(f"unknown operation: {operation}")
 
@@ -682,6 +808,34 @@ def _validate_request(request: object) -> _ValidatedRequest:
         return _ValidatedRequest(
             operation=operation, task_id=task_id, task_status=task_status
         )
+    if operation == "configure_commitment_protection":
+        _require_fields(
+            request,
+            required={
+                "version", "operation", "commitment_id", "duration_minutes",
+            },
+            optional=set(),
+        )
+        commitment_id = _integer(request, "commitment_id", positive=True)
+        assert commitment_id is not None
+        return _ValidatedRequest(
+            operation=operation,
+            commitment_id=commitment_id,
+            duration_minutes=_nullable_positive_integer(
+                request, "duration_minutes"
+            ),
+        )
+    if operation == "cancel_commitment":
+        _require_fields(
+            request,
+            required={"version", "operation", "commitment_id"},
+            optional=set(),
+        )
+        commitment_id = _integer(request, "commitment_id", positive=True)
+        assert commitment_id is not None
+        return _ValidatedRequest(
+            operation=operation, commitment_id=commitment_id
+        )
     _require_fields(request, required={"version", "operation"}, optional=set())
     return _ValidatedRequest(operation=operation)
 
@@ -696,8 +850,10 @@ def handle_request(
     """Dispatch one fully validated request to application services."""
 
     operation = request.operation
+    now: datetime | None = None
     if operation == "overview":
-        return operation, _overview(runtime)
+        now = clock()
+        return operation, _overview(runtime, now=now)
     if operation == "active":
         return operation, _active(runtime)
     if operation == "update_task_planning":
@@ -706,6 +862,10 @@ def handle_request(
         return operation, _dismiss_inbox(request, runtime)
     if operation == "correct_task_status":
         return operation, _correct_task_status(request, runtime)
+    if operation == "configure_commitment_protection":
+        return operation, _configure_commitment_protection(request, runtime)
+    if operation == "cancel_commitment":
+        return operation, _cancel_commitment(request, runtime)
     now = clock()
     if operation == "capture":
         return operation, _capture(request, runtime, now=now, environ=environ)

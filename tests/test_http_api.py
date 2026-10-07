@@ -1,6 +1,6 @@
 import http.client
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from importlib.resources import files
 from pathlib import Path
 from threading import Thread
@@ -21,7 +21,7 @@ from personal_os.recommendation_types import (
     RecommendationContext,
 )
 from personal_os.session import SessionService
-from personal_os.models import TaskExecutionMode, TaskStatus
+from personal_os.models import CommitmentHardness, FixedCommitmentStatus, TaskExecutionMode, TaskStatus
 from personal_os.state import SQLiteStateStore
 
 NOW = datetime(2026, 9, 21, 14, 0, tzinfo=UTC)
@@ -318,6 +318,46 @@ def test_task_status_endpoint_updates_allowed_lifecycle(api) -> None:
         "status": "CANCELLED",
     }
     assert store.get_task(task.id).status is TaskStatus.CANCELLED
+    runtime_factory.assert_called_once_with()
+
+
+def test_commitment_protection_endpoint_sets_explicit_duration(api) -> None:
+    _, store, _, runtime_factory = api
+    commitment = store.create_fixed_commitment(
+        "Class", NOW + timedelta(hours=1)
+    )
+
+    status, response, _ = request(
+        api,
+        {"commitment_id": commitment.id, "duration_minutes": 90},
+        path="/v1/commitment-protection",
+    )
+
+    assert status == 200
+    assert response["operation"] == "configure_commitment_protection"
+    assert response["result"]["hardness"] == "HARD"
+    assert response["result"]["end_at"] == "2026-09-21T16:30:00.000000Z"
+    updated = store.get_fixed_commitment(commitment.id)
+    assert updated.hardness is CommitmentHardness.HARD
+    assert updated.end_at == commitment.start_at + timedelta(minutes=90)
+    runtime_factory.assert_called_once_with()
+
+
+def test_cancel_commitment_endpoint_keeps_historical_row(api) -> None:
+    _, store, _, runtime_factory = api
+    commitment = store.create_fixed_commitment("Class", NOW)
+
+    status, response, _ = request(
+        api,
+        {"commitment_id": commitment.id},
+        path="/v1/cancel-commitment",
+    )
+
+    assert status == 200
+    assert response["operation"] == "cancel_commitment"
+    assert response["result"]["status"] == "CANCELLED"
+    assert store.get_fixed_commitment(commitment.id).status is FixedCommitmentStatus.CANCELLED
+    assert len(store.list_fixed_commitments()) == 1
     runtime_factory.assert_called_once_with()
 
 
@@ -646,6 +686,12 @@ def test_start_revalidates_stale_recommendation(api) -> None:
         ("/v1/task-status", {"task_id": 1, "status": "BLOCKED"}),
         ("/v1/task-status", {"task_id": 1}),
         ("/v1/task-status", {"task_id": 1, "status": "COMPLETED", "title": "Rename"}),
+        ("/v1/commitment-protection", {"commitment_id": 1}),
+        ("/v1/commitment-protection", {"commitment_id": 1, "duration_minutes": 0}),
+        ("/v1/commitment-protection", {"commitment_id": 1, "duration_minutes": 30, "hardness": "HARD"}),
+        ("/v1/commitment-protection", {"commitment_id": 1, "duration_minutes": 30, "current_time": "now"}),
+        ("/v1/cancel-commitment", {"commitment_id": 0}),
+        ("/v1/cancel-commitment", {"commitment_id": 1, "delete": True}),
     ],
 )
 def test_new_endpoints_reject_invalid_bodies_before_runtime(api, path, body) -> None:
@@ -665,7 +711,8 @@ def test_feedback_without_session_is_structured_error(api) -> None:
     "path", [
         "/v1/activate", "/v1/start", "/v1/feedback", "/v1/capture",
         "/v1/resolve-inbox", "/v1/dismiss-inbox", "/v1/task-planning",
-        "/v1/task-status",
+        "/v1/task-status", "/v1/commitment-protection",
+        "/v1/cancel-commitment",
     ]
 )
 def test_host_and_cross_origin_requests_are_rejected(api, path) -> None:
@@ -678,6 +725,8 @@ def test_host_and_cross_origin_requests_are_rejected(api, path) -> None:
         "/v1/dismiss-inbox": {"inbox_item_id": 1},
         "/v1/task-planning": {"task_id": 1, "execution_mode": "SPLITTABLE", "estimated_minutes": None},
         "/v1/task-status": {"task_id": 1, "status": "COMPLETED"},
+        "/v1/commitment-protection": {"commitment_id": 1, "duration_minutes": 30},
+        "/v1/cancel-commitment": {"commitment_id": 1},
     }[path]
     for header in (
         {"Host": "example.com"},
@@ -788,13 +837,28 @@ def test_state_page_assets_use_overview_and_safe_dom_rendering() -> None:
     assert 'postJson("/v1/resolve-inbox"' in script
     assert 'postJson("/v1/dismiss-inbox"' in script
     assert 'postJson("/v1/task-status"' in script
+    assert 'postJson("/v1/commitment-protection"' in script
+    assert 'postJson("/v1/cancel-commitment"' in script
     assert "Can this be split across work sessions?" in script
     assert "No, it needs one sitting" in script
+    assert "Should this reserve time from work recommendations?" in script
+    assert 'commitment.status === "CANCELLED"' in script
+    assert (
+        script.index('commitment.status === "CANCELLED"')
+        < script.index('commitment.hardness === "HARD"')
+    )
+    assert "Custom minutes" in script
+    assert "Reopen" in script
+    assert "Cancel" in script
     assert "Needs a duration before recommendation." in script
     assert "Nothing needs input." in script
     assert "needsDuration" in script
+    assert "needsCommitmentProtection" in script
     assert "formatPlanning(task)" not in script
-    for section in ("needs-input", "active-session", "tasks", "projects"):
+    for section in (
+        "needs-input", "active-session", "commitments", "tasks", "projects",
+        "history",
+    ):
         assert f'id="{section}"' in state_html
 
 

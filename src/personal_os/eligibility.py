@@ -5,8 +5,8 @@ from __future__ import annotations
 from datetime import datetime
 
 from personal_os.models import (
-    CommitmentHardness, FixedCommitment, Project, ProjectStatus, Task,
-    TaskScheduleMode, TaskStatus,
+    CommitmentHardness, FixedCommitment, FixedCommitmentStatus, Project,
+    ProjectStatus, Task, TaskScheduleMode, TaskStatus,
 )
 from personal_os.recommendation_types import (
     AvailabilityDecision, AvailabilityKind, DeadlineState, EligibilityDecision,
@@ -74,6 +74,8 @@ def calculate_availability(
     now = context.reference_time
     future: list[FixedCommitment] = []
     for item in commitments:
+        if item.status is FixedCommitmentStatus.CANCELLED:
+            continue
         if item.hardness is not CommitmentHardness.HARD:
             continue
         if item.end_at is not None and item.end_at <= now:

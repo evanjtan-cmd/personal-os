@@ -4,8 +4,9 @@ import pytest
 
 from personal_os.eligibility import calculate_availability, evaluate_task
 from personal_os.models import (
-    CommitmentHardness, FixedCommitment, Project, ProjectStatus, Task,
-    TaskExecutionMode, TaskImportance, TaskScheduleMode, TaskStatus,
+    CommitmentHardness, FixedCommitment, FixedCommitmentStatus, Project,
+    ProjectStatus, Task, TaskExecutionMode, TaskImportance, TaskScheduleMode,
+    TaskStatus,
 )
 from personal_os.recommendation_types import (
     AvailabilityKind, DeadlineState, EligibilityReason, RecommendationContext,
@@ -34,8 +35,13 @@ def task(**changes) -> Task:
     return Task(**values)
 
 
-def commitment(identifier, start, end, hardness) -> FixedCommitment:
-    return FixedCommitment(identifier, "Meeting", start, end, hardness, CREATED, CREATED)
+def commitment(
+    identifier, start, end, hardness, *, status=FixedCommitmentStatus.SCHEDULED
+) -> FixedCommitment:
+    return FixedCommitment(
+        identifier, "Meeting", start, end, hardness, CREATED, CREATED,
+        status=status,
+    )
 
 
 @pytest.mark.parametrize(
@@ -143,3 +149,14 @@ def test_exact_end_is_ended_and_overlapping_active_hard_blocks() -> None:
     active = commitment(2, NOW - timedelta(minutes=1), NOW + timedelta(minutes=1), CommitmentHardness.HARD)
     assert calculate_availability(RecommendationContext(NOW, "UTC"), [ended]).kind is AvailabilityKind.NO_KNOWN_HARD_BOUND
     assert calculate_availability(RecommendationContext(NOW, "UTC"), [ended, active]).kind is AvailabilityKind.BLOCKED_ACTIVE_HARD
+
+
+def test_cancelled_hard_commitment_does_not_constrain_availability() -> None:
+    cancelled = commitment(
+        1, NOW, NOW + timedelta(hours=1), CommitmentHardness.HARD,
+        status=FixedCommitmentStatus.CANCELLED,
+    )
+
+    result = calculate_availability(RecommendationContext(NOW, "UTC"), [cancelled])
+
+    assert result.kind is AvailabilityKind.NO_KNOWN_HARD_BOUND

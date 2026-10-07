@@ -10,6 +10,7 @@ from personal_os.database import initialize_database
 from personal_os.errors import DomainValidationError, EntityNotFoundError, PersistenceError
 from personal_os.models import (
     CommitmentHardness,
+    FixedCommitmentStatus,
     ProjectStatus,
     TaskExecutionMode,
     TaskImportance,
@@ -228,6 +229,8 @@ def test_cancelled_task_round_trips(store: SQLiteStateStore) -> None:
         (TaskStatus.OPEN, TaskStatus.CANCELLED),
         (TaskStatus.BLOCKED, TaskStatus.CANCELLED),
         (TaskStatus.BLOCKED, TaskStatus.OPEN),
+        (TaskStatus.COMPLETED, TaskStatus.OPEN),
+        (TaskStatus.CANCELLED, TaskStatus.OPEN),
     ],
 )
 def test_task_lifecycle_correction_allows_only_required_transitions(
@@ -246,10 +249,10 @@ def test_task_lifecycle_correction_allows_only_required_transitions(
     ("initial", "target"),
     [
         (TaskStatus.OPEN, TaskStatus.OPEN),
-        (TaskStatus.COMPLETED, TaskStatus.OPEN),
-        (TaskStatus.CANCELLED, TaskStatus.OPEN),
         (TaskStatus.COMPLETED, TaskStatus.CANCELLED),
         (TaskStatus.CANCELLED, TaskStatus.COMPLETED),
+        (TaskStatus.OPEN, TaskStatus.BLOCKED),
+        (TaskStatus.COMPLETED, TaskStatus.BLOCKED),
     ],
 )
 def test_task_lifecycle_correction_rejects_other_transitions(
@@ -411,9 +414,86 @@ def test_fixed_commitments_round_trip_known_and_unknown_ends(store: SQLiteStateS
 
     assert unknown_end.end_at is None
     assert unknown_end.hardness is CommitmentHardness.UNKNOWN
+    assert unknown_end.status is FixedCommitmentStatus.SCHEDULED
     assert hard.end_at == start + timedelta(hours=2)
     assert updated.hardness is CommitmentHardness.SOFT
     assert store.list_fixed_commitments() == [updated, hard]
+
+
+def test_commitment_status_round_trip_and_cancel_only_from_scheduled(
+    store: SQLiteStateStore,
+) -> None:
+    start = datetime(2026, 9, 1, 14, tzinfo=UTC)
+    scheduled = store.create_fixed_commitment("Appointment", start)
+    cancelled = store.cancel_commitment(scheduled.id)
+
+    assert cancelled.status is FixedCommitmentStatus.CANCELLED
+    assert store.get_fixed_commitment(scheduled.id) == cancelled
+    with pytest.raises(DomainValidationError, match="already cancelled"):
+        store.cancel_commitment(cancelled.id)
+
+
+def test_configure_commitment_protection_sets_bounded_hard_from_duration(
+    store: SQLiteStateStore,
+) -> None:
+    start = datetime(2026, 9, 1, 14, tzinfo=UTC)
+    commitment = store.create_fixed_commitment("Appointment", start)
+
+    updated = store.configure_commitment_protection(
+        commitment.id, duration_minutes=60
+    )
+
+    assert updated.hardness is CommitmentHardness.HARD
+    assert updated.end_at == start + timedelta(minutes=60)
+    assert updated.status is FixedCommitmentStatus.SCHEDULED
+
+
+def test_configure_commitment_no_protection_preserves_known_end(
+    store: SQLiteStateStore,
+) -> None:
+    start = datetime(2026, 9, 1, 14, tzinfo=UTC)
+    end = start + timedelta(hours=2)
+    commitment = store.create_fixed_commitment(
+        "Appointment", start, end_at=end, hardness=CommitmentHardness.UNKNOWN
+    )
+
+    updated = store.configure_commitment_protection(
+        commitment.id, duration_minutes=None
+    )
+
+    assert updated.hardness is CommitmentHardness.SOFT
+    assert updated.end_at == end
+
+
+@pytest.mark.parametrize("duration", [0, -1, True, 1.5, "30"])
+def test_configure_commitment_protection_rejects_invalid_duration(
+    store: SQLiteStateStore, duration: object,
+) -> None:
+    commitment = store.create_fixed_commitment(
+        "Appointment", datetime(2026, 9, 1, 14, tzinfo=UTC)
+    )
+
+    with pytest.raises(DomainValidationError, match="duration_minutes"):
+        store.configure_commitment_protection(
+            commitment.id, duration_minutes=duration
+        )
+
+    assert store.get_fixed_commitment(commitment.id).hardness is CommitmentHardness.UNKNOWN
+    assert store.get_fixed_commitment(commitment.id).end_at is None
+
+
+def test_commitment_protection_rejects_cancelled_commitment(
+    store: SQLiteStateStore,
+) -> None:
+    commitment = store.create_fixed_commitment(
+        "Appointment", datetime(2026, 9, 1, 14, tzinfo=UTC)
+    )
+    store.cancel_commitment(commitment.id)
+
+    with pytest.raises(DomainValidationError, match="not scheduled"):
+        store.configure_commitment_protection(
+            commitment.id, duration_minutes=30
+        )
 
 
 def test_invalid_commitment_times_and_hardness_are_rejected(store: SQLiteStateStore) -> None:

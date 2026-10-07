@@ -35,6 +35,10 @@ function needsDuration(task) {
   return task.execution_mode === "ONE_SITTING" && task.estimated_minutes === null;
 }
 
+function needsCommitmentProtection(commitment) {
+  return commitment.protection_needs_input === true;
+}
+
 function list(items, renderItem) {
   const output = element("ul", undefined, "state-list");
   for (const item of items) output.append(renderItem(item));
@@ -91,6 +95,58 @@ function renderDurationQuestion(task) {
     }
   });
   return form;
+}
+
+async function configureCommitment(commitment, durationMinutes, container) {
+  for (const control of container.querySelectorAll("button,input")) control.disabled = true;
+  try {
+    await postJson("/v1/commitment-protection", {
+      commitment_id: commitment.id,
+      duration_minutes: durationMinutes,
+    });
+    await loadOverview();
+  } catch (caught) {
+    const message = element("p", `${caught.message} Refresh state, then try again.`, "form-message");
+    container.after(message);
+    for (const control of container.querySelectorAll("button,input")) control.disabled = false;
+  }
+}
+
+function renderCommitmentProtectionQuestion(commitment) {
+  const box = element("div", undefined, "resolution-box");
+  box.append(element("p", "Should this reserve time from work recommendations?"));
+  const actions = element("div", undefined, "inline-actions");
+  for (const minutes of [30, 60, 90]) {
+    const button = element("button", `${minutes} min`, "button");
+    button.type = "button";
+    button.addEventListener("click", () => configureCommitment(commitment, minutes, box));
+    actions.append(button);
+  }
+  const no = element("button", "No", "button");
+  no.type = "button";
+  no.addEventListener("click", () => configureCommitment(commitment, null, box));
+  actions.append(no);
+
+  const form = document.createElement("form");
+  form.className = "inline-form";
+  const label = element("label", "Custom minutes");
+  const input = document.createElement("input");
+  input.name = "duration_minutes";
+  input.type = "number";
+  input.min = "1";
+  input.step = "1";
+  input.inputMode = "numeric";
+  input.required = true;
+  label.append(input);
+  const save = element("button", "Custom", "button primary");
+  save.type = "submit";
+  form.append(label, save);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await configureCommitment(commitment, Number(input.value), box);
+  });
+  box.append(actions, form);
+  return box;
 }
 
 function renderInboxControls(entry) {
@@ -160,6 +216,9 @@ function renderNeedsInput(result) {
   for (const task of result.tasks.filter(needsDuration)) {
     items.push({ kind: "duration", task });
   }
+  for (const commitment of result.commitments.filter(needsCommitmentProtection)) {
+    items.push({ kind: "commitment", commitment });
+  }
   if (!items.length) {
     target.replaceChildren(empty("Nothing needs input."));
     return;
@@ -173,12 +232,19 @@ function renderNeedsInput(result) {
         element("p", item.entry.unresolved_reason),
         renderInboxControls(item.entry),
       );
-    } else {
+    } else if (item.kind === "duration") {
       node.append(
         element("p", "Duration needed", "item-status"),
         element("h3", item.task.title),
         element("p", "Needs a duration before recommendation."),
         renderDurationQuestion(item.task),
+      );
+    } else {
+      node.append(
+        element("p", "Protection needs input", "item-status"),
+        element("h3", item.commitment.title),
+        element("p", formatCommitmentTime(item.commitment)),
+        renderCommitmentProtectionQuestion(item.commitment),
       );
     }
     return node;
@@ -229,6 +295,55 @@ function renderTasks(tasks) {
     );
     item.append(renderTaskActions(task));
     item.append(renderPlanningEditor(task));
+    return item;
+  }));
+}
+
+function formatCommitmentTime(commitment) {
+  const start = formatInstant(commitment.start_at);
+  if (commitment.end_at) return `${start} to ${formatInstant(commitment.end_at)}`;
+  return start;
+}
+
+function protectionLabel(commitment) {
+  if (commitment.status === "CANCELLED") return "Does not reserve work time";
+  if (commitment.protection_needs_input) return "Protection needs input";
+  if (commitment.hardness === "HARD") return "Reserves work time";
+  if (commitment.hardness === "SOFT") return "Does not reserve work time";
+  return "Protection unknown";
+}
+
+async function cancelCommitment(commitment, container) {
+  for (const button of container.querySelectorAll("button")) button.disabled = true;
+  try {
+    await postJson("/v1/cancel-commitment", { commitment_id: commitment.id });
+    await loadOverview();
+  } catch (caught) {
+    const message = element("p", `${caught.message} Refresh state, then try again.`, "form-message");
+    container.after(message);
+    for (const button of container.querySelectorAll("button")) button.disabled = false;
+  }
+}
+
+function renderCommitments(commitments) {
+  const target = byId("commitments");
+  if (!commitments.length) {
+    target.replaceChildren(empty("No upcoming commitments."));
+    return;
+  }
+  target.replaceChildren(list(commitments, (commitment) => {
+    const item = element("li", undefined, "state-item");
+    const actions = element("div", undefined, "inline-actions");
+    const cancel = element("button", "Cancel", "button");
+    cancel.type = "button";
+    cancel.addEventListener("click", () => cancelCommitment(commitment, actions));
+    actions.append(cancel);
+    item.append(
+      element("p", commitment.temporal_status, "item-status"),
+      element("h3", commitment.title),
+      element("p", `${formatCommitmentTime(commitment)} · ${protectionLabel(commitment)}`, "meta"),
+      actions,
+    );
     return item;
   }));
 }
@@ -342,6 +457,48 @@ function renderProjects(projects) {
   }));
 }
 
+function renderHistory(result) {
+  const target = byId("history");
+  const items = [];
+  for (const task of result.task_history) items.push({ kind: "task", task });
+  for (const commitment of result.commitment_history) {
+    items.push({ kind: "commitment", commitment });
+  }
+  if (!items.length) {
+    target.replaceChildren(empty("No completed or cancelled history."));
+    return;
+  }
+  const details = document.createElement("details");
+  details.open = true;
+  details.append(element("summary", `Recent history (${items.length})`));
+  details.append(list(items, (entry) => {
+    const item = element("li", undefined, "state-item");
+    if (entry.kind === "task") {
+      const label = entry.task.status === "CANCELLED" ? "Removed" : "Completed";
+      const actions = element("div", undefined, "inline-actions");
+      const reopen = element("button", "Reopen", "button");
+      reopen.type = "button";
+      reopen.addEventListener("click", () => correctTaskStatus(entry.task, "OPEN", actions));
+      actions.append(reopen);
+      item.append(
+        element("p", label, "item-status"),
+        element("h3", entry.task.title),
+        element("p", entry.task.project_name || "Task", "meta"),
+        actions,
+      );
+    } else {
+      const label = entry.commitment.status === "CANCELLED" ? "Cancelled" : "Past commitment";
+      item.append(
+        element("p", label, "item-status"),
+        element("h3", entry.commitment.title),
+        element("p", `${formatCommitmentTime(entry.commitment)} · ${protectionLabel(entry.commitment)}`, "meta"),
+      );
+    }
+    return item;
+  }));
+  target.replaceChildren(details);
+}
+
 async function loadOverview() {
   const button = byId("refresh-button");
   const error = byId("state-error");
@@ -356,8 +513,10 @@ async function loadOverview() {
     }
     renderNeedsInput(envelope.result);
     renderActive(envelope.result.active_session);
+    renderCommitments(envelope.result.commitments);
     renderTasks(envelope.result.tasks);
     renderProjects(envelope.result.projects);
+    renderHistory(envelope.result);
     byId("overview").hidden = false;
   } catch (caught) {
     error.textContent = `${caught.message} Check the server, then try again.`;

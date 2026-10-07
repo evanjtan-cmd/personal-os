@@ -33,6 +33,11 @@ POST_OPERATIONS = {
         {"task_id", "execution_mode", "estimated_minutes"},
     ),
     "/v1/task-status": ("correct_task_status", {"task_id", "status"}),
+    "/v1/commitment-protection": (
+        "configure_commitment_protection",
+        {"commitment_id", "duration_minutes"},
+    ),
+    "/v1/cancel-commitment": ("cancel_commitment", {"commitment_id"}),
 }
 STATIC_FILES = {
     "/": ("work.html", "text/html; charset=utf-8"),

@@ -302,10 +302,10 @@ no mutation.
 
 Overview is intentionally distinct from the CLI's human debugging view and is
 not a generic full-state export. It excludes historical captures and sessions,
-capture interpretation/provider details, rules, commitments, secrets, and
-other unnecessary canonical state. The loopback adapter exposes the same
-machine operation as `GET /v1/overview`, and the dedicated State page remains a
-safe, read-only renderer over that contract.
+capture interpretation/provider details, rules, secrets, and other unnecessary
+canonical state. The loopback adapter exposes the same machine operation as
+`GET /v1/overview`, and the dedicated State page remains a safe, read-only
+renderer over that contract.
 
 ## 2026-10-05 — Task workability is canonical state
 
@@ -349,3 +349,31 @@ derived state creation and old-Inbox resolution share one final transaction. If
 it remains UNRESOLVED, the replacement Inbox item and old-Inbox resolution
 share one final transaction so exactly one unresolved item remains. If it
 FAILS, the original Inbox item remains unresolved.
+
+## 2026-10-06 — Durable visibility and commitment protection stay narrow
+
+Important durable state should remain visible through purpose-built active and
+history read models rather than disappearing from normal UI once it is closed
+or in the past. Overview may therefore include closed Task history, scheduled
+commitments, past commitments, and cancelled commitments, while still avoiding
+a generic full-state export. Commitment temporal labels such as FUTURE, ACTIVE,
+and PAST are derived from trusted server time and stored start/end facts; fixed
+commitments do not use a stored COMPLETED lifecycle.
+
+Schema version 8 adds SCHEDULED/CANCELLED lifecycle status to fixed
+commitments. Existing commitments migrate to SCHEDULED. Cancelling a
+commitment is a historical status transition rather than physical deletion, and
+CANCELLED commitments never constrain availability or recommendation. UNKNOWN
+commitment protection is not silently treated as HARD.
+
+User-facing commitment protection is configured only through a narrow
+operation. Choosing a positive duration marks the SCHEDULED commitment HARD and
+sets a bounded end from `start_at + duration`; choosing no reservation marks it
+SOFT and preserves any already known end. Newly configured HARD commitments
+must therefore have an explicit bounded end, while historical HARD/null-end
+rows are preserved and surfaced as needing input instead of being silently
+changed.
+
+Task Reopen is likewise a narrow lifecycle correction: COMPLETED or CANCELLED
+Tasks may move back to OPEN, with the existing active-session protection still
+enforced. This does not create generic Task editing.
