@@ -139,18 +139,26 @@ def test_state_snapshot_fails_closed_on_malformed_persisted_row(
 
 
 def test_project_create_get_list_update_round_trip(store: SQLiteStateStore) -> None:
-    first = store.create_project(" College ", "Applications")
+    first = store.create_project(
+        " College ", "Applications", deadline_date=date(2026, 10, 15)
+    )
     second = store.create_project("Home")
     updated = store.update_project(
         first.id, name="College applications", description=None,
+        deadline_date=None, deadline_at=datetime(2026, 10, 15, 21, tzinfo=UTC),
         status=ProjectStatus.COMPLETED,
     )
 
     assert first.name == "College"
+    assert first.deadline_date == date(2026, 10, 15)
+    assert first.deadline_at is None
     assert store.get_project(first.id) == updated
     assert [item.id for item in store.list_projects()] == [first.id, second.id]
     assert updated.description is None
     assert updated.status is ProjectStatus.COMPLETED
+    assert updated.deadline_date is None
+    assert updated.deadline_at == datetime(2026, 10, 15, 21, tzinfo=UTC)
+    assert second.deadline_date is None and second.deadline_at is None
     assert updated.updated_at > first.updated_at
 
 
@@ -163,6 +171,12 @@ def test_project_empty_name_is_rejected(store: SQLiteStateStore, name: str) -> N
 def test_project_invalid_status_and_missing_id_are_rejected(store: SQLiteStateStore) -> None:
     with pytest.raises(DomainValidationError, match="status"):
         store.create_project("Project", status="PAUSED")  # type: ignore[arg-type]
+    with pytest.raises(DomainValidationError, match="mutually exclusive"):
+        store.create_project(
+            "Project",
+            deadline_date=date(2026, 9, 1),
+            deadline_at=datetime(2026, 9, 1, 17, tzinfo=UTC),
+        )
     with pytest.raises(EntityNotFoundError):
         store.get_project(999)
 

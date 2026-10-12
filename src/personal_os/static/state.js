@@ -451,8 +451,12 @@ function renderProjects(projects) {
   }
   target.replaceChildren(list(projects, (project) => {
     const item = element("li", undefined, "state-item");
+    const facts = [];
+    const deadline = formatDeadline(project.deadline);
+    if (deadline) facts.push(deadline);
     item.append(element("h3", project.name));
     if (project.description) item.append(element("p", project.description));
+    if (facts.length) item.append(element("p", facts.join(" · "), "meta"));
     return item;
   }));
 }

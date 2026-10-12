@@ -75,6 +75,15 @@ function describeCapturedTask(task) {
   return `${task.title} — ${mode}${duration}${note}`;
 }
 
+function describeCapturedProject(project) {
+  if (!project) return null;
+  if (!project.deadline) return `Project: ${project.name}`;
+  const deadline = project.deadline.kind === "DATE"
+    ? project.deadline.date
+    : new Date(project.deadline.at).toLocaleString();
+  return `Project: ${project.name} — deadline ${deadline}`;
+}
+
 function oneSittingNeedsDuration(task) {
   return task.execution_mode === "ONE_SITTING" && task.estimated_minutes === null;
 }
@@ -184,7 +193,7 @@ function renderCaptureResult(result, rawText) {
   output.replaceChildren();
   if (result.status === "APPLIED") {
     const created = [
-      result.project?.name,
+      describeCapturedProject(result.project),
       ...result.tasks.map(describeCapturedTask),
       ...result.commitments.map((commitment) => commitment.title),
     ].filter(Boolean);

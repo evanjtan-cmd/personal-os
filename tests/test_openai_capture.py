@@ -22,12 +22,17 @@ class Responses:
     def __init__(self, response):
         self.response = response
         self.kwargs = None
+        self.calls = []
 
     def create(self, **kwargs):
         self.kwargs = kwargs
-        if isinstance(self.response, Exception):
-            raise self.response
-        return self.response
+        self.calls.append(kwargs)
+        response = self.response
+        if isinstance(response, list):
+            response = response.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 def client(response):
@@ -205,6 +210,13 @@ def test_nullable_flattens_union_and_uses_type_union_when_possible() -> None:
 def test_capture_schema_preserves_fixed_date_project_clock_and_deadline_wire_shapes() -> None:
     task = CAPTURE_SCHEMA["properties"]["tasks"]["items"]
     properties = task["properties"]
+    project = CAPTURE_SCHEMA["properties"]["new_project"]
+    assert project["type"] == ["object", "null"]
+    assert set(project["properties"]) == {"name", "description", "deadline"}
+    assert project["properties"]["deadline"]["type"] == ["object", "null"]
+    assert set(project["properties"]["deadline"]["properties"]) == {
+        "kind", "date", "clock",
+    }
     assert properties["execution_mode"] == {
         "type": "string",
         "enum": ["SPLITTABLE", "ONE_SITTING"],
@@ -343,6 +355,28 @@ def test_instant_deadline_wire_converts_to_canonical_instant_expression() -> Non
     }
 
 
+def test_new_project_deadline_wire_converts_to_canonical_deadline() -> None:
+    payload = {
+        "kind": "APPLY",
+        "new_project": {
+            "name": "College",
+            "description": None,
+            "deadline": wire_deadline("DATE", wire_date("TOMORROW")),
+        },
+        "tasks": [],
+        "commitments": [],
+        "unresolved_reason": None,
+    }
+
+    result = interpret(_adapter_for_payload(payload, provider="groq"))
+
+    assert result.interpretation.to_dict()["new_project"] == {
+        "name": "College",
+        "description": None,
+        "deadline": {"kind": "DATE", "value": {"kind": "TOMORROW", "value": None}},
+    }
+
+
 @pytest.mark.parametrize(
     "deadline",
     [
@@ -409,7 +443,11 @@ def test_canonical_parser_accepts_int_new_and_null_project_references(
     payload = _applied_task_payload(None)
     payload["tasks"][0]["project_id"] = project_id
     if project_id == "NEW":
-        payload["new_project"] = {"name": "Errands", "description": None}
+        payload["new_project"] = {
+            "name": "Errands",
+            "description": None,
+            "deadline": None,
+        }
     parsed = parse_interpretation(payload)
     assert parsed.to_dict()["tasks"][0]["project_id"] == project_id
 
@@ -527,12 +565,102 @@ def test_adapter_provider_failures_are_classified(response) -> None:
     assert error.value.kind is CaptureFailureKind.PROVIDER_ERROR
 
 
+class ProviderErrorWithCode(RuntimeError):
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+def test_retryable_structured_provider_error_retries_once_and_succeeds() -> None:
+    valid = SimpleNamespace(
+        id="response-2", model="m", status="completed", output=[],
+        output_text=json.dumps(PAYLOAD),
+    )
+    fake, responses = client([ProviderErrorWithCode("json_validate_failed"), valid])
+
+    result = interpret(OpenAIResponsesCaptureInterpreter(client=fake, model="m"))
+
+    assert result.response_id == "response-2"
+    assert len(responses.calls) == 2
+    assert "previous response violated" in responses.calls[1]["instructions"].lower()
+
+
+def test_two_retryable_structured_provider_errors_stop_after_second_call() -> None:
+    fake, responses = client([
+        ProviderErrorWithCode("json_validate_failed"),
+        ProviderErrorWithCode("json_validate_failed"),
+    ])
+
+    with pytest.raises(InterpretationError) as error:
+        interpret(OpenAIResponsesCaptureInterpreter(client=fake, model="m"))
+
+    assert error.value.kind is CaptureFailureKind.PROVIDER_ERROR
+    assert len(responses.calls) == 2
+
+
+def test_generic_provider_error_is_not_retried() -> None:
+    fake, responses = client(RuntimeError("network"))
+
+    with pytest.raises(InterpretationError) as error:
+        interpret(OpenAIResponsesCaptureInterpreter(client=fake, model="m"))
+
+    assert error.value.kind is CaptureFailureKind.PROVIDER_ERROR
+    assert len(responses.calls) == 1
+
+
+def test_provider_wire_validation_error_retries_once_and_succeeds() -> None:
+    invalid = _applied_task_payload(None)
+    invalid["tasks"][0]["deadline"] = wire_deadline(
+        "DATE", wire_date("TOMORROW"), wire_clock("4 PM")
+    )
+    valid = _applied_task_payload(None)
+    fake, responses = client([
+        SimpleNamespace(
+            id="bad", model="m", status="completed", output=[],
+            output_text=json.dumps(invalid),
+        ),
+        SimpleNamespace(
+            id="good", model="m", status="completed", output=[],
+            output_text=json.dumps(valid),
+        ),
+    ])
+
+    result = interpret(OpenAIResponsesCaptureInterpreter(client=fake, model="m"))
+
+    assert result.response_id == "good"
+    assert len(responses.calls) == 2
+
+
+def test_provider_wire_validation_error_retries_at_most_once() -> None:
+    invalid = _applied_task_payload(None)
+    invalid["tasks"][0]["deadline"] = wire_deadline(
+        "DATE", wire_date("TOMORROW"), wire_clock("4 PM")
+    )
+    fake, responses = client([
+        SimpleNamespace(
+            id="bad-1", model="m", status="completed", output=[],
+            output_text=json.dumps(invalid),
+        ),
+        SimpleNamespace(
+            id="bad-2", model="m", status="completed", output=[],
+            output_text=json.dumps(invalid),
+        ),
+    ])
+
+    with pytest.raises(InterpretationError) as error:
+        interpret(OpenAIResponsesCaptureInterpreter(client=fake, model="m"))
+
+    assert error.value.kind is CaptureFailureKind.INVALID_OUTPUT
+    assert len(responses.calls) == 2
+
+
 def test_adapter_refusal_and_malformed_output_are_classified() -> None:
     refusal = SimpleNamespace(id="x", model="m", status="completed", output=[SimpleNamespace(content=[SimpleNamespace(refusal="no")])], output_text="")
-    fake, _ = client(refusal)
+    fake, responses = client(refusal)
     with pytest.raises(InterpretationError) as error:
         interpret(OpenAIResponsesCaptureInterpreter(client=fake, model="m"))
     assert error.value.kind is CaptureFailureKind.REFUSAL
+    assert len(responses.calls) == 1
     malformed, _ = client(SimpleNamespace(id="x", model="m", status="completed", output=[], output_text="{"))
     with pytest.raises(InterpretationError) as error:
         interpret(OpenAIResponsesCaptureInterpreter(client=malformed, model="m"))

@@ -254,9 +254,12 @@ recommendation, sessions, or product-facing interfaces.
 ### Projects and tasks
 
 Projects are ACTIVE or COMPLETED planning containers and are never executable
-recommendations. Tasks are executable work items with OPEN, BLOCKED, COMPLETED,
-or CANCELLED status and distinct UNSPECIFIED, MUST, SHOULD, and COULD
-importance. UNSPECIFIED is the default and must not silently become SHOULD.
+recommendations. Projects may carry their own date-only or exact-time deadline
+metadata, distinct from Task deadlines; Project deadlines are not inherited by
+Tasks and do not make Projects recommendation-eligible. Tasks are executable
+work items with OPEN, BLOCKED, COMPLETED, or CANCELLED status and distinct
+UNSPECIFIED, MUST, SHOULD, and COULD importance. UNSPECIFIED is the default and
+must not silently become SHOULD.
 
 Task scheduling uses one of:
 
@@ -321,9 +324,12 @@ facts are preserved when supplied.
 AI interpretation is constrained to a versioned semantic JSON contract that is
 validated into frozen typed intents before application logic consumes it. It may
 extract explicit facts, including a bare clock hour, but it may not resolve a
-bare `at 4` to AM or PM, infer a missing year, invent importance or duration,
-silently choose a project, or express recurrence. A bare clock and an explicit
-date without a year remain UNRESOLVED rather than becoming failed captures.
+bare `at 4` to AM or PM, invent importance or duration, silently choose a
+project, or express recurrence. A bare clock remains UNRESOLVED rather than
+becoming a failed capture. A supported explicit month/day date without a year,
+such as `Oct 22` or `September 15`, is resolved deterministically to the first
+valid occurrence on or after the trusted local reference date; unsupported or
+ambiguous incomplete dates remain UNRESOLVED.
 
 The provider-facing capture schema may use a simpler wire representation than
 the canonical typed intents. Temporal provider wire uses fixed tagged date and

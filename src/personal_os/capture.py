@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Protocol
@@ -43,6 +44,53 @@ class _Unresolved:
     reason: str
 
 
+_MONTH_BY_NAME = {
+    "jan": 1,
+    "january": 1,
+    "feb": 2,
+    "february": 2,
+    "mar": 3,
+    "march": 3,
+    "apr": 4,
+    "april": 4,
+    "may": 5,
+    "jun": 6,
+    "june": 6,
+    "jul": 7,
+    "july": 7,
+    "aug": 8,
+    "august": 8,
+    "sep": 9,
+    "sept": 9,
+    "september": 9,
+    "oct": 10,
+    "october": 10,
+    "nov": 11,
+    "november": 11,
+    "dec": 12,
+    "december": 12,
+}
+_MONTH_DAY_RE = re.compile(r"\A([A-Za-z]+)\.?\s+([0-9]{1,2})\Z")
+
+
+def _next_month_day(value: str, today: date) -> date | None:
+    match = _MONTH_DAY_RE.fullmatch(value.strip())
+    if match is None:
+        return None
+    month = _MONTH_BY_NAME.get(match.group(1).casefold())
+    if month is None:
+        return None
+    day = int(match.group(2))
+    for year in range(today.year, today.year + 401):
+        try:
+            candidate = date(year, month, day)
+        except ValueError:
+            continue
+        if candidate >= today:
+            return candidate
+    return None
+
+
 def _date_from_ir(value: DateExpression, local_reference: datetime) -> date | _Unresolved:
     today = local_reference.date()
     if value.kind is DateExpressionKind.TODAY:
@@ -63,6 +111,10 @@ def _date_from_ir(value: DateExpression, local_reference: datetime) -> date | _U
         if parsed.isoformat() != value.value:
             raise InterpretationError(CaptureFailureKind.INVALID_OUTPUT, "explicit date is not canonical")
         return parsed
+    if value.kind is DateExpressionKind.MISSING_YEAR:
+        resolved = _next_month_day(str(value.value), today)
+        if resolved is not None:
+            return resolved
     return _Unresolved("explicit date is missing a year")
 
 
@@ -214,10 +266,28 @@ class CaptureService:
                     "new project name collides with an existing project",
                     superseded_inbox_item_id=superseded_inbox_item_id,
                 )
-            if not any(item.project.kind is ProjectReferenceKind.NEW for item in interpretation.tasks):
-                raise InterpretationError(CaptureFailureKind.INVALID_OUTPUT, "new project is not referenced by a captured task")
         candidate_ids = {item["id"] for item in candidates}
         local_reference = capture.reference_time.astimezone(zone)
+        project_deadline_date = project_deadline_at = None
+        if new_project is not None:
+            if new_project.deadline.kind is DeadlineKind.DATE:
+                resolved = _date_from_ir(new_project.deadline.date, local_reference)
+                if isinstance(resolved, _Unresolved):
+                    return self._unresolved(
+                        capture, response, payload, resolved.reason,
+                        superseded_inbox_item_id=superseded_inbox_item_id,
+                    )
+                project_deadline_date = resolved
+            elif new_project.deadline.kind is DeadlineKind.INSTANT:
+                resolved = _instant_from_ir(
+                    new_project.deadline.instant, local_reference, zone
+                )
+                if isinstance(resolved, _Unresolved):
+                    return self._unresolved(
+                        capture, response, payload, resolved.reason,
+                        superseded_inbox_item_id=superseded_inbox_item_id,
+                    )
+                project_deadline_at = resolved
         tasks = []
         for intent in interpretation.tasks:
             if intent.project.kind is ProjectReferenceKind.EXISTING and intent.project.project_id not in candidate_ids:
@@ -258,7 +328,14 @@ class CaptureService:
             commitments.append({"title": intent.title, "start_at": start, "end_at": None, "hardness": intent.hardness})
         finalized, project, made_tasks, made_commitments = self.store.apply_resolved_capture(
             capture.id, interpretation=payload, model_provider=response.provider, model_name=response.model,
-            model_response_id=response.response_id, project=None if new_project is None else {"name": new_project.name, "description": new_project.description}, tasks=tasks, commitments=commitments,
+            model_response_id=response.response_id,
+            project=None if new_project is None else {
+                "name": new_project.name,
+                "description": new_project.description,
+                "deadline_date": project_deadline_date,
+                "deadline_at": project_deadline_at,
+            },
+            tasks=tasks, commitments=commitments,
             superseded_inbox_item_id=superseded_inbox_item_id)
         return CaptureResult(finalized, None if project is None else project.id, tuple(item.id for item in made_tasks), tuple(item.id for item in made_commitments))
 

@@ -37,6 +37,7 @@ from personal_os.models import (
     TaskStatus,
     canonicalize_parameters,
     normalize_instant,
+    optional_date,
     optional_instant,
     optional_text,
     parse_date,
@@ -145,6 +146,16 @@ class SQLiteStateStore:
                 created_at=parse_instant(row["created_at"], "created_at"),
                 updated_at=parse_instant(row["updated_at"], "updated_at"),
                 source_capture_id=row["source_capture_id"],
+                deadline_date=(
+                    None
+                    if row["deadline_date"] is None
+                    else parse_date(row["deadline_date"], "deadline_date")
+                ),
+                deadline_at=(
+                    None
+                    if row["deadline_at"] is None
+                    else parse_instant(row["deadline_at"], "deadline_at")
+                ),
             ),
             "project",
         )
@@ -247,12 +258,27 @@ class SQLiteStateStore:
     def _insert_project(
         self, connection: sqlite3.Connection, *, name: str,
         description: str | None, status: ProjectStatus,
+        deadline_date: date | None = None,
+        deadline_at: datetime | None = None,
         source_capture_id: int | None = None,
     ) -> Project:
+        normalized_deadline_date = optional_date(deadline_date, "deadline_date")
+        normalized_deadline_at = optional_instant(deadline_at, "deadline_at")
+        if normalized_deadline_date is not None and normalized_deadline_at is not None:
+            raise DomainValidationError(
+                "deadline_date and deadline_at are mutually exclusive"
+            )
         now = serialize_instant(self._now())
         cursor = connection.execute(
-            "INSERT INTO projects (name, description, status, created_at, updated_at, source_capture_id) VALUES (?, ?, ?, ?, ?, ?)",
-            (name, description, status.value, now, now, source_capture_id),
+            """INSERT INTO projects (
+                name, description, status, created_at, updated_at,
+                source_capture_id, deadline_date, deadline_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                name, description, status.value, now, now, source_capture_id,
+                None if normalized_deadline_date is None else serialize_date(normalized_deadline_date),
+                None if normalized_deadline_at is None else serialize_instant(normalized_deadline_at),
+            ),
         )
         return self._project_from_row(self._row_or_missing(connection, "projects", cursor.lastrowid, "project"))
 
@@ -300,12 +326,20 @@ class SQLiteStateStore:
     def create_project(
         self, name: str, description: str | None = None,
         status: ProjectStatus = ProjectStatus.ACTIVE,
+        deadline_date: date | None = None, deadline_at: datetime | None = None,
     ) -> Project:
         name = require_text(name, "name")
         description = optional_text(description, "description")
         status = require_enum(status, ProjectStatus, "status")  # type: ignore[assignment]
         with self._transaction() as connection:
-            return self._insert_project(connection, name=name, description=description, status=status)
+            return self._insert_project(
+                connection,
+                name=name,
+                description=description,
+                status=status,
+                deadline_date=deadline_date,
+                deadline_at=deadline_at,
+            )
 
     def get_project(self, project_id: int) -> Project:
         with self._connection() as connection:
@@ -318,15 +352,30 @@ class SQLiteStateStore:
     def update_project(
         self, project_id: int, *, name: object = _OMITTED,
         description: object = _OMITTED, status: object = _OMITTED,
+        deadline_date: object = _OMITTED, deadline_at: object = _OMITTED,
     ) -> Project:
         with self._transaction() as connection:
             current = self._project_from_row(self._row_or_missing(connection, "projects", project_id, "project"))
             new_name = current.name if name is _OMITTED else require_text(name, "name")
             new_description = current.description if description is _OMITTED else optional_text(description, "description")
             new_status = current.status if status is _OMITTED else require_enum(status, ProjectStatus, "status")
+            new_deadline_date = current.deadline_date if deadline_date is _OMITTED else optional_date(deadline_date, "deadline_date")
+            new_deadline_at = current.deadline_at if deadline_at is _OMITTED else optional_instant(deadline_at, "deadline_at")
+            if new_deadline_date is not None and new_deadline_at is not None:
+                raise DomainValidationError(
+                    "deadline_date and deadline_at are mutually exclusive"
+                )
             connection.execute(
-                "UPDATE projects SET name = ?, description = ?, status = ?, updated_at = ? WHERE id = ?",
-                (new_name, new_description, new_status.value, serialize_instant(self._now()), project_id),
+                """UPDATE projects
+                   SET name = ?, description = ?, status = ?,
+                       deadline_date = ?, deadline_at = ?, updated_at = ?
+                   WHERE id = ?""",
+                (
+                    new_name, new_description, new_status.value,
+                    None if new_deadline_date is None else serialize_date(new_deadline_date),
+                    None if new_deadline_at is None else serialize_instant(new_deadline_at),
+                    serialize_instant(self._now()), project_id,
+                ),
             )
             return self._project_from_row(self._row_or_missing(connection, "projects", project_id, "project"))
 
@@ -1004,7 +1053,10 @@ class SQLiteStateStore:
             if project is not None:
                 created_project = self._insert_project(
                     connection, name=project["name"], description=project.get("description"),
-                    status=ProjectStatus.ACTIVE, source_capture_id=capture_id,
+                    status=ProjectStatus.ACTIVE,
+                    deadline_date=project.get("deadline_date"),
+                    deadline_at=project.get("deadline_at"),
+                    source_capture_id=capture_id,
                 )
             created_tasks = []
             for item in tasks:

@@ -78,22 +78,23 @@ class ProjectReference:
 
 
 @dataclass(frozen=True, slots=True)
+class DeadlineIntent:
+    kind: DeadlineKind
+    date: DateExpression | None = None
+    instant: DateTimeExpression | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class NewProjectIntent:
     name: str
     description: str | None = None
+    deadline: DeadlineIntent = DeadlineIntent(DeadlineKind.NONE)
 
 
 @dataclass(frozen=True, slots=True)
 class TaskScheduleIntent:
     kind: TaskScheduleKind
     dates: tuple[DateExpression, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class DeadlineIntent:
-    kind: DeadlineKind
-    date: DateExpression | None = None
-    instant: DateTimeExpression | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,7 +127,9 @@ class CaptureInterpretation:
         return {
             "kind": self.outcome.value,
             "new_project": None if self.new_project is None else {
-                "name": self.new_project.name, "description": self.new_project.description,
+                "name": self.new_project.name,
+                "description": self.new_project.description,
+                "deadline": _deadline_to_dict(self.new_project.deadline),
             },
             "tasks": [_task_to_dict(item) for item in self.tasks],
             "commitments": [{"title": item.title, "start": _instant_to_dict(item.start), "hardness": item.hardness.value} for item in self.commitments],
@@ -293,10 +296,18 @@ def parse_interpretation(value: object) -> CaptureInterpretation:
         raise InterpretationValidationError("interpretation outputs must be arrays")
     project = None
     if data["new_project"] is not None:
-        raw = _object(data["new_project"], {"name", "description"}, "new project")
+        raw = _object(
+            data["new_project"],
+            {"name", "description", "deadline"},
+            "new project",
+        )
         if raw["description"] is not None and not isinstance(raw["description"], str):
             raise InterpretationValidationError("project description must be text or null")
-        project = NewProjectIntent(_text(raw["name"], "project name"), raw["description"])
+        project = NewProjectIntent(
+            _text(raw["name"], "project name"),
+            raw["description"],
+            _deadline(raw["deadline"]),
+        )
     tasks = tuple(_task(item) for item in data["tasks"])
     commitments = tuple(_commitment(item) for item in data["commitments"])
     reason = data["unresolved_reason"]
@@ -326,6 +337,14 @@ def _instant_to_dict(value: DateTimeExpression) -> dict[str, Any]:
     return {"date": _date_to_dict(value.date), "clock": _clock_to_dict(value.clock)}
 
 
+def _deadline_to_dict(value: DeadlineIntent) -> dict[str, Any] | None:
+    if value.kind is DeadlineKind.DATE:
+        return {"kind": "DATE", "value": _date_to_dict(value.date)}
+    if value.kind is DeadlineKind.INSTANT:
+        return {"kind": "INSTANT", "value": _instant_to_dict(value.instant)}
+    return None
+
+
 def _task_to_dict(value: TaskIntent) -> dict[str, Any]:
     project_id: int | str | None = None
     if value.project.kind is ProjectReferenceKind.EXISTING:
@@ -333,11 +352,6 @@ def _task_to_dict(value: TaskIntent) -> dict[str, Any]:
     elif value.project.kind is ProjectReferenceKind.NEW:
         project_id = "NEW"
     schedule = None if value.schedule.kind is TaskScheduleKind.FLEXIBLE else {"kind": value.schedule.kind.value, "dates": [_date_to_dict(item) for item in value.schedule.dates]}
-    deadline = None
-    if value.deadline.kind is DeadlineKind.DATE:
-        deadline = {"kind": "DATE", "value": _date_to_dict(value.deadline.date)}
-    elif value.deadline.kind is DeadlineKind.INSTANT:
-        deadline = {"kind": "INSTANT", "value": _instant_to_dict(value.deadline.instant)}
     return {"title": value.title, "project_id": project_id, "importance": value.importance.value,
             "estimated_minutes": value.estimated_minutes, "execution_mode": value.execution_mode.value,
-            "schedule": schedule, "deadline": deadline}
+            "schedule": schedule, "deadline": _deadline_to_dict(value.deadline)}

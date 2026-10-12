@@ -354,7 +354,7 @@ def test_snapshot_is_coherent_and_schema_remains_current_version(store) -> None:
     projects, tasks, commitments = store.read_recommendation_snapshot()
     assert (projects, tasks, commitments) == ([project], [task], [commitment])
     with sqlite3.connect(store.database_path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 8
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
     assert tables == set(TABLE_DDL)
 

@@ -45,6 +45,11 @@ Task scheduling and deadlines are independent. Scheduling uses FLEXIBLE, DAY,
 or half-open WINDOW semantics. Deadlines preserve either a date-only fact or an
 exact UTC instant without converting one into the other.
 
+Project deadlines are canonical project metadata with the same date-only or
+exact UTC instant representation, but they are distinct from Task deadlines.
+They do not make Projects executable, are not inherited by Tasks, and do not
+make Projects recommendation-eligible or decomposed automatically.
+
 ## 2026-08-29 — Schema version 2 and persistence integrity
 
 Schema version 2 contains exactly five domain tables and is validated against
@@ -71,8 +76,12 @@ Capture interpretation has one versioned semantic JSON contract and one OpenAI
 3.x Responses API adapter using strict structured output and `store=False`.
 Model configuration is explicit through `PERSONAL_OS_CAPTURE_MODEL`; SDK client
 construction remains lazy. Deterministic application code owns relative-date,
-weekend, timezone, and daylight-saving resolution. Bare clock hours and dates
-without years are preserved as semantic uncertainty and remain unresolved.
+supported month/day missing-year date, weekend, timezone, and daylight-saving
+resolution. Bare clock hours are preserved as semantic uncertainty and remain
+unresolved. Supported explicit month/day dates without years, such as `Oct 22`
+or `September 15`, resolve to the first valid occurrence on or after the
+trusted local reference date; unsupported or ambiguous incomplete dates remain
+unresolved.
 The interpreter receives neither the trusted reference instant nor timezone;
 decoded JSON is validated into frozen typed intents before deterministic
 resolution. Active project context is deterministic and bounded, and a single
