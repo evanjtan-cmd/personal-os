@@ -292,12 +292,16 @@ def test_overview_serializes_state_visibility_with_trusted_clock_no_ai() -> None
                 name="College",
                 description="Applications",
                 status=ProjectStatus.ACTIVE,
+                deadline_date=date(2026, 11, 1),
+                deadline_at=None,
             ),
             SimpleNamespace(
                 id=2,
                 name="Archived",
                 description=None,
                 status=ProjectStatus.COMPLETED,
+                deadline_date=None,
+                deadline_at=None,
             ),
         ),
         tasks=(
@@ -447,7 +451,12 @@ def test_overview_serializes_state_visibility_with_trusted_clock_no_ai() -> None
     result = response["result"]
     assert response["ok"] is True
     assert result["projects"] == [
-        {"id": 1, "name": "College", "description": "Applications"}
+        {
+            "id": 1,
+            "name": "College",
+            "description": "Applications",
+            "deadline": {"kind": "DATE", "date": "2026-11-01"},
+        }
     ]
     assert [task["id"] for task in result["tasks"]] == [10, 11]
     assert {task["id"]: task["status"] for task in result["task_history"]} == {
@@ -700,7 +709,9 @@ def test_capture_applied_delegates_with_trusted_time_and_serializes_names() -> N
         commitment_ids=(9,),
         inbox_item_id=None,
     )
-    runtime.store.get_project.return_value = SimpleNamespace(name="College")
+    runtime.store.get_project.return_value = SimpleNamespace(
+        id=7, name="College", deadline_date=None, deadline_at=None
+    )
     runtime.store.get_task.side_effect = [
         SimpleNamespace(
             id=34, title="Finish essay",
@@ -740,7 +751,7 @@ def test_capture_applied_delegates_with_trusted_time_and_serializes_names() -> N
         "result": {
             "capture_id": 12,
             "status": "APPLIED",
-            "project": {"id": 7, "name": "College"},
+            "project": {"id": 7, "name": "College", "deadline": None},
             "tasks": [
                 {
                     "id": 34,

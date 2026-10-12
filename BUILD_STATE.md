@@ -1,6 +1,6 @@
 # Build State
 
-Last updated: 2026-10-06 for POS-025 Complete State Visibility & Commitment Protection.
+Last updated: 2026-10-12 for POS-026 Capture Reliability & Project Intake.
 
 ## Implemented
 
@@ -8,12 +8,12 @@ Last updated: 2026-10-06 for POS-025 Complete State Visibility & Commitment Prot
   dogfood CLI over the completed application services.
 - External runtime data at `~/.personal-os/personal_os.db`, overrideable through
   `PERSONAL_OS_DATA_DIR`.
-- Standard-library SQLite schema version 8 with explicit ordered migrations,
+- Standard-library SQLite schema version 9 with explicit ordered migrations,
   strict version-specific schema validation, transactional rollback, and
   verified foreign-key enforcement.
-- Fresh 0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 initialization, existing
-  version-1/version-2/version-3/version-4/version-5/version-6/version-7
-  migration, and idempotent current-version initialization.
+- Fresh 0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 initialization, existing
+  version-1/version-2/version-3/version-4/version-5/version-6/version-7/
+  version-8 migration, and idempotent current-version initialization.
 - Typed, validated application records and SQLite create/get/list/update
   operations for:
   - projects;
@@ -185,6 +185,24 @@ Last updated: 2026-10-06 for POS-025 Complete State Visibility & Commitment Prot
   now includes UNKNOWN future/active commitment protection and HARD/null-end
   protection problems; Upcoming commitments expose Cancel but not Done; History
   shows completed/removed Tasks with Reopen and past/cancelled commitments.
+- POS-026 adds schema version 9 Project deadlines. Projects may now store either
+  a date-only deadline or an exact UTC deadline instant; existing Projects
+  migrate with no deadline. Project deadlines are distinct from Task deadlines,
+  are not inherited by Tasks, and do not make Projects executable or
+  recommendation-eligible.
+- POS-026 permits standalone Project captures. An APPLIED interpretation with a
+  new Project and zero Tasks or commitments creates only the Project, preserving
+  duplicate-name handling, source traceability, and atomic capture application.
+- POS-026 adds one internal capture-provider retry for retryable structured
+  output contract failures. Raw capture persistence still occurs once before
+  provider inference; config/auth, generic provider failures, refusals,
+  deterministic application errors, and persistence failures are not retried.
+- POS-026 extends overview and the browser State page with Project deadlines
+  and makes the Work capture result label standalone Project creation clearly.
+- POS-026 resolves supported explicit month/day missing-year dates, such as
+  `Oct 22` or `September 15`, to the first valid occurrence on or after the
+  trusted local reference date. Unsupported or ambiguous incomplete dates remain
+  UNRESOLVED.
 - POS-022 keeps detailed capture failure information durable and available to
   internal/API consumers, while the normal browser Work capture surface displays
   a concise retry message for FAILED captures instead of raw provider exception
@@ -216,16 +234,14 @@ Last updated: 2026-10-06 for POS-025 Complete State Visibility & Commitment Prot
 
 ## Validation
 
-Run on 2026-10-06 with Python 3.13.0 and pytest 8.4.2:
+Run on 2026-10-12 with Python 3.13.0 and pytest 8.4.2:
 
-- `python -m pytest` — passed: 612 passed in 65.05s.
-- `python -m compileall -q src tests` — passed.
+- `.venv/bin/python -m pytest` — passed: 635 passed in 67.11s.
+- `.venv/bin/python -m compileall -q src tests` — passed.
 - `node --check src/personal_os/static/work.js` — passed.
 - `node --check src/personal_os/static/state.js` — passed.
 - `git diff --check` — passed.
-- No live AI provider was called. An earlier managed-sandbox attempt could not
-  bind loopback for HTTP tests, but the normal-laptop validation above is the
-  authoritative result.
+- No live AI provider was called.
 
 After POS-008, the configured real provider passed the full dogfood loop for a
 schedule-less FLEXIBLE `Study for ACT` task: capture, structured state,

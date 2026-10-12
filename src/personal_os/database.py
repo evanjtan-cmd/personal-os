@@ -8,7 +8,7 @@ from pathlib import Path
 
 from personal_os.errors import PersonalOSError
 
-CURRENT_SCHEMA_VERSION = 8
+CURRENT_SCHEMA_VERSION = 9
 
 
 class DatabaseInitializationError(PersonalOSError):
@@ -250,6 +250,28 @@ TABLE_DDL = {
     name: _ddl_after_add_commitment_status(name, ddl)
     for name, ddl in V7_TABLE_DDL.items()
 }
+V8_TABLE_DDL: dict[str, str] = TABLE_DDL
+
+
+def _ddl_after_add_project_deadlines(name: str, ddl: str) -> str:
+    if name != "projects":
+        return ddl
+    marker = "            , source_capture_id INTEGER REFERENCES captures(id) ON DELETE RESTRICT\n        )"
+    return ddl.replace(
+        marker,
+        "            , source_capture_id INTEGER REFERENCES captures(id) ON DELETE RESTRICT\n"
+        f"            , deadline_date TEXT {_date_check('deadline_date')}\n"
+        f"            , deadline_at TEXT {_utc_check('deadline_at')}\n"
+        "            , CHECK(NOT (deadline_date IS NOT NULL AND deadline_at IS NOT NULL))\n"
+        "        )",
+        1,
+    )
+
+
+TABLE_DDL = {
+    name: _ddl_after_add_project_deadlines(name, ddl)
+    for name, ddl in V8_TABLE_DDL.items()
+}
 
 Migration = Callable[[sqlite3.Connection], None]
 
@@ -336,6 +358,24 @@ def _migration_8(connection: sqlite3.Connection) -> None:
     connection.execute("DROP TABLE fixed_commitments_v7")
 
 
+def _migration_9(connection: sqlite3.Connection) -> None:
+    """Add canonical project deadlines without changing existing rows."""
+
+    columns = (
+        "id, name, description, status, created_at, updated_at, "
+        "source_capture_id"
+    )
+    connection.execute("ALTER TABLE projects RENAME TO projects_v8")
+    connection.execute(TABLE_DDL["projects"])
+    connection.execute(
+        f"""INSERT INTO projects (
+                {columns}, deadline_date, deadline_at
+            )
+            SELECT {columns}, NULL, NULL FROM projects_v8"""
+    )
+    connection.execute("DROP TABLE projects_v8")
+
+
 MIGRATIONS: dict[int, Migration] = {
     1: _migration_1,
     2: _migration_2,
@@ -345,6 +385,7 @@ MIGRATIONS: dict[int, Migration] = {
     6: _migration_6,
     7: _migration_7,
     8: _migration_8,
+    9: _migration_9,
 }
 
 
@@ -406,7 +447,7 @@ def validate_schema(connection: sqlite3.Connection, version: int) -> None:
                 f"schema version {version} contains unexpected objects: {names}"
             )
         return
-    if version not in (2, 3, 4, 5, 6, 7, 8):
+    if version not in (2, 3, 4, 5, 6, 7, 8, 9):
         raise DatabaseInitializationError(f"unsupported schema version {version}")
     expected_tables = {
         2: V2_TABLE_DDL,
@@ -415,7 +456,8 @@ def validate_schema(connection: sqlite3.Connection, version: int) -> None:
         5: V5_TABLE_DDL,
         6: V6_TABLE_DDL,
         7: V7_TABLE_DDL,
-        8: TABLE_DDL,
+        8: V8_TABLE_DDL,
+        9: TABLE_DDL,
     }[version]
     if set(objects) != set(expected_tables):
         expected = ", ".join(sorted(expected_tables))
@@ -436,7 +478,7 @@ def validate_schema(connection: sqlite3.Connection, version: int) -> None:
         "fixed_commitments": [] if version == 2 else [("captures", "source_capture_id", "id", "NO ACTION", "RESTRICT")],
         "inbox_items": [] if version == 2 else [("captures", "source_capture_id", "id", "NO ACTION", "RESTRICT")],
     }
-    if version in (4, 5, 6, 7, 8):
+    if version in (4, 5, 6, 7, 8, 9):
         expected_fks["sessions"] = [
             ("tasks", "task_id", "id", "NO ACTION", "RESTRICT")
         ]
@@ -447,7 +489,7 @@ def validate_schema(connection: sqlite3.Connection, version: int) -> None:
         )
         if actual != sorted(expected):
             raise DatabaseInitializationError(f"{table} has incompatible foreign-key metadata")
-    if version in (4, 5, 6, 7, 8):
+    if version in (4, 5, 6, 7, 8, 9):
         unique_active_slot = False
         for index in connection.execute("PRAGMA index_list(sessions)"):
             if int(index["unique"]) != 1:
@@ -486,8 +528,11 @@ def initialize_database(database_path: Path) -> int:
         validate_schema(connection, version)
         if version == CURRENT_SCHEMA_VERSION:
             return version
-        rebuilds_referenced_tasks = version < 7 <= CURRENT_SCHEMA_VERSION
-        if rebuilds_referenced_tasks:
+        rebuilds_referenced_tables = (
+            version < 7 <= CURRENT_SCHEMA_VERSION
+            or version < 9 <= CURRENT_SCHEMA_VERSION
+        )
+        if rebuilds_referenced_tables:
             violations = connection.execute("PRAGMA foreign_key_check").fetchall()
             if violations:
                 raise DatabaseInitializationError(
@@ -506,7 +551,7 @@ def initialize_database(database_path: Path) -> int:
                 migration(connection)
                 connection.execute(f"PRAGMA user_version = {target_version}")
                 validate_schema(connection, target_version)
-            if rebuilds_referenced_tasks:
+            if rebuilds_referenced_tables:
                 violations = connection.execute("PRAGMA foreign_key_check").fetchall()
                 if violations:
                     raise DatabaseInitializationError("migration left foreign-key violations")
@@ -515,7 +560,7 @@ def initialize_database(database_path: Path) -> int:
             connection.rollback()
             raise
         finally:
-            if rebuilds_referenced_tasks:
+            if rebuilds_referenced_tables:
                 connection.execute("PRAGMA legacy_alter_table = OFF")
                 connection.execute("PRAGMA foreign_keys = ON")
                 if connection.execute("PRAGMA foreign_keys").fetchone()[0] != 1:

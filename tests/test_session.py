@@ -466,7 +466,7 @@ class FakeInterpreter:
     def interpret(self, raw_text, *, projects):
         payload = {
             "kind": "APPLY",
-            "new_project": {"name": "MVP", "description": None},
+            "new_project": {"name": "MVP", "description": None, "deadline": None},
             "tasks": [{"title": "Finish loop", "project_id": "NEW", "importance": "MUST", "estimated_minutes": 10, "execution_mode": "SPLITTABLE", "schedule": None, "deadline": None}],
             "commitments": [], "unresolved_reason": None,
         }

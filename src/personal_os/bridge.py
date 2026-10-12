@@ -223,13 +223,19 @@ def _serialize_capture_result(
         response["resolved_inbox_item_id"] = resolved_inbox_item_id
     if capture.status is CaptureStatus.APPLIED:
         tasks = [runtime.store.get_task(task_id) for task_id in result.task_ids]
+        project = (
+            None
+            if result.project_id is None
+            else runtime.store.get_project(result.project_id)
+        )
         response.update(
             project=(
                 None
-                if result.project_id is None
+                if project is None
                 else {
-                    "id": result.project_id,
-                    "name": runtime.store.get_project(result.project_id).name,
+                    "id": project.id,
+                    "name": project.name,
+                    "deadline": _deadline_for_item(project),
                 }
             ),
             tasks=[
@@ -472,16 +478,16 @@ def _active(
     }
 
 
-def _deadline_for_task(task) -> dict[str, object] | None:
-    if task.deadline_date is not None:
+def _deadline_for_item(item) -> dict[str, object] | None:
+    if item.deadline_date is not None:
         return {
             "kind": "DATE",
-            "date": task.deadline_date.isoformat(),
+            "date": item.deadline_date.isoformat(),
         }
-    if task.deadline_at is not None:
+    if item.deadline_at is not None:
         return {
             "kind": "INSTANT",
-            "at": serialize_instant(task.deadline_at),
+            "at": serialize_instant(item.deadline_at),
         }
     return None
 
@@ -510,7 +516,7 @@ def _task_overview(task, project_names: dict[int, str]) -> dict[str, object]:
                 else serialize_instant(task.window_end)
             ),
         },
-        "deadline": _deadline_for_task(task),
+        "deadline": _deadline_for_item(task),
         "execution_mode": task.execution_mode.value,
         "estimated_minutes": task.estimated_minutes,
         "updated_at": serialize_instant(task.updated_at),
@@ -613,6 +619,7 @@ def _overview(runtime: PersonalOSRuntime, *, now: datetime) -> dict[str, object]
                 "id": project.id,
                 "name": project.name,
                 "description": project.description,
+                "deadline": _deadline_for_item(project),
             }
             for project in snapshot.projects
             if project.status is ProjectStatus.ACTIVE

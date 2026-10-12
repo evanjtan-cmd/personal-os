@@ -52,6 +52,8 @@ def store(tmp_path: Path) -> SQLiteStateStore:
 
 
 def apply_payload(*, tasks=None, commitments=None, new_project=None):
+    if new_project is not None and "deadline" not in new_project:
+        new_project = {**new_project, "deadline": None}
     return {"kind": "APPLY", "new_project": new_project, "tasks": tasks or [],
             "commitments": commitments or [], "unresolved_reason": None}
 
@@ -193,6 +195,186 @@ def test_multi_task_and_new_project_are_atomic_and_traceable(store: SQLiteStateS
     assert store.get_project(result.project_id).source_capture_id == result.capture.id
 
 
+def test_standalone_new_project_applies_without_fake_task(store: SQLiteStateStore) -> None:
+    payload = apply_payload(
+        new_project={"name": "College", "description": "Applications"}
+    )
+
+    result = CaptureService(store, FakeInterpreter(payload)).capture_text(
+        "Start college applications",
+        reference_time=REFERENCE,
+        timezone_name="America/New_York",
+    )
+
+    assert result.capture.status is CaptureStatus.APPLIED
+    assert result.project_id is not None
+    assert result.task_ids == ()
+    project = store.get_project(result.project_id)
+    assert project.name == "College"
+    assert project.source_capture_id == result.capture.id
+    assert store.list_tasks() == []
+
+
+def test_new_project_deadline_resolves_to_canonical_project_deadline(
+    store: SQLiteStateStore,
+) -> None:
+    payload = apply_payload(
+        new_project={
+            "name": "College",
+            "description": None,
+            "deadline": {"kind": "DATE", "value": date_ir("WEEKDAY", 5)},
+        }
+    )
+
+    result = CaptureService(store, FakeInterpreter(payload)).capture_text(
+        "College applications due Friday",
+        reference_time=REFERENCE,
+        timezone_name="America/New_York",
+    )
+
+    assert result.capture.status is CaptureStatus.APPLIED
+    project = store.get_project(result.project_id)
+    assert project.deadline_date.isoformat() == "2026-08-28"
+    assert project.deadline_at is None
+    assert store.list_tasks() == []
+
+
+def test_ambiguous_new_project_deadline_is_unresolved_without_project(
+    store: SQLiteStateStore,
+) -> None:
+    payload = apply_payload(
+        new_project={
+            "name": "College",
+            "description": None,
+            "deadline": {
+                "kind": "DATE",
+                "value": date_ir("MISSING_YEAR", "late September"),
+            },
+        }
+    )
+
+    result = CaptureService(store, FakeInterpreter(payload)).capture_text(
+        "College applications due late September",
+        reference_time=REFERENCE,
+        timezone_name="America/New_York",
+    )
+
+    assert result.capture.status is CaptureStatus.UNRESOLVED
+    assert result.inbox_item_id is not None
+    assert store.list_projects() == []
+
+
+@pytest.mark.parametrize(
+    ("reference", "text", "expected"),
+    [
+        (datetime(2026, 10, 9, 12, tzinfo=UTC), "Oct 22", "2026-10-22"),
+        (datetime(2026, 10, 22, 12, tzinfo=UTC), "Oct 22", "2026-10-22"),
+        (datetime(2026, 10, 23, 12, tzinfo=UTC), "Oct 22", "2027-10-22"),
+        (datetime(2026, 12, 30, 12, tzinfo=UTC), "Jan 5", "2027-01-05"),
+        (datetime(2027, 2, 28, 12, tzinfo=UTC), "Feb 29", "2028-02-29"),
+        (datetime(2028, 2, 29, 12, tzinfo=UTC), "February 29", "2028-02-29"),
+        (datetime(2028, 3, 1, 12, tzinfo=UTC), "Feb 29", "2032-02-29"),
+    ],
+)
+def test_missing_year_month_day_deadline_uses_next_occurrence(
+    store: SQLiteStateStore, reference: datetime, text: str, expected: str,
+) -> None:
+    payload = apply_payload(
+        tasks=[
+            task(
+                "Submit",
+                deadline={"kind": "DATE", "value": date_ir("MISSING_YEAR", text)},
+            )
+        ]
+    )
+
+    result = CaptureService(store, FakeInterpreter(payload)).capture_text(
+        f"Submit by {text}", reference_time=reference, timezone_name="UTC"
+    )
+
+    assert result.capture.status is CaptureStatus.APPLIED
+    captured = store.get_task(result.task_ids[0])
+    assert captured.deadline_date.isoformat() == expected
+    assert captured.deadline_at is None
+
+
+def test_unsupported_missing_year_text_remains_unresolved(
+    store: SQLiteStateStore,
+) -> None:
+    payload = apply_payload(
+        tasks=[
+            task(
+                "Submit",
+                deadline={
+                    "kind": "DATE",
+                    "value": date_ir("MISSING_YEAR", "late September"),
+                },
+            )
+        ]
+    )
+
+    result = CaptureService(store, FakeInterpreter(payload)).capture_text(
+        "Submit by late September", reference_time=REFERENCE, timezone_name="UTC"
+    )
+
+    assert result.capture.status is CaptureStatus.UNRESOLVED
+    assert result.inbox_item_id is not None
+    assert store.list_tasks() == []
+
+
+def test_standalone_project_missing_year_deadline_uses_next_occurrence(
+    store: SQLiteStateStore,
+) -> None:
+    payload = apply_payload(
+        new_project={
+            "name": "Chinese culture presentation",
+            "description": None,
+            "deadline": {"kind": "DATE", "value": date_ir("MISSING_YEAR", "Oct 22")},
+        }
+    )
+
+    result = CaptureService(store, FakeInterpreter(payload)).capture_text(
+        "Chinese culture presentation due Oct 22",
+        reference_time=datetime(2026, 10, 9, 12, tzinfo=UTC),
+        timezone_name="UTC",
+    )
+
+    assert result.capture.status is CaptureStatus.APPLIED
+    assert result.task_ids == ()
+    project = store.get_project(result.project_id)
+    assert project.name == "Chinese culture presentation"
+    assert project.deadline_date.isoformat() == "2026-10-22"
+    assert project.deadline_at is None
+    assert store.list_tasks() == []
+
+
+def test_project_deadline_is_not_inherited_by_new_child_task(
+    store: SQLiteStateStore,
+) -> None:
+    payload = apply_payload(
+        new_project={
+            "name": "Chinese culture presentation",
+            "description": None,
+            "deadline": {"kind": "DATE", "value": date_ir("MISSING_YEAR", "Oct 22")},
+        },
+        tasks=[task("Draft outline", project_id="NEW")],
+    )
+
+    result = CaptureService(store, FakeInterpreter(payload)).capture_text(
+        "Chinese culture presentation due Oct 22, draft outline",
+        reference_time=datetime(2026, 10, 9, 12, tzinfo=UTC),
+        timezone_name="UTC",
+    )
+
+    assert result.capture.status is CaptureStatus.APPLIED
+    project = store.get_project(result.project_id)
+    child = store.get_task(result.task_ids[0])
+    assert project.deadline_date.isoformat() == "2026-10-22"
+    assert child.project_id == project.id
+    assert child.deadline_date is None
+    assert child.deadline_at is None
+
+
 def test_bare_hour_becomes_unresolved_inbox_item(store: SQLiteStateStore) -> None:
     payload = apply_payload(commitments=[{"title": "Call Mike", "start": instant(date_ir("TOMORROW"), {"kind": "BARE_HOUR", "hour": 4, "minute": 0}), "hardness": "UNKNOWN"}])
     result = CaptureService(store, FakeInterpreter(payload)).capture_text("Call Mike tomorrow at 4", reference_time=REFERENCE, timezone_name="America/New_York")
@@ -231,6 +413,49 @@ def test_provider_wire_explicit_pm_commitment_resolves_to_utc(store: SQLiteState
     commitment = store.get_fixed_commitment(result.commitment_ids[0])
     assert commitment.start_at == datetime(2026, 8, 29, 20, tzinfo=UTC)
     assert commitment.end_at is None
+
+
+def test_provider_wire_retry_does_not_create_second_capture(
+    store: SQLiteStateStore,
+) -> None:
+    invalid = apply_payload(tasks=[task(
+        "Finish essay",
+        deadline={
+            "kind": "DATE",
+            "date": wire_date("TOMORROW"),
+            "clock": wire_clock("4 PM"),
+        },
+    )])
+    valid = apply_payload(tasks=[task("Finish essay")])
+    responses = [
+        SimpleNamespace(
+            id="bad", model="fake-model", status="completed", output=[],
+            output_text=json.dumps(invalid),
+        ),
+        SimpleNamespace(
+            id="good", model="fake-model", status="completed", output=[],
+            output_text=json.dumps(valid),
+        ),
+    ]
+
+    def create(**_kwargs):
+        return responses.pop(0)
+
+    adapter = OpenAIResponsesCaptureInterpreter(
+        client=SimpleNamespace(responses=SimpleNamespace(create=create)),
+        model="fake-model",
+        provider="groq",
+    )
+
+    result = CaptureService(store, adapter).capture_text(
+        "Finish essay by tomorrow",
+        reference_time=REFERENCE,
+        timezone_name="America/New_York",
+    )
+
+    assert result.capture.status is CaptureStatus.APPLIED
+    assert len(store.list_captures()) == 1
+    assert len(result.task_ids) == 1
 
 
 def test_provider_wire_bare_hour_commitment_is_unresolved(store: SQLiteStateStore) -> None:
@@ -413,9 +638,9 @@ def test_past_deadline_is_allowed_but_past_commitment_is_unresolved(store: SQLit
     assert unresolved.capture.status is CaptureStatus.UNRESOLVED
 
 
-def test_missing_year_and_recurrence_are_unresolved(store: SQLiteStateStore) -> None:
-    missing_year = apply_payload(tasks=[task("Submit", deadline={"kind": "DATE", "value": date_ir("MISSING_YEAR", "September 15")})])
-    first = CaptureService(store, FakeInterpreter(missing_year)).capture_text("Submit by September 15", reference_time=REFERENCE, timezone_name="UTC")
+def test_unsupported_missing_year_and_recurrence_are_unresolved(store: SQLiteStateStore) -> None:
+    missing_year = apply_payload(tasks=[task("Submit", deadline={"kind": "DATE", "value": date_ir("MISSING_YEAR", "late September")})])
+    first = CaptureService(store, FakeInterpreter(missing_year)).capture_text("Submit by late September", reference_time=REFERENCE, timezone_name="UTC")
     unresolved = {"kind": "UNRESOLVED", "new_project": None, "tasks": [], "commitments": [], "unresolved_reason": "recurrence is unsupported"}
     second = CaptureService(store, FakeInterpreter(unresolved)).capture_text("Every Tuesday", reference_time=REFERENCE, timezone_name="UTC")
     assert first.capture.status is second.capture.status is CaptureStatus.UNRESOLVED

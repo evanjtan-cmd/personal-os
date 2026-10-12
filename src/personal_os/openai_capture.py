@@ -75,11 +75,21 @@ DEADLINE_IR = {
     },
     "required": ["kind", "date", "clock"],
 }
+NEW_PROJECT_IR = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "name": {"type": "string"},
+        "description": _nullable({"type": "string"}),
+        "deadline": _nullable(DEADLINE_IR),
+    },
+    "required": ["name", "description", "deadline"],
+}
 CAPTURE_SCHEMA: dict[str, Any] = {
     "type": "object", "additionalProperties": False,
     "properties": {
         "kind": {"type": "string", "enum": ["APPLY", "UNRESOLVED"]},
-        "new_project": _nullable({"type": "object", "additionalProperties": False, "properties": {"name": {"type": "string"}, "description": _nullable({"type": "string"})}, "required": ["name", "description"]}),
+        "new_project": _nullable(NEW_PROJECT_IR),
         "tasks": {"type": "array", "items": {"type": "object", "additionalProperties": False, "properties": {
             "title": {"type": "string"}, "project_id": {"type": ["integer", "string", "null"]},
             "importance": {"type": "string", "enum": ["UNSPECIFIED", "MUST", "SHOULD", "COULD"]},
@@ -221,6 +231,14 @@ def _normalize_task_wire(value: object) -> dict[str, Any]:
     }
 
 
+def _normalize_project_wire(value: object) -> dict[str, Any]:
+    data = _wire_object(value, {"name", "description", "deadline"}, "new project")
+    return {
+        **data,
+        "deadline": None if data["deadline"] is None else _normalize_deadline_wire(data["deadline"]),
+    }
+
+
 def _normalize_commitment_wire(value: object) -> dict[str, Any]:
     data = _wire_object(value, {"title", "start", "hardness"}, "commitment")
     return {**data, "start": _normalize_instant_wire(data["start"])}
@@ -240,6 +258,11 @@ def _normalize_capture_wire_payload(payload: dict[str, Any]) -> dict[str, Any]:
         raise InterpretationValidationError("commitments must be an array")
     normalized = {
         **data,
+        "new_project": (
+            None
+            if data["new_project"] is None
+            else _normalize_project_wire(data["new_project"])
+        ),
         "tasks": [_normalize_task_wire(item) for item in data["tasks"]],
         "commitments": [
             _normalize_commitment_wire(item)
@@ -250,6 +273,76 @@ def _normalize_capture_wire_payload(payload: dict[str, Any]) -> dict[str, Any]:
         normalized["unresolved_reason"] = None
     return normalized
 
+
+def _error_code_from_provider_exception(exc: Exception) -> str | None:
+    code = getattr(exc, "code", None)
+    if isinstance(code, str):
+        return code
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        direct = body.get("code")
+        if isinstance(direct, str):
+            return direct
+        error = body.get("error")
+        if isinstance(error, dict):
+            nested = error.get("code") or error.get("type")
+            if isinstance(nested, str):
+                return nested
+    return None
+
+
+def _is_retryable_structured_output_exception(exc: Exception) -> bool:
+    return _error_code_from_provider_exception(exc) == "json_validate_failed"
+
+
+def _capture_instructions(*, corrective_retry: bool = False) -> str:
+    instructions = (
+        "Extract only explicit Personal OS capture semantics. Ordinary actionable tasks do not require "
+        "scheduling information. When no date, time, or window is explicit, use schedule null; this means "
+        "FLEXIBLE, not UNRESOLVED. When no deadline is explicit, use deadline null. When no importance is "
+        "explicit, use UNSPECIFIED. When no duration is explicit, use estimated_minutes null. Classify "
+        "execution_mode as SPLITTABLE when the task can usefully be advanced in partial bounded sessions "
+        "such as studying, researching, writing, planning, or general project work. Classify execution_mode "
+        "as ONE_SITTING only when the requested action must be completed in one continuous sitting, such as "
+        "taking a test or exam. Absence of duration does not make ordinary SPLITTABLE work unresolved. "
+        "ONE_SITTING with unknown duration is valid persisted state; keep estimated_minutes null unless "
+        "the user supplied a duration. Do not use world knowledge to guess durations. When no "
+        "project relationship is explicit, use project_id null. Do not return UNRESOLVED solely because "
+        "any of these optional facts are absent. Study for ACT and Buy milk are APPLY standalone FLEXIBLE "
+        "SPLITTABLE tasks. A standalone project capture such as Start college applications may APPLY with "
+        "new_project non-null and zero tasks or commitments; do not create a fake Task merely to reference "
+        "a new Project. Preserve an explicitly supplied temporal fact in the appropriate existing task or "
+        "project temporal representation rather than dropping it because other optional fields are absent. "
+        "Do not invent an exact clock time or deadline semantics that were not expressed, and do not discard "
+        "scheduling or deadline semantics that were expressed. Project deadlines belong only on "
+        "new_project.deadline; task deadlines belong only on that task's deadline. Do not copy or inherit "
+        "deadlines between Projects and Tasks. Use UNRESOLVED only when safely representing explicit user "
+        "meaning requires a genuinely ambiguous, missing, or unsupported fact. For example, Meet Sam at 4 "
+        "is UNRESOLVED because AM/PM cannot be inferred. Never infer hard facts. Never invent a date, time, "
+        "deadline, importance, duration, project identity, recurrence, commitment hardness, or other hard "
+        "fact. Use UNKNOWN commitment hardness unless the user's language explicitly establishes HARD or "
+        "SOFT semantics. For clock objects, copy only the explicit clock wording from the user's input into "
+        "the text field, such as 3:45, 3:45 PM, or 15:45. Do not add AM/PM, remove AM/PM, convert notation, "
+        "or choose CLOCK_12/CLOCK_24/BARE_HOUR yourself. Use MISSING_YEAR for a date without a year, "
+        "weekday names MONDAY through SUNDAY for weekday dates, and UNRESOLVED for unsupported or uncertain "
+        "meaning. For every date object, fill only the field matching its kind: weekday for WEEKDAY or "
+        "NEXT_WEEKDAY, date for EXPLICIT_DATE, text for MISSING_YEAR, and nulls for TODAY or TOMORROW. For "
+        "every task or project deadline, use kind DATE with clock null or kind INSTANT with a non-null clock. "
+        "If kind is APPLY, output unresolved_reason as null. If kind is UNRESOLVED, output a concise "
+        "non-empty explanation in unresolved_reason. Never use an empty string as a substitute for null. "
+        "For task project_id, use an existing integer ID only when the user's text clearly associates the "
+        "task with one of the supplied active projects. Use NEW only when new_project is non-null and the "
+        "task belongs to that newly created project. Otherwise use project_id null; ordinary standalone "
+        "captures such as Buy milk must not invent a project."
+    )
+    if not corrective_retry:
+        return instructions
+    return (
+        instructions
+        + " The previous response violated the structured output wire contract. Return exactly one valid "
+        "JSON object matching the schema; repair malformed deadline/date/clock/new_project fields without "
+        "changing the user's explicit meaning."
+    )
 
 
 class OpenAIResponsesCaptureInterpreter:
@@ -286,77 +379,104 @@ class OpenAIResponsesCaptureInterpreter:
             model = config.model
             provider = config.provider.value
         prompt = {"raw_text": raw_text, "active_projects": projects}
-        instructions = (
-            "Extract only explicit Personal OS capture semantics. Ordinary actionable tasks do not require "
-            "scheduling information. When no date, time, or window is explicit, use schedule null; this means "
-            "FLEXIBLE, not UNRESOLVED. When no deadline is explicit, use deadline null. When no importance is "
-            "explicit, use UNSPECIFIED. When no duration is explicit, use estimated_minutes null. Classify "
-            "execution_mode as SPLITTABLE when the task can usefully be advanced in partial bounded sessions "
-            "such as studying, researching, writing, planning, or general project work. Classify execution_mode "
-            "as ONE_SITTING only when the requested action must be completed in one continuous sitting, such as "
-            "taking a test or exam. Absence of duration does not make ordinary SPLITTABLE work unresolved. "
-            "ONE_SITTING with unknown duration is valid persisted state; keep estimated_minutes null unless "
-            "the user supplied a duration. Do not use world knowledge to guess durations. When no "
-            "project relationship is explicit, use project_id null. Do not return UNRESOLVED solely because "
-            "any of these optional facts are absent. Study for ACT and Buy milk are APPLY standalone FLEXIBLE "
-            "SPLITTABLE tasks. Preserve an explicitly supplied temporal fact in the appropriate existing task temporal "
-            "representation rather than dropping it because other optional fields are absent. Do not invent an "
-            "exact clock time or deadline semantics that were not expressed, and do not discard scheduling or "
-            "deadline semantics that were expressed. Use UNRESOLVED only when safely representing "
-            "explicit user meaning requires a genuinely ambiguous, missing, or unsupported fact. For example, "
-            "Meet Sam at 4 is UNRESOLVED because AM/PM cannot be inferred. Never infer hard facts. Never invent a date, time, deadline, "
-            "importance, duration, project identity, recurrence, commitment hardness, or other hard fact. Use UNKNOWN "
-            "commitment hardness unless the user's language explicitly establishes HARD or SOFT semantics. "
-            "For clock objects, copy only the explicit clock wording from the user's input into the text field, "
-            "such as 3:45, 3:45 PM, or 15:45. Do not add AM/PM, remove AM/PM, convert notation, or choose "
-            "CLOCK_12/CLOCK_24/BARE_HOUR yourself. Use MISSING_YEAR for a date without a year, weekday names "
-            "MONDAY through SUNDAY for weekday dates, and UNRESOLVED for unsupported or uncertain meaning. "
-            "For every date object, fill only the field matching its kind: weekday for WEEKDAY or NEXT_WEEKDAY, "
-            "date for EXPLICIT_DATE, text for MISSING_YEAR, and nulls for TODAY or TOMORROW. For every deadline, "
-            "use kind DATE with clock null or kind INSTANT with a non-null clock. "
-            "If kind is APPLY, output unresolved_reason as null. If kind is UNRESOLVED, output a concise "
-            "non-empty explanation in unresolved_reason. Never use an empty string as a substitute for null. "
-            "For task project_id, use an existing integer ID only when the user's text clearly associates "
-            "the task with one of the supplied active projects. Use NEW only when new_project is non-null "
-            "and the task belongs to that newly created project. Otherwise use project_id null; ordinary "
-            "standalone captures such as Buy milk must not invent a project."
+        for attempt in range(2):
+            try:
+                response = client.responses.create(
+                    model=model,
+                    instructions=_capture_instructions(
+                        corrective_retry=attempt == 1
+                    ),
+                    input=json.dumps(prompt, separators=(",", ":")),
+                    text={"format": {"type": "json_schema", "name": "personal_os_capture_v1", "strict": True, "schema": CAPTURE_SCHEMA}},
+                    store=False,
+                )
+            except InterpretationError:
+                raise
+            except Exception as exc:
+                if attempt == 0 and _is_retryable_structured_output_exception(exc):
+                    continue
+                raise InterpretationError(
+                    CaptureFailureKind.PROVIDER_ERROR,
+                    f"{provider} request failed: {exc}",
+                    provider=provider,
+                    model=model,
+                ) from exc
+            try:
+                return _interpret_response(
+                    response, provider=provider, fallback_model=model
+                )
+            except InterpretationError as exc:
+                if (
+                    attempt == 0
+                    and exc.kind is CaptureFailureKind.INVALID_OUTPUT
+                    and isinstance(exc.__cause__, InterpretationValidationError)
+                ):
+                    continue
+                raise
+        raise AssertionError("capture retry loop exhausted unexpectedly")
+
+
+def _interpret_response(
+    response: object, *, provider: str, fallback_model: str,
+) -> InterpretationResponse:
+    response_id = getattr(response, "id", None)
+    response_model = getattr(response, "model", None) or fallback_model
+    response_id_text = None if response_id is None else str(response_id)
+    response_model_text = str(response_model)
+    if getattr(response, "status", None) in {"failed", "incomplete"}:
+        raise InterpretationError(
+            CaptureFailureKind.PROVIDER_ERROR,
+            f"{provider} response status was {response.status}",
+            provider=provider,
+            model=response_model_text,
+            response_id=response_id_text,
         )
-        try:
-            response = client.responses.create(
-                model=model, instructions=instructions, input=json.dumps(prompt, separators=(",", ":")),
-                text={"format": {"type": "json_schema", "name": "personal_os_capture_v1", "strict": True, "schema": CAPTURE_SCHEMA}},
-                store=False,
-            )
-        except InterpretationError:
-            raise
-        except Exception as exc:
-            raise InterpretationError(
-                CaptureFailureKind.PROVIDER_ERROR,
-                f"{provider} request failed: {exc}",
-                provider=provider,
-                model=model,
-            ) from exc
-        response_id = getattr(response, "id", None)
-        response_model = getattr(response, "model", None) or model
-        if getattr(response, "status", None) in {"failed", "incomplete"}:
-            raise InterpretationError(CaptureFailureKind.PROVIDER_ERROR, f"{provider} response status was {response.status}", provider=provider, model=str(response_model), response_id=None if response_id is None else str(response_id))
-        for item in getattr(response, "output", []) or []:
-            for content in getattr(item, "content", []) or []:
-                refusal = getattr(content, "refusal", None)
-                if refusal:
-                    raise InterpretationError(CaptureFailureKind.REFUSAL, str(refusal), provider=provider, model=str(response_model), response_id=None if response_id is None else str(response_id))
-        output_text = getattr(response, "output_text", None)
-        if not isinstance(output_text, str) or not output_text:
-            raise InterpretationError(CaptureFailureKind.INVALID_OUTPUT, f"{provider} response contained no structured text", provider=provider, model=str(response_model), response_id=None if response_id is None else str(response_id))
-        try:
-            payload = json.loads(output_text)
-        except json.JSONDecodeError as exc:
-            raise InterpretationError(CaptureFailureKind.INVALID_OUTPUT, f"{provider} response was malformed JSON", provider=provider, model=str(response_model), response_id=None if response_id is None else str(response_id)) from exc
-        if not isinstance(payload, dict):
-            raise InterpretationError(CaptureFailureKind.INVALID_OUTPUT, f"{provider} response was not a JSON object", provider=provider, model=str(response_model), response_id=None if response_id is None else str(response_id))
-        try:
-            payload = _normalize_capture_wire_payload(payload)
-            interpretation = parse_interpretation(payload)
-        except InterpretationValidationError as exc:
-            raise InterpretationError(CaptureFailureKind.INVALID_OUTPUT, str(exc), provider=provider, model=str(response_model), response_id=None if response_id is None else str(response_id)) from exc
-        return InterpretationResponse(interpretation, provider, str(response_model), None if response_id is None else str(response_id))
+    for item in getattr(response, "output", []) or []:
+        for content in getattr(item, "content", []) or []:
+            refusal = getattr(content, "refusal", None)
+            if refusal:
+                raise InterpretationError(
+                    CaptureFailureKind.REFUSAL, str(refusal),
+                    provider=provider, model=response_model_text,
+                    response_id=response_id_text,
+                )
+    output_text = getattr(response, "output_text", None)
+    if not isinstance(output_text, str) or not output_text:
+        raise InterpretationError(
+            CaptureFailureKind.INVALID_OUTPUT,
+            f"{provider} response contained no structured text",
+            provider=provider,
+            model=response_model_text,
+            response_id=response_id_text,
+        )
+    try:
+        payload = json.loads(output_text)
+    except json.JSONDecodeError as exc:
+        raise InterpretationError(
+            CaptureFailureKind.INVALID_OUTPUT,
+            f"{provider} response was malformed JSON",
+            provider=provider,
+            model=response_model_text,
+            response_id=response_id_text,
+        ) from exc
+    if not isinstance(payload, dict):
+        raise InterpretationError(
+            CaptureFailureKind.INVALID_OUTPUT,
+            f"{provider} response was not a JSON object",
+            provider=provider,
+            model=response_model_text,
+            response_id=response_id_text,
+        )
+    try:
+        payload = _normalize_capture_wire_payload(payload)
+        interpretation = parse_interpretation(payload)
+    except InterpretationValidationError as exc:
+        raise InterpretationError(
+            CaptureFailureKind.INVALID_OUTPUT, str(exc),
+            provider=provider,
+            model=response_model_text,
+            response_id=response_id_text,
+        ) from exc
+    return InterpretationResponse(
+        interpretation, provider, response_model_text, response_id_text
+    )

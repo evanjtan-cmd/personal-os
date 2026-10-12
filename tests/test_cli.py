@@ -656,7 +656,7 @@ def test_complete_dogfood_cli_loop_uses_real_services_without_network(
             assert raw_text == "Finish the loop"
             payload = {
                 "kind": "APPLY",
-                "new_project": {"name": "MVP", "description": None},
+                "new_project": {"name": "MVP", "description": None, "deadline": None},
                 "tasks": [{
                     "title": "Finish loop", "project_id": "NEW",
                     "importance": "MUST", "estimated_minutes": 10,

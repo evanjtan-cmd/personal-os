@@ -267,9 +267,15 @@ class Project:
     created_at: datetime
     updated_at: datetime
     source_capture_id: int | None = None
+    deadline_date: date | None = None
+    deadline_at: datetime | None = None
 
     def __post_init__(self) -> None:
         created, updated = _validate_timestamps(self.created_at, self.updated_at)
+        deadline_date = optional_date(self.deadline_date, "deadline_date")
+        deadline_at = optional_instant(self.deadline_at, "deadline_at")
+        if deadline_date is not None and deadline_at is not None:
+            raise DomainValidationError("deadline_date and deadline_at are mutually exclusive")
         object.__setattr__(self, "id", require_identifier(self.id))
         object.__setattr__(self, "name", require_text(self.name, "name"))
         object.__setattr__(self, "description", optional_text(self.description, "description"))
@@ -277,6 +283,8 @@ class Project:
         object.__setattr__(self, "created_at", created)
         object.__setattr__(self, "updated_at", updated)
         object.__setattr__(self, "source_capture_id", None if self.source_capture_id is None else require_identifier(self.source_capture_id, "source_capture_id"))
+        object.__setattr__(self, "deadline_date", deadline_date)
+        object.__setattr__(self, "deadline_at", deadline_at)
 
 
 @dataclass(frozen=True, slots=True)

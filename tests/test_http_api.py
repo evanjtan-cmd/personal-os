@@ -266,6 +266,7 @@ def test_get_overview_returns_machine_envelope_without_configuration(api) -> Non
         "id": project.id,
         "name": "College",
         "description": "Applications",
+        "deadline": None,
     }]
     assert response["result"]["tasks"][0]["id"] == task.id
     assert response["result"]["tasks"][0]["execution_mode"] == "SPLITTABLE"
