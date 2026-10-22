@@ -1,6 +1,6 @@
 # Build State
 
-Last updated: 2026-10-12 for POS-026 Capture Reliability & Project Intake.
+Last updated: 2026-10-21 for active-session restoration on the browser Work page.
 
 ## Implemented
 
@@ -141,6 +141,14 @@ Last updated: 2026-10-12 for POS-026 Capture Reliability & Project Intake.
   never caller-supplied time. A dedicated compact State page at `/state` loads
   and refreshes that overview, uses safe DOM text insertion, and shares clear
   Work and State navigation without changing the POS-019 Work flow.
+- The browser Work page now checks `GET /v1/overview` on initial load and
+  restores an existing active session through its existing active-session
+  renderer, including the durable selected action and original start time. It
+  shows idle only after an explicit `active_session: null`; malformed overview
+  data or server failures display a restore error instead. A local restore
+  token prevents late startup responses from overwriting a newer Find Work,
+  Start, or feedback action. The restoration request is read-only and never
+  requests a recommendation.
 - POS-021 extends overview tasks with execution mode and estimated minutes,
   adds Machine Interface v1 `update_task_planning` plus loopback
   `POST /v1/task-planning` for updating only those two planning facts, and adds
@@ -233,6 +241,20 @@ Last updated: 2026-10-12 for POS-026 Capture Reliability & Project Intake.
   preferences, or temporary context
 
 ## Validation
+
+Run on 2026-10-21 with Python 3.13.0 and pytest 8.4.2:
+
+- Full pytest coverage passed: 636 tests in bounded invocations because this
+  environment limits one process to 60 seconds: 559 non-HTTP tests passed in
+  19.52s; all 77 HTTP tests passed in three isolated loopback-enabled groups.
+- `node --test tests/test_work_page.js` — passed: 8 tests covering active and
+  idle restoration, malformed data, server failure, stale success/error races,
+  and the existing Find Work → Start → feedback flow.
+- `.venv/bin/python -m compileall -q src tests` — passed.
+- `node --check src/personal_os/static/work.js` and
+  `node --check src/personal_os/static/state.js` — passed.
+- `git diff --check` — passed.
+- No real user data or live AI provider was used.
 
 Run on 2026-10-12 with Python 3.13.0 and pytest 8.4.2:
 

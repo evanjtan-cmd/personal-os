@@ -276,6 +276,31 @@ def test_get_overview_returns_machine_envelope_without_configuration(api) -> Non
     runtime_factory.assert_called_once_with()
 
 
+def test_get_overview_returns_active_session_without_ai_or_timezone(api) -> None:
+    _, store, ranker, runtime_factory = api
+    task = store.create_task("Continue draft")
+    session = SessionService(store).start_session(
+        task_id=task.id,
+        planned_minutes=25,
+        context=RecommendationContext(NOW, "UTC", 25),
+        selected_action="Keep writing.",
+    )
+
+    status, response, _ = request(api, {}, method="GET", path="/v1/overview")
+
+    assert status == 200
+    assert response["result"]["active_session"] == {
+        "session_id": session.id,
+        "task_id": task.id,
+        "task_title": task.title,
+        "planned_minutes": 25,
+        "selected_action": "Keep writing.",
+        "started_at": "2026-09-21T14:00:00.000000Z",
+    }
+    assert ranker.calls == 0
+    runtime_factory.assert_called_once_with()
+
+
 def test_task_planning_endpoint_updates_only_planning_fields(api) -> None:
     _, store, _, runtime_factory = api
     task = store.create_task("Take diagnostic PSAT", estimated_minutes=30)
