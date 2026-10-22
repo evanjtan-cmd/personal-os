@@ -6,6 +6,8 @@ let recommendation = null;
 let recommendationContext = null;
 let pending = false;
 let capturePending = false;
+let restorePending = false;
+let restoreToken = 0;
 
 function showScreen(name) {
   for (const screen of screens) byId(screen).hidden = screen !== name;
@@ -22,11 +24,32 @@ function clearError() {
   byId("error").textContent = "";
 }
 
+function updateProgress() {
+  const progress = byId("progress");
+  if (pending) {
+    progress.textContent = "Updating...";
+    progress.hidden = false;
+  } else if (restorePending) {
+    progress.textContent = "Checking active work session...";
+    progress.hidden = false;
+  } else {
+    progress.hidden = true;
+  }
+}
+
 function setPending(value) {
   pending = value;
-  byId("progress").hidden = !value;
+  updateProgress();
   for (const button of document.querySelectorAll("button:not(#capture-button)")) {
     button.disabled = value;
+  }
+}
+
+function invalidateRestore() {
+  restoreToken += 1;
+  if (restorePending) {
+    restorePending = false;
+    updateProgress();
   }
 }
 
@@ -55,6 +78,67 @@ async function request(path, body) {
     throw new Error(envelope.error?.message || `Request failed (${response.status})`);
   }
   return envelope.result;
+}
+
+async function requestOverview() {
+  const response = await fetch("/v1/overview", { credentials: "omit" });
+  const envelope = await response.json();
+  if (!response.ok || !envelope || typeof envelope !== "object" || envelope.ok !== true) {
+    throw new Error(envelope?.error?.message || `Request failed (${response.status})`);
+  }
+  if (!envelope.result || typeof envelope.result !== "object" || Array.isArray(envelope.result)) {
+    throw new Error("Invalid overview response.");
+  }
+  return envelope.result;
+}
+
+function isPositiveInteger(value) {
+  return Number.isInteger(value) && value > 0;
+}
+
+function activeSessionFromOverview(overview) {
+  if (!Object.hasOwn(overview, "active_session")) {
+    throw new Error("Invalid overview response.");
+  }
+  const session = overview.active_session;
+  if (session === null) return null;
+  if (
+    !session || typeof session !== "object" || Array.isArray(session)
+    || !isPositiveInteger(session.session_id)
+    || !isPositiveInteger(session.task_id)
+    || typeof session.task_title !== "string" || !session.task_title.trim()
+    || !isPositiveInteger(session.planned_minutes)
+    || (session.selected_action !== null && typeof session.selected_action !== "string")
+    || typeof session.started_at !== "string" || Number.isNaN(Date.parse(session.started_at))
+  ) {
+    throw new Error("Invalid active session in overview response.");
+  }
+  return session;
+}
+
+async function restoreActiveSession() {
+  const token = restoreToken;
+  restorePending = true;
+  updateProgress();
+  try {
+    const overview = await requestOverview();
+    if (token !== restoreToken) return;
+    const session = activeSessionFromOverview(overview);
+    if (session === null) {
+      showScreen("idle");
+    } else {
+      recommendation = null;
+      renderActive(session);
+    }
+  } catch (error) {
+    if (token !== restoreToken) return;
+    showError(`Could not restore the active work session: ${error.message} Check the server, then try again.`);
+  } finally {
+    if (token === restoreToken) {
+      restorePending = false;
+      updateProgress();
+    }
+  }
 }
 
 function activationInputs() {
@@ -278,6 +362,7 @@ function renderActivation(result) {
 
 async function activate() {
   if (pending) return;
+  invalidateRestore();
   const context = activationInputs();
   clearError();
   setPending(true);
@@ -295,6 +380,7 @@ async function activate() {
 
 async function startWork() {
   if (pending || !recommendation) return;
+  invalidateRestore();
   const body = {
     task_id: recommendation.task_id,
     planned_minutes: recommendation.duration_minutes,
@@ -318,6 +404,7 @@ async function startWork() {
 
 async function submitFeedback(outcome) {
   if (pending) return;
+  invalidateRestore();
   const body = { outcome };
   const note = byId("result-note").value;
   if (note.trim()) body.result_note = note;
@@ -349,3 +436,4 @@ byId("feedback-form").addEventListener("submit", (event) => {
   if (event.submitter?.value) submitFeedback(event.submitter.value);
 });
 byId("next-button").addEventListener("click", activate);
+restoreActiveSession();
