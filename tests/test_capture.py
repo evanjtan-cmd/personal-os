@@ -298,6 +298,100 @@ def test_missing_year_month_day_deadline_uses_next_occurrence(
     assert captured.deadline_at is None
 
 
+@pytest.mark.parametrize(
+    ("reference", "text", "expected"),
+    [
+        (datetime(2026, 10, 25, 12, tzinfo=UTC), "10/30", "2026-10-30"),
+        (datetime(2026, 10, 31, 12, tzinfo=UTC), "10/30", "2027-10-30"),
+        (datetime(2026, 10, 25, 12, tzinfo=UTC), "1/10", "2027-01-10"),
+        (datetime(2026, 10, 25, 12, tzinfo=UTC), "3/4", "2027-03-04"),
+        (datetime(2026, 10, 25, 12, tzinfo=UTC), "02/9", "2027-02-09"),
+        (datetime(2026, 10, 25, 12, tzinfo=UTC), "2/09", "2027-02-09"),
+        (datetime(2026, 10, 25, 12, tzinfo=UTC), "02/09", "2027-02-09"),
+        (datetime(2026, 10, 25, 12, tzinfo=UTC), "10/3", "2027-10-03"),
+        (datetime(2026, 10, 25, 12, tzinfo=UTC), "02/29", "2028-02-29"),
+    ],
+)
+def test_numeric_missing_year_deadline_uses_next_us_month_day_occurrence(
+    store: SQLiteStateStore, reference: datetime, text: str, expected: str,
+) -> None:
+    raw_text = f"Submit by {text}"
+    payload = apply_payload(
+        tasks=[
+            task(
+                "Submit",
+                deadline={"kind": "DATE", "value": date_ir("MISSING_YEAR", text)},
+            )
+        ]
+    )
+
+    result = CaptureService(store, FakeInterpreter(payload)).capture_text(
+        raw_text, reference_time=reference, timezone_name="UTC"
+    )
+
+    assert result.capture.status is CaptureStatus.APPLIED
+    assert result.capture.raw_text == raw_text
+    captured = store.get_task(result.task_ids[0])
+    assert captured.deadline_date.isoformat() == expected
+    assert captured.deadline_at is None
+
+
+@pytest.mark.parametrize("text", ["2/30", "13/1", "0/12", "4/31", "10/0"])
+def test_impossible_numeric_missing_year_date_is_unresolved_accurately(
+    store: SQLiteStateStore, text: str,
+) -> None:
+    raw_text = f"Submit by {text}"
+    payload = apply_payload(
+        tasks=[
+            task(
+                "Submit",
+                deadline={"kind": "DATE", "value": date_ir("MISSING_YEAR", text)},
+            )
+        ]
+    )
+
+    result = CaptureService(store, FakeInterpreter(payload)).capture_text(
+        raw_text,
+        reference_time=datetime(2026, 10, 25, 12, tzinfo=UTC),
+        timezone_name="UTC",
+    )
+
+    assert result.capture.status is CaptureStatus.UNRESOLVED
+    assert result.capture.raw_text == raw_text
+    assert result.inbox_item_id is not None
+    assert store.get_inbox_item(result.inbox_item_id).unresolved_reason == (
+        "numeric month/day date is invalid"
+    )
+    assert store.list_tasks() == []
+
+
+@pytest.mark.parametrize("text", ["10/030", "10 / 30", "10/30/2026"])
+def test_unsupported_numeric_missing_year_format_is_unresolved_accurately(
+    store: SQLiteStateStore, text: str,
+) -> None:
+    payload = apply_payload(
+        tasks=[
+            task(
+                "Submit",
+                deadline={"kind": "DATE", "value": date_ir("MISSING_YEAR", text)},
+            )
+        ]
+    )
+
+    result = CaptureService(store, FakeInterpreter(payload)).capture_text(
+        f"Submit by {text}",
+        reference_time=datetime(2026, 10, 25, 12, tzinfo=UTC),
+        timezone_name="UTC",
+    )
+
+    assert result.capture.status is CaptureStatus.UNRESOLVED
+    assert result.inbox_item_id is not None
+    assert store.get_inbox_item(result.inbox_item_id).unresolved_reason == (
+        "numeric month/day date format is unsupported"
+    )
+    assert store.list_tasks() == []
+
+
 def test_unsupported_missing_year_text_remains_unresolved(
     store: SQLiteStateStore,
 ) -> None:
@@ -319,6 +413,31 @@ def test_unsupported_missing_year_text_remains_unresolved(
 
     assert result.capture.status is CaptureStatus.UNRESOLVED
     assert result.inbox_item_id is not None
+    assert store.list_tasks() == []
+
+
+def test_standalone_project_numeric_deadline_creates_no_task(
+    store: SQLiteStateStore,
+) -> None:
+    payload = apply_payload(
+        new_project={
+            "name": "Summer planning",
+            "description": None,
+            "deadline": {"kind": "DATE", "value": date_ir("MISSING_YEAR", "10/30")},
+        }
+    )
+
+    result = CaptureService(store, FakeInterpreter(payload)).capture_text(
+        "project: summer planning due 10/30",
+        reference_time=datetime(2026, 10, 25, 12, tzinfo=UTC),
+        timezone_name="UTC",
+    )
+
+    assert result.capture.status is CaptureStatus.APPLIED
+    assert result.task_ids == ()
+    project = store.get_project(result.project_id)
+    assert project.deadline_date.isoformat() == "2026-10-30"
+    assert project.deadline_at is None
     assert store.list_tasks() == []
 
 
@@ -373,6 +492,62 @@ def test_project_deadline_is_not_inherited_by_new_child_task(
     assert child.project_id == project.id
     assert child.deadline_date is None
     assert child.deadline_at is None
+
+
+def test_numeric_missing_year_day_schedule_stays_date_only(
+    store: SQLiteStateStore,
+) -> None:
+    payload = apply_payload(
+        tasks=[
+            task(
+                "Study chemistry",
+                schedule={
+                    "kind": "DAY",
+                    "dates": [date_ir("MISSING_YEAR", "10/30")],
+                },
+            )
+        ]
+    )
+
+    result = CaptureService(store, FakeInterpreter(payload)).capture_text(
+        "Study chemistry 10/30",
+        reference_time=datetime(2026, 10, 25, 12, tzinfo=UTC),
+        timezone_name="UTC",
+    )
+
+    captured = store.get_task(result.task_ids[0])
+    assert captured.schedule_mode is TaskScheduleMode.DAY
+    assert captured.day_date.isoformat() == "2026-10-30"
+    assert captured.deadline_date is None
+    assert captured.deadline_at is None
+
+
+def test_provider_wire_numeric_missing_year_reaches_canonical_resolver(
+    store: SQLiteStateStore,
+) -> None:
+    payload = apply_payload(
+        tasks=[
+            task(
+                "Submit chemistry homework",
+                deadline={
+                    "kind": "DATE",
+                    "date": wire_date("MISSING_YEAR", text="10/30"),
+                    "clock": None,
+                },
+            )
+        ]
+    )
+
+    result = CaptureService(store, provider_adapter(payload)).capture_text(
+        "Submit chemistry homework by 10/30",
+        reference_time=datetime(2026, 10, 25, 12, tzinfo=UTC),
+        timezone_name="UTC",
+    )
+
+    assert result.capture.status is CaptureStatus.APPLIED
+    captured = store.get_task(result.task_ids[0])
+    assert captured.deadline_date.isoformat() == "2026-10-30"
+    assert captured.deadline_at is None
 
 
 def test_bare_hour_becomes_unresolved_inbox_item(store: SQLiteStateStore) -> None:

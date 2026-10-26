@@ -70,17 +70,28 @@ _MONTH_BY_NAME = {
     "dec": 12,
     "december": 12,
 }
-_MONTH_DAY_RE = re.compile(r"\A([A-Za-z]+)\.?\s+([0-9]{1,2})\Z")
+_NAMED_MONTH_DAY_RE = re.compile(r"\A([A-Za-z]+)\.?\s+([0-9]{1,2})\Z")
+_NUMERIC_MONTH_DAY_RE = re.compile(r"\A([0-9]{1,2})/([0-9]{1,2})\Z")
 
 
-def _next_month_day(value: str, today: date) -> date | None:
-    match = _MONTH_DAY_RE.fullmatch(value.strip())
-    if match is None:
-        return None
-    month = _MONTH_BY_NAME.get(match.group(1).casefold())
-    if month is None:
-        return None
-    day = int(match.group(2))
+def _next_month_day(value: str, today: date) -> date | _Unresolved:
+    text = value.strip()
+    named_match = _NAMED_MONTH_DAY_RE.fullmatch(text)
+    numeric_match = _NUMERIC_MONTH_DAY_RE.fullmatch(text)
+    if numeric_match is not None:
+        month = int(numeric_match.group(1))
+        day = int(numeric_match.group(2))
+        invalid_reason = "numeric month/day date is invalid"
+    elif named_match is not None:
+        month = _MONTH_BY_NAME.get(named_match.group(1).casefold())
+        if month is None:
+            return _Unresolved("explicit date is missing a year")
+        day = int(named_match.group(2))
+        invalid_reason = "explicit date is missing a year"
+    else:
+        if "/" in text:
+            return _Unresolved("numeric month/day date format is unsupported")
+        return _Unresolved("explicit date is missing a year")
     for year in range(today.year, today.year + 401):
         try:
             candidate = date(year, month, day)
@@ -88,7 +99,7 @@ def _next_month_day(value: str, today: date) -> date | None:
             continue
         if candidate >= today:
             return candidate
-    return None
+    return _Unresolved(invalid_reason)
 
 
 def _date_from_ir(value: DateExpression, local_reference: datetime) -> date | _Unresolved:
@@ -112,9 +123,7 @@ def _date_from_ir(value: DateExpression, local_reference: datetime) -> date | _U
             raise InterpretationError(CaptureFailureKind.INVALID_OUTPUT, "explicit date is not canonical")
         return parsed
     if value.kind is DateExpressionKind.MISSING_YEAR:
-        resolved = _next_month_day(str(value.value), today)
-        if resolved is not None:
-            return resolved
+        return _next_month_day(str(value.value), today)
     return _Unresolved("explicit date is missing a year")
 
 

@@ -335,9 +335,12 @@ extract explicit facts, including a bare clock hour, but it may not resolve a
 bare `at 4` to AM or PM, invent importance or duration, silently choose a
 project, or express recurrence. A bare clock remains UNRESOLVED rather than
 becoming a failed capture. A supported explicit month/day date without a year,
-such as `Oct 22` or `September 15`, is resolved deterministically to the first
-valid occurrence on or after the trusted local reference date; unsupported or
-ambiguous incomplete dates remain UNRESOLVED.
+such as `Oct 22`, `September 15`, or US numeric shorthand `10/30`, is resolved
+deterministically to the first valid occurrence on or after the trusted local
+reference date. Numeric shorthand accepts `M/D`, `MM/DD`, `M/DD`, and `MM/D`
+with the first component always interpreted as month; this is explicit product
+policy rather than locale inference from timezone. Impossible numeric calendar
+dates, unsupported forms, and ambiguous incomplete dates remain UNRESOLVED.
 
 The provider-facing capture schema may use a simpler wire representation than
 the canonical typed intents. Temporal provider wire uses fixed tagged date and
