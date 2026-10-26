@@ -88,6 +88,11 @@ def test_adapter_uses_responses_strict_schema_and_disables_storage() -> None:
     assert "copy only the explicit clock wording" in instructions
     assert "do not add am/pm" in instructions
     assert "convert notation" in instructions
+    assert "us numeric month/day shorthand such as 10/30" in instructions
+    assert "copy the shorthand exactly" in instructions
+    assert "first component as month and the second as day" in instructions
+    assert "do not invent a year" in instructions
+    assert "reinterpret it as day/month" in instructions
     commitment = responses.kwargs["text"]["format"]["schema"]["properties"]["commitments"]["items"]
     assert "end" not in commitment["properties"]
 
@@ -333,6 +338,20 @@ def test_tomorrow_deadline_wire_converts_to_canonical_date_expression() -> None:
     assert result.interpretation.to_dict()["tasks"][0]["deadline"] == {
         "kind": "DATE",
         "value": {"kind": "TOMORROW", "value": None},
+    }
+
+
+def test_numeric_missing_year_wire_preserves_text_for_canonical_resolution() -> None:
+    payload = _applied_task_payload(None)
+    payload["tasks"][0]["deadline"] = wire_deadline(
+        "DATE", wire_date("MISSING_YEAR", text="10/30")
+    )
+
+    result = interpret(_adapter_for_payload(payload, provider="groq"))
+
+    assert result.interpretation.to_dict()["tasks"][0]["deadline"] == {
+        "kind": "DATE",
+        "value": {"kind": "MISSING_YEAR", "value": "10/30"},
     }
 
 

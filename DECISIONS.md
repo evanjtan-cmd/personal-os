@@ -415,3 +415,19 @@ has no deterministic fallback action or duration, and remains subject to fresh
 atomic session-start revalidation if accepted. Machine Interface v1 and
 `POST /v1/activate` add the optional validated `excluded_task_ids` field without
 a new endpoint, protocol version, table, or migration.
+
+## 2026-10-25 — Numeric missing-year dates use explicit US month/day order
+
+Missing-year numeric calendar shorthand accepts `M/D`, `MM/DD`, `M/DD`, and
+`MM/D`. The first component is always the month and the second is always the
+day; timezone is not used to infer a locale, and an invalid US-form date is not
+reinterpreted as day/month. As with supported named-month forms, deterministic
+capture application selects the first valid occurrence on or after the trusted
+local reference date, including a future leap year when necessary.
+
+The provider preserves numeric shorthand through the existing `MISSING_YEAR`
+typed boundary without inventing a year. The canonical capture resolver owns
+validation and year selection. Impossible calendar dates remain UNRESOLVED with
+an invalid-date explanation, while date-only schedule and deadline semantics,
+immutable raw capture text, Project/Task separation, and SQLite schema version
+9 remain unchanged.

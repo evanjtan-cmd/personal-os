@@ -1,6 +1,6 @@
 # Build State
 
-Last updated: 2026-10-25 for browser recommendation flexibility.
+Last updated: 2026-10-25 for POS-027 numeric missing-year date shorthand.
 
 ## Implemented
 
@@ -231,6 +231,12 @@ Last updated: 2026-10-25 for browser recommendation flexibility.
   `Oct 22` or `September 15`, to the first valid occurrence on or after the
   trusted local reference date. Unsupported or ambiguous incomplete dates remain
   UNRESOLVED.
+- POS-027 adds explicit US numeric month/day shorthand (`M/D`, `MM/DD`,
+  `M/DD`, and `MM/D`) to the same deterministic missing-year resolver. Numeric
+  dates resolve to the first valid occurrence on or after the trusted local
+  reference date; impossible numeric calendar dates remain UNRESOLVED with an
+  accurate invalid-date explanation. The rule is explicit product policy, not
+  a locale inference from timezone.
 - POS-022 keeps detailed capture failure information durable and available to
   internal/API consumers, while the normal browser Work capture surface displays
   a concise retry message for FAILED captures instead of raw provider exception
@@ -261,6 +267,20 @@ Last updated: 2026-10-25 for browser recommendation flexibility.
   preferences, or temporary context
 
 ## Validation
+
+Run on 2026-10-25 with Python 3.13.0 and pytest 8.4.2 for POS-027:
+
+- `.venv/bin/python -m pytest tests/test_capture.py tests/test_openai_capture.py -q`
+  — passed: 150 passed in 6.53s.
+- `.venv/bin/python -m pytest --ignore=tests/test_http_api.py -q` — passed:
+  614 passed in 27.27s using isolated temporary databases and fake AI
+  providers.
+- `.venv/bin/python -m compileall -q src tests` — passed.
+- `node --check src/personal_os/static/work.js` and
+  `node --check src/personal_os/static/state.js` — passed.
+- `git diff --check` — passed.
+- No real user data, live AI provider, package installation, schema migration,
+  commit, push, PR, merge, or deployment was used.
 
 Run on 2026-10-25 with Python 3.13.0 and pytest 8.4.2 for recommendation
 flexibility:
