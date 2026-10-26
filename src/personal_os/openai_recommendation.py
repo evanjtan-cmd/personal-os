@@ -84,6 +84,7 @@ class OpenAIResponsesRecommendationRanker:
                 "available_minutes": context.available_minutes,
             },
             "must_gated": context.must_gated,
+            "alternative_required": context.alternative_required,
             "candidates": [
                 {
                     "task_id": item.task_id,
@@ -104,14 +105,17 @@ class OpenAIResponsesRecommendationRanker:
         }
         instructions = (
             "Select only one supplied eligible task and exactly one of its allowed_durations, "
-            "or return NO_WORK only when must_gated is false AND none of the supplied eligible "
+            "or return NO_WORK only when must_gated is false, alternative_required is false, "
+            "AND none of the supplied eligible "
             "candidates should reasonably be recommended for work now based only on supplied "
             "ranking facts. Explain concisely why no supplied candidate is appropriate now; "
             "the NO_WORK reason must support not working, never describe why work would be "
             "appropriate. Do not choose NO_WORK merely because a task is FLEXIBLE, has "
             "UNSPECIFIED or COULD importance, lacks a deadline, or has no higher-priority "
             "constraint. If supplied facts support an ordinary feasible work session, choose "
-            "RECOMMEND. Treat importance, schedule state, missed days, and deadline state as "
+            "RECOMMEND. When alternative_required is true, you must choose RECOMMEND from the "
+            "supplied candidates and must not return NO_WORK. Treat importance, schedule state, "
+            "missed days, and deadline state as "
             "supplied ranking facts. Do not invent "
             "hard conflicts, rule evaluation, business hours, energy constraints, schedule "
             "facts, dependencies, or availability, and do not claim unknown facts. For RECOMMEND, "

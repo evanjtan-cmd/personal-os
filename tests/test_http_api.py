@@ -127,6 +127,47 @@ def test_recommend_uses_application_service_and_machine_shape(api) -> None:
     assert store.read_state_snapshot() == before
 
 
+def test_activate_exclusions_return_an_alternative_without_mutation(api) -> None:
+    _, store, ranker, _ = api
+    first = store.create_task("First")
+    second = store.create_task("Second")
+    before = store.read_state_snapshot()
+
+    status, body, _ = request(
+        api,
+        {"timezone": "UTC", "excluded_task_ids": [first.id]},
+    )
+
+    assert status == 200
+    assert body["result"]["kind"] == "RECOMMEND"
+    assert body["result"]["task_id"] == second.id
+    assert ranker.calls == 1
+    assert store.read_state_snapshot() == before
+
+
+def test_activate_exclusions_exhaust_candidates_without_ai_or_mutation(api) -> None:
+    _, store, ranker, _ = api
+    task = store.create_task("Only task")
+    before = store.read_state_snapshot()
+
+    status, body, _ = request(
+        api,
+        {"timezone": "UTC", "excluded_task_ids": [task.id]},
+    )
+
+    assert status == 200
+    assert body["result"] == {
+        "kind": "NO_WORK",
+        "explanation": (
+            "All currently permissible work was skipped for this search. "
+            "Reset skipped work to reconsider it."
+        ),
+        "reason": "ALL_PERMISSIBLE_TASKS_EXCLUDED",
+    }
+    assert ranker.calls == 0
+    assert store.read_state_snapshot() == before
+
+
 def test_active_session_wins_without_timezone_or_ai(api) -> None:
     _, store, ranker, _ = api
     task = store.create_task("Continue draft")
@@ -174,6 +215,15 @@ def test_no_work_preserves_deterministic_reason_and_skips_ai(api) -> None:
         {"timezone": "Not/A_Zone"},
         {"reference_time": "2020-01-01T00:00:00Z"},
         {"operation": "recommend"},
+        {"excluded_task_ids": None},
+        {"excluded_task_ids": {}},
+        {"excluded_task_ids": "1"},
+        {"excluded_task_ids": [True]},
+        {"excluded_task_ids": [1.0]},
+        {"excluded_task_ids": ["1"]},
+        {"excluded_task_ids": [0]},
+        {"excluded_task_ids": [1, 1]},
+        {"excluded_task_ids": list(range(1, 102))},
         [],
     ],
 )
@@ -823,6 +873,10 @@ def test_work_page_assets_do_not_collect_or_send_timezone() -> None:
     assert "optional" in html
     assert "placeholder=\"Not sure\"" in html
     assert "Leave blank if you're not sure" in html
+    assert 'id="not-now-button"' in html
+    assert 'id="reset-skipped-button"' in html
+    assert "excluded_task_ids" in script
+    assert "The current recommendation is still available" in script
 
 
 def test_work_page_assets_include_capture_without_client_time_context() -> None:

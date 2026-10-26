@@ -22,7 +22,10 @@ POST_OPERATIONS = {
     "/v1/capture": ("capture", {"raw_text", "timezone"}),
     "/v1/resolve-inbox": ("resolve_inbox", {"inbox_item_id", "raw_text", "timezone"}),
     "/v1/dismiss-inbox": ("dismiss_inbox", {"inbox_item_id"}),
-    ACTIVATE_PATH: ("activate", {"timezone", "time_cap_minutes"}),
+    ACTIVATE_PATH: (
+        "activate",
+        {"timezone", "time_cap_minutes", "excluded_task_ids"},
+    ),
     "/v1/start": (
         "start",
         {"task_id", "planned_minutes", "timezone", "available_minutes", "selected_action", "start_reason"},

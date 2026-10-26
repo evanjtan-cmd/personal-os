@@ -27,6 +27,7 @@ from personal_os.models import (
     serialize_instant,
 )
 from personal_os.recommendation_types import (
+    MAX_EXCLUDED_TASK_IDS,
     RecommendationContext,
     RecommendationResult,
     RecommendationResultKind,
@@ -65,6 +66,7 @@ class _ValidatedRequest:
     outcome: SessionOutcome | None = None
     result_note: str | None = None
     time_cap_minutes: int | None = None
+    excluded_task_ids: tuple[int, ...] = ()
 
 
 def _utc_now() -> datetime:
@@ -104,6 +106,25 @@ def _nullable_positive_integer(request: dict[str, object], field: str) -> int | 
     if type(value) is not int or value <= 0:
         raise InvalidRequestError(f"{field} must be a positive integer or null")
     return value
+
+
+def _excluded_task_ids(request: dict[str, object]) -> tuple[int, ...]:
+    if "excluded_task_ids" not in request:
+        return ()
+    value = request["excluded_task_ids"]
+    if not isinstance(value, list):
+        raise InvalidRequestError("excluded_task_ids must be an array")
+    if len(value) > MAX_EXCLUDED_TASK_IDS:
+        raise InvalidRequestError(
+            f"excluded_task_ids may contain at most {MAX_EXCLUDED_TASK_IDS} IDs"
+        )
+    if any(type(task_id) is not int or task_id <= 0 for task_id in value):
+        raise InvalidRequestError(
+            "excluded_task_ids must contain only positive integers"
+        )
+    if len(set(value)) != len(value):
+        raise InvalidRequestError("excluded_task_ids must contain distinct IDs")
+    return tuple(value)
 
 
 def _execution_mode(request: dict[str, object]) -> TaskExecutionMode:
@@ -324,6 +345,7 @@ def _activate(
             reference_time=now,
             timezone_name=request.timezone,
             time_cap_minutes=request.time_cap_minutes,
+            excluded_task_ids=request.excluded_task_ids,
         ),
         timezone_resolver=lambda explicit: get_timezone_name(explicit, environ),
     )
@@ -712,12 +734,13 @@ def _validate_request(request: object) -> _ValidatedRequest:
         _require_fields(
             request,
             required={"version", "operation"},
-            optional={"time_cap_minutes", "timezone"},
+            optional={"time_cap_minutes", "timezone", "excluded_task_ids"},
         )
         return _ValidatedRequest(
             operation=operation,
             time_cap_minutes=_integer(request, "time_cap_minutes"),
             timezone=_explicit_timezone(request),
+            excluded_task_ids=_excluded_task_ids(request),
         )
     if operation == "recommend":
         _require_fields(

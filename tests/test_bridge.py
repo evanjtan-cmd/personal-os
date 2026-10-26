@@ -1224,6 +1224,41 @@ def test_activate_rejects_malformed_time_cap(cap: object) -> None:
     runtime_factory.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    "excluded",
+    [
+        None,
+        {},
+        "1",
+        [True],
+        [1.0],
+        ["1"],
+        [0],
+        [-1],
+        [1, 1],
+        list(range(1, 102)),
+    ],
+)
+def test_activate_rejects_malformed_excluded_task_ids(excluded: object) -> None:
+    runtime_factory = Mock(side_effect=AssertionError("runtime must not be built"))
+    output = io.StringIO()
+    status = bridge.run(
+        io.StringIO(json.dumps({
+            "version": 1,
+            "operation": "activate",
+            "timezone": "UTC",
+            "excluded_task_ids": excluded,
+        })),
+        output,
+        runtime_factory=runtime_factory,
+        environ={},
+    )
+
+    assert status == 2
+    assert json.loads(output.getvalue())["error"]["code"] == "INVALID_REQUEST"
+    runtime_factory.assert_not_called()
+
+
 def test_activate_unknown_field_is_rejected_before_runtime_construction() -> None:
     runtime_factory = Mock(side_effect=AssertionError("runtime must not be built"))
     output = io.StringIO()
@@ -1369,6 +1404,7 @@ def test_activate_recommend_serializes_existing_recommendation_shape() -> None:
             "operation": "activate",
             "timezone": "UTC",
             "time_cap_minutes": 20,
+            "excluded_task_ids": [3, 9],
         },
         runtime,
     )
@@ -1384,6 +1420,7 @@ def test_activate_recommend_serializes_existing_recommendation_shape() -> None:
     }
     context = runtime.activation_service.activate.call_args.args[0]
     assert context.time_cap_minutes == 20
+    assert context.excluded_task_ids == (3, 9)
     runtime.session_service.start_session.assert_not_called()
 
 

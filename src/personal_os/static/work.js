@@ -8,6 +8,7 @@ let pending = false;
 let capturePending = false;
 let restorePending = false;
 let restoreToken = 0;
+const excludedTaskIds = new Set();
 
 function showScreen(name) {
   for (const screen of screens) byId(screen).hidden = screen !== name;
@@ -51,6 +52,15 @@ function invalidateRestore() {
     restorePending = false;
     updateProgress();
   }
+}
+
+function updateSkippedControls() {
+  byId("skipped-controls").hidden = excludedTaskIds.size === 0;
+}
+
+function clearSkippedWork() {
+  excludedTaskIds.clear();
+  updateSkippedControls();
 }
 
 function setCapturePending(value) {
@@ -332,6 +342,8 @@ async function captureItem() {
 }
 
 function renderActive(result) {
+  clearSkippedWork();
+  recommendationContext = null;
   byId("active-title").textContent = result.task_title;
   byId("active-meta").textContent = `${result.planned_minutes} min planned · Started ${new Date(result.started_at).toLocaleString()}`;
   byId("active-action").textContent = result.selected_action || "";
@@ -351,31 +363,70 @@ function renderActivation(result) {
     byId("recommendation-action").textContent = result.action;
     byId("recommendation-explanation").textContent = result.explanation;
     showScreen("recommendation");
+    updateSkippedControls();
   } else if (result.kind === "NO_WORK") {
     recommendation = null;
     byId("no-work-explanation").textContent = result.explanation;
     showScreen("no-work");
+    updateSkippedControls();
   } else {
     throw new Error("Unexpected activation response. Refresh and try again.");
   }
 }
 
-async function activate() {
-  if (pending) return;
+async function activate({ preserveExclusions = false, contextOverride = null, failureMessage = null } = {}) {
+  if (pending) return false;
   invalidateRestore();
-  const context = activationInputs();
+  const previousExcludedTaskIds = preserveExclusions ? null : [...excludedTaskIds];
+  if (!preserveExclusions) clearSkippedWork();
+  const context = contextOverride === null ? activationInputs() : { ...contextOverride };
+  const body = { ...context };
+  if (preserveExclusions && excludedTaskIds.size > 0) {
+    body.excluded_task_ids = [...excludedTaskIds];
+  }
   clearError();
   setPending(true);
   try {
-    const result = await request("/v1/activate", context);
+    const result = await request("/v1/activate", body);
     recommendationContext = context;
     renderActivation(result);
     byId("activate-button").textContent = "Refresh work";
+    return true;
   } catch (error) {
-    showError(`${error.message} Check the server configuration, then try again.`);
+    if (previousExcludedTaskIds !== null) {
+      excludedTaskIds.clear();
+      for (const taskId of previousExcludedTaskIds) excludedTaskIds.add(taskId);
+      updateSkippedControls();
+    }
+    showError(failureMessage === null
+      ? `${error.message} Check the server configuration, then try again.`
+      : `${failureMessage}: ${error.message} The current recommendation is still available.`);
+    return false;
   } finally {
     setPending(false);
   }
+}
+
+async function declineRecommendation() {
+  if (pending || !recommendation) return;
+  const declinedTaskId = recommendation.task_id;
+  excludedTaskIds.add(declinedTaskId);
+  updateSkippedControls();
+  const succeeded = await activate({
+    preserveExclusions: true,
+    contextOverride: recommendationContext || {},
+    failureMessage: "Could not find different work",
+  });
+  if (!succeeded) {
+    excludedTaskIds.delete(declinedTaskId);
+    updateSkippedControls();
+  }
+}
+
+async function resetSkippedWork() {
+  if (pending) return;
+  const context = recommendationContext || activationInputs();
+  await activate({ contextOverride: context });
 }
 
 async function startWork() {
@@ -412,6 +463,8 @@ async function submitFeedback(outcome) {
   setPending(true);
   try {
     const result = await request("/v1/feedback", body);
+    clearSkippedWork();
+    recommendationContext = null;
     byId("closed-title").textContent = `${result.task_title}: ${result.outcome.toLowerCase()}`;
     byId("closed-meta").textContent = `Task status: ${result.task_status.toLowerCase()}`;
     showScreen("closed");
@@ -431,6 +484,8 @@ byId("capture-form").addEventListener("submit", (event) => {
   captureItem();
 });
 byId("start-button").addEventListener("click", startWork);
+byId("not-now-button").addEventListener("click", declineRecommendation);
+byId("reset-skipped-button").addEventListener("click", resetSkippedWork);
 byId("feedback-form").addEventListener("submit", (event) => {
   event.preventDefault();
   if (event.submitter?.value) submitFeedback(event.submitter.value);

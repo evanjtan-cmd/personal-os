@@ -1,6 +1,6 @@
 # Build State
 
-Last updated: 2026-10-21 for active-session restoration on the browser Work page.
+Last updated: 2026-10-25 for browser recommendation flexibility.
 
 ## Implemented
 
@@ -102,6 +102,16 @@ Last updated: 2026-10-21 for active-session restoration on the browser Work page
   confirming no session is active. Its optional caller time cap is distinct
   from HARD availability and selected duration, is not defaulted or persisted,
   and activation never starts a session.
+- Work activation now accepts up to 100 distinct positive temporary excluded
+  Task IDs. Recommendation computes feasibility and feasible-MUST gating from
+  the complete current snapshot, then applies exclusions within the permissible
+  band before the existing 50-candidate bound. Exhausting feasible MUST work or
+  all other permissible work returns distinct deterministic NO_WORK results
+  without AI; lower-priority work never leaks through a declined MUST gate.
+  A non-empty exclusion request with remaining candidates requires one ranked
+  alternative and rejects provider NO_WORK without retry or fallback. The
+  exclusions are read-only, in-memory selection context and add no schema or
+  canonical-state mutation.
 - Machine Interface v1 additionally exposes `activate` with strict request
   validation and ACTIVE_SESSION/RECOMMEND/NO_WORK result kinds while retaining
   all existing version-1 operations unchanged.
@@ -149,6 +159,16 @@ Last updated: 2026-10-21 for active-session restoration on the browser Work page
   token prevents late startup responses from overwriting a newer Find Work,
   Start, or feedback action. The restoration request is read-only and never
   requests a recommendation.
+- The browser Work recommendation card now offers Not now and Reset skipped
+  work. It preserves the recommendation's time-cap context, accumulates Task
+  IDs only for the current browser selection flow, explains that Tasks remain
+  unchanged, and rolls back a newly skipped ID if the alternative request
+  fails so the prior recommendation remains startable. Successful normal
+  Find/Refresh and reset requests clear exclusions; failed requests restore the
+  prior selection context and skipped-work controls. Page reload, successful
+  start, active-session restoration, and completed feedback also clear
+  exclusions. Pending-state and startup-response race protections remain in
+  effect.
 - POS-021 extends overview tasks with execution mode and estimated minutes,
   adds Machine Interface v1 `update_task_planning` plus loopback
   `POST /v1/task-planning` for updating only those two planning facts, and adds
@@ -241,6 +261,30 @@ Last updated: 2026-10-21 for active-session restoration on the browser Work page
   preferences, or temporary context
 
 ## Validation
+
+Run on 2026-10-25 with Python 3.13.0 and pytest 8.4.2 for recommendation
+flexibility:
+
+- Complete Python coverage passed in bounded groups: 593 non-HTTP tests passed
+  in 30.02s and all 88 HTTP tests passed using disposable loopback servers.
+  The first sandboxed HTTP attempt was blocked from binding `127.0.0.1` with
+  `PermissionError: [Errno 1] Operation not permitted`; the unchanged suite
+  passed after granting local loopback bind permission.
+- Focused recommendation, activation, and recommendation-provider tests passed:
+  89 passed in 3.62s.
+- Focused bridge tests passed: 129 passed in 1.05s.
+- Focused session and eligibility regression tests passed: 70 passed in 2.10s.
+- `node --test tests/test_work_page.js` — passed: 16 tests covering existing
+  session restoration/race behavior plus decline accumulation, exhaustion,
+  successful reset, failed-reset restoration, failed manual-flow restoration,
+  page-refresh reset, failed-Not-now rollback, exact alternative start
+  continuity, and double-click suppression.
+- `.venv/bin/python -m compileall -q src tests` — passed.
+- `node --check src/personal_os/static/work.js` and
+  `node --check src/personal_os/static/state.js` — passed.
+- `git diff --check` — passed.
+- No real user data, live AI provider, production service, package install,
+  schema migration, branch, commit, push, PR, merge, or deployment was used.
 
 Run on 2026-10-21 with Python 3.13.0 and pytest 8.4.2:
 

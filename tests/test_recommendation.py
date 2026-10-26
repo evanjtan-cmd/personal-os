@@ -6,7 +6,7 @@ import threading
 import pytest
 
 from personal_os.database import TABLE_DDL, initialize_database
-from personal_os.errors import PersistenceError
+from personal_os.errors import DomainValidationError, PersistenceError
 from personal_os.models import (
     CommitmentHardness, ProjectStatus, TaskExecutionMode, TaskImportance,
     TaskScheduleMode, TaskStatus,
@@ -240,6 +240,157 @@ def test_ai_no_work_without_must_is_valid_and_read_only(store) -> None:
     assert result.kind is RecommendationResultKind.NO_WORK
     assert result.deterministic_reason is None
     assert _database_dump(store.database_path) == before
+
+
+def test_exclusions_select_an_alternative_without_writing(store) -> None:
+    first = store.create_task("First")
+    second = store.create_task("Second")
+    before = _database_dump(store.database_path)
+    ranker = Ranker()
+
+    result = RecommendationService(store, ranker).recommend(
+        RecommendationContext(NOW, "UTC"), excluded_task_ids=(first.id,)
+    )
+
+    assert result.task == second
+    context, candidates = ranker.calls[0]
+    assert context.alternative_required is True
+    assert [item.task_id for item in candidates] == [second.id]
+    assert _database_dump(store.database_path) == before
+
+
+def test_repeated_exclusions_never_resupply_declined_tasks(store) -> None:
+    tasks = [store.create_task(f"Task {index}") for index in range(3)]
+    service = RecommendationService(store, Ranker())
+
+    second = service.recommend(
+        RecommendationContext(NOW, "UTC"),
+        excluded_task_ids=(tasks[0].id,),
+    )
+    third = service.recommend(
+        RecommendationContext(NOW, "UTC"),
+        excluded_task_ids=(tasks[0].id, tasks[1].id),
+    )
+
+    assert second.task == tasks[1]
+    assert third.task == tasks[2]
+
+
+def test_excluding_only_permissible_task_is_deterministic_no_work(store) -> None:
+    task = store.create_task("Only task")
+    before = _database_dump(store.database_path)
+    ranker = Ranker()
+
+    result = RecommendationService(store, ranker).recommend(
+        RecommendationContext(NOW, "UTC"), excluded_task_ids=(task.id,)
+    )
+
+    assert result.kind is RecommendationResultKind.NO_WORK
+    assert (
+        result.deterministic_reason
+        is DeterministicNoWorkReason.ALL_PERMISSIBLE_TASKS_EXCLUDED
+    )
+    assert "Reset skipped work" in result.explanation
+    assert not ranker.calls
+    assert _database_dump(store.database_path) == before
+
+
+def test_must_gate_is_applied_before_exclusions_and_lower_work_never_leaks(store) -> None:
+    first = store.create_task("Must one", importance=TaskImportance.MUST)
+    second = store.create_task("Must two", importance=TaskImportance.MUST)
+    store.create_task("Should", importance=TaskImportance.SHOULD)
+    ranker = Ranker()
+    service = RecommendationService(store, ranker)
+
+    result = service.recommend(
+        RecommendationContext(NOW, "UTC"), excluded_task_ids=(first.id,)
+    )
+    exhausted = service.recommend(
+        RecommendationContext(NOW, "UTC"),
+        excluded_task_ids=(first.id, second.id),
+    )
+
+    assert result.task == second
+    assert [item.task_id for item in ranker.calls[0][1]] == [second.id]
+    assert exhausted.kind is RecommendationResultKind.NO_WORK
+    assert (
+        exhausted.deterministic_reason
+        is DeterministicNoWorkReason.ALL_FEASIBLE_MUST_TASKS_EXCLUDED
+    )
+    assert "Only MUST work is currently permissible" in exhausted.explanation
+    assert len(ranker.calls) == 1
+
+
+def test_new_feasible_must_gates_during_an_existing_selection_flow(store) -> None:
+    lower = store.create_task("Should", importance=TaskImportance.SHOULD)
+    service = RecommendationService(store, Ranker())
+    assert service.recommend(RecommendationContext(NOW, "UTC")).task == lower
+    must = store.create_task("New must", importance=TaskImportance.MUST)
+
+    result = service.recommend(
+        RecommendationContext(NOW, "UTC"), excluded_task_ids=(lower.id,)
+    )
+
+    assert result.task == must
+
+
+def test_stale_and_ineligible_exclusions_are_ignored(store) -> None:
+    blocked = store.create_task("Blocked", status=TaskStatus.BLOCKED)
+    eligible = store.create_task("Eligible")
+    ranker = Ranker()
+
+    result = RecommendationService(store, ranker).recommend(
+        RecommendationContext(NOW, "UTC"),
+        excluded_task_ids=(999, blocked.id),
+    )
+
+    assert result.task == eligible
+    assert [item.task_id for item in ranker.calls[0][1]] == [eligible.id]
+
+
+def test_exclusions_are_applied_before_candidate_bound(store) -> None:
+    first = store.create_task("First")
+    second = store.create_task("Second")
+    ranker = Ranker()
+
+    result = RecommendationService(store, ranker, candidate_limit=1).recommend(
+        RecommendationContext(NOW, "UTC"), excluded_task_ids=(first.id,)
+    )
+
+    assert result.task == second
+    assert [item.task_id for item in ranker.calls[0][1]] == [second.id]
+
+
+def test_provider_no_work_is_rejected_only_for_alternative_mode(store) -> None:
+    task = store.create_task("Task")
+    choice = RecommendationChoice(
+        RecommendationChoiceKind.NO_WORK, None, None, None, "Nothing useful"
+    )
+    ordinary = RecommendationService(store, Ranker(choice)).recommend(
+        RecommendationContext(NOW, "UTC")
+    )
+    assert ordinary.kind is RecommendationResultKind.NO_WORK
+
+    with pytest.raises(RecommendationError) as error:
+        RecommendationService(store, Ranker(choice)).recommend(
+            RecommendationContext(NOW, "UTC"), excluded_task_ids=(999,)
+        )
+    assert error.value.kind is RecommendationFailureKind.INVALID_OUTPUT
+    assert "alternative" in str(error.value)
+    assert store.get_task(task.id) == task
+
+
+@pytest.mark.parametrize(
+    "excluded",
+    [[], (True,), (0,), (1.0,), ("1",), (1, 1), tuple(range(1, 102))],
+)
+def test_exclusion_service_boundary_is_strict(store, excluded) -> None:
+    store.create_task("Task")
+    with pytest.raises(DomainValidationError, match="excluded_task_ids"):
+        RecommendationService(store, Ranker()).recommend(
+            RecommendationContext(NOW, "UTC"),
+            excluded_task_ids=excluded,
+        )
 
 
 @pytest.mark.parametrize("choice", [

@@ -78,7 +78,9 @@ def test_active_session_wins_without_recommendation_or_mutation(store) -> None:
 
     timezone_resolver = Mock(side_effect=AssertionError("timezone is not needed"))
     result = WorkActivationService(store, recommendation_service).activate(
-        WorkActivationContext(NOW + timedelta(minutes=2)),
+        WorkActivationContext(
+            NOW + timedelta(minutes=2), excluded_task_ids=(task.id,)
+        ),
         timezone_resolver=timezone_resolver,
     )
 
@@ -109,6 +111,23 @@ def test_no_active_session_preserves_recommendation_result(store) -> None:
     assert ranker.calls[0][0].available_minutes == 20
     assert ranker.calls[0][1][0].allowed_durations == (5, 10, 15, 20)
     assert store.read_state_snapshot() == before
+
+
+def test_activation_forwards_temporary_exclusions_to_recommendation(store) -> None:
+    first = store.create_task("First")
+    second = store.create_task("Second")
+    ranker = RecordingRanker()
+
+    result = WorkActivationService(
+        store, RecommendationService(store, ranker)
+    ).activate(
+        WorkActivationContext(NOW, "UTC", excluded_task_ids=(first.id,))
+    )
+
+    assert result.kind is WorkActivationResultKind.RECOMMEND
+    assert result.recommendation is not None
+    assert result.recommendation.task == second
+    assert ranker.calls[0][0].alternative_required is True
 
 
 def test_deterministic_no_work_is_preserved_and_skips_ranker(store) -> None:
@@ -185,6 +204,15 @@ def test_hard_commitment_bound_remains_authoritative(store) -> None:
 def test_activation_context_rejects_malformed_time_cap(cap: object) -> None:
     with pytest.raises(DomainValidationError, match="time_cap_minutes"):
         WorkActivationContext(NOW, "UTC", cap)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "excluded",
+    [[], (True,), (0,), (1.5,), ("1",), (1, 1), tuple(range(1, 102))],
+)
+def test_activation_context_rejects_malformed_exclusions(excluded) -> None:
+    with pytest.raises(DomainValidationError, match="excluded_task_ids"):
+        WorkActivationContext(NOW, "UTC", excluded_task_ids=excluded)
 
 
 def test_activation_rejects_untyped_context(store) -> None:

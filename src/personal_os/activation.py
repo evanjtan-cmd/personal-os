@@ -47,7 +47,8 @@ class WorkActivationService:
             else timezone_resolver(context.timezone_name)
         )
         recommendation = self.recommendation_service.recommend(
-            context.as_recommendation_context(timezone_name)
+            context.as_recommendation_context(timezone_name),
+            excluded_task_ids=context.excluded_task_ids,
         )
         kind = (
             WorkActivationResultKind.RECOMMEND

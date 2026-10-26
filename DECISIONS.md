@@ -386,3 +386,32 @@ changed.
 Task Reopen is likewise a narrow lifecycle correction: COMPLETED or CANCELLED
 Tasks may move back to OPEN, with the existing active-session protection still
 enforced. This does not create generic Task editing.
+
+## 2026-10-25 — Recommendation declines are ephemeral selection context
+
+Work recommendation flexibility uses temporary Task-ID exclusions carried by
+the canonical activation boundary. The browser stores at most 100 distinct
+positive IDs only for the current selection flow; they are not canonical Task
+facts, are not persisted, and never imply BLOCKED, CANCELLED, COMPLETED, or a
+learned preference. Successful normal Find/Refresh and Reset requests, page
+reload, successful start, active-session restoration, and completed feedback
+clear the browser context. A failed Find/Refresh or Reset restores the prior
+selection context so the still-visible recommendation or deterministic NO_WORK
+explanation remains coherent and retryable.
+
+The recommendation service computes current eligibility, duration feasibility,
+and feasible-MUST gating from the complete coherent snapshot before applying
+exclusions. It then removes excluded IDs only from the permissible priority
+band and does so before candidate sorting and the 50-candidate AI bound. If the
+band is exhausted, deterministic NO_WORK distinguishes exhausted feasible MUST
+work from exhausted non-MUST permissible work and AI is not called. Lower work
+never becomes permissible merely because every MUST was declined.
+
+A non-empty exclusion request is an explicit alternative request. When
+permissible candidates remain, the ranker must choose one and provider NO_WORK
+is invalid output; ordinary initial recommendation keeps its existing NO_WORK
+semantics. Each alternative request makes at most one ordinary ranking call,
+has no deterministic fallback action or duration, and remains subject to fresh
+atomic session-start revalidation if accepted. Machine Interface v1 and
+`POST /v1/activate` add the optional validated `excluded_task_ids` field without
+a new endpoint, protocol version, table, or migration.
