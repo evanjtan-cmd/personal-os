@@ -209,16 +209,20 @@ personal-os-http --port 8765
 
 Open `http://127.0.0.1:8765/` in a browser. The Work page can request a
 recommendation, start it with the exact suggested action and duration, and
-record FINISHED, PROGRESS, or BLOCKED feedback. It waits for an explicit click
-before requesting another recommendation.
+record FINISHED, PROGRESS, or BLOCKED feedback. A secondary **Not now** action
+temporarily excludes the current Task and requests another permissible choice;
+**Reset skipped work** clears those in-memory exclusions. Skipping never changes
+the Task or persists a preference. The page waits for an explicit click before
+requesting another recommendation.
 
 The server binds only to `127.0.0.1`; the port defaults to `8765`. It requires
 the exact loopback Host header and rejects cross-origin POSTs. There is no CORS
 or authentication. When no session is active, configure an IANA timezone in
 the page or with `PERSONAL_OS_TIMEZONE`.
 
-The JSON API accepts `POST /v1/activate` with optional `timezone` and
-`time_cap_minutes`; `POST /v1/start` with `task_id`, `planned_minutes`, and
+The JSON API accepts `POST /v1/activate` with optional `timezone`,
+`time_cap_minutes`, and `excluded_task_ids` (an array of at most 100 distinct
+positive Task IDs); `POST /v1/start` with `task_id`, `planned_minutes`, and
 optional `timezone`, `available_minutes`, `selected_action`, and `start_reason`;
 and `POST /v1/feedback` with `outcome` and optional `result_note`. `version` and
 `operation` are transport-owned and rejected in all HTTP request bodies.
@@ -226,7 +230,7 @@ and `POST /v1/feedback` with `outcome` and optional `result_note`. `version` and
 ```bash
 curl -X POST http://127.0.0.1:8765/v1/activate \
   -H 'Content-Type: application/json' \
-  -d '{"timezone":"America/New_York","time_cap_minutes":20}'
+  -d '{"timezone":"America/New_York","time_cap_minutes":20,"excluded_task_ids":[7]}'
 ```
 
 Responses use the Machine Interface v1 envelope and preserve the bridge's

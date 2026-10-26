@@ -13,6 +13,8 @@ from personal_os.models import (
     require_identifier, require_text,
 )
 
+MAX_EXCLUDED_TASK_IDS = 100
+
 
 class EligibilityReason(StrEnum):
     ELIGIBLE = "ELIGIBLE"
@@ -53,6 +55,8 @@ class DeterministicNoWorkReason(StrEnum):
     ACTIVE_HARD_COMMITMENT = "ACTIVE_HARD_COMMITMENT"
     ACTIVE_OPEN_ENDED_HARD_COMMITMENT = "ACTIVE_OPEN_ENDED_HARD_COMMITMENT"
     NO_FEASIBLE_TASKS = "NO_FEASIBLE_TASKS"
+    ALL_FEASIBLE_MUST_TASKS_EXCLUDED = "ALL_FEASIBLE_MUST_TASKS_EXCLUDED"
+    ALL_PERMISSIBLE_TASKS_EXCLUDED = "ALL_PERMISSIBLE_TASKS_EXCLUDED"
 
 
 class RecommendationChoiceKind(StrEnum):
@@ -137,6 +141,7 @@ class RecommendationRankingContext:
     availability_kind: AvailabilityKind
     available_minutes: int | None
     must_gated: bool
+    alternative_required: bool = False
 
 
 @dataclass(frozen=True, slots=True)

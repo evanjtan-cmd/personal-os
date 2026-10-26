@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from personal_os.errors import DomainValidationError
 from personal_os.models import Task, normalize_instant, require_text
 from personal_os.recommendation_types import (
+    MAX_EXCLUDED_TASK_IDS,
     RecommendationContext,
     RecommendationResult,
     RecommendationResultKind,
@@ -28,6 +29,7 @@ class WorkActivationContext:
     reference_time: datetime
     timezone_name: str | None = None
     time_cap_minutes: int | None = None
+    excluded_task_ids: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         if self.time_cap_minutes is not None and (
@@ -36,6 +38,19 @@ class WorkActivationContext:
             raise DomainValidationError(
                 "time_cap_minutes must be a nonnegative integer or None"
             )
+        if not isinstance(self.excluded_task_ids, tuple) or any(
+            type(task_id) is not int or task_id <= 0
+            for task_id in self.excluded_task_ids
+        ):
+            raise DomainValidationError(
+                "excluded_task_ids must be a tuple of positive integers"
+            )
+        if len(self.excluded_task_ids) > MAX_EXCLUDED_TASK_IDS:
+            raise DomainValidationError(
+                f"excluded_task_ids may contain at most {MAX_EXCLUDED_TASK_IDS} IDs"
+            )
+        if len(set(self.excluded_task_ids)) != len(self.excluded_task_ids):
+            raise DomainValidationError("excluded_task_ids must be distinct")
         object.__setattr__(
             self,
             "reference_time",

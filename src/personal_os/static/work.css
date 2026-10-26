@@ -52,6 +52,9 @@ input:focus, textarea:focus, select:focus, button:focus-visible, summary:focus-v
 .detail-label { color: #517062; font-size: 12px; font-weight: 700; }
 .action { margin: 7px 0 0; font-size: 18px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
 .explanation { max-width: 62ch; color: #4f5c53; font-size: 15px; line-height: 1.6; overflow-wrap: anywhere; }
+.recommendation-actions { display: flex; flex-wrap: wrap; gap: 9px; }
+.skipped-controls { margin: -40px 0 60px; padding: 14px 0 0; border-top: 1px solid #d9dfda; }
+.skipped-controls p { margin-bottom: 10px; color: #607067; font-size: 13px; line-height: 1.5; }
 .feedback-form { margin-top: 28px; }
 .feedback-actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 16px; }
 .error { margin: 22px 0 0; padding: 12px 15px; border-left: 3px solid #b54334; background: #fbefec; color: #79372f; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
@@ -90,4 +93,5 @@ input:focus, textarea:focus, select:focus, button:focus-visible, summary:focus-v
   .capture-form .button,
   .controls .button { grid-column: 1 / -1; grid-row: auto; }
   .feedback-actions .button { flex: 1 1 130px; }
+  .recommendation-actions .button { flex: 1 1 130px; }
 }

@@ -71,7 +71,10 @@ def test_adapter_uses_strict_responses_without_raw_temporal_context() -> None:
     assert "not a substitute for the action" in instructions
     payload = json.loads(responses.kwargs["input"])
     serialized = json.dumps(payload).lower()
-    assert set(payload) == {"availability", "must_gated", "candidates"}
+    assert set(payload) == {
+        "availability", "must_gated", "alternative_required", "candidates"
+    }
+    assert payload["alternative_required"] is False
     assert "reference_time" not in serialized
     assert "timezone" not in serialized
     assert "daypart" not in serialized
@@ -113,7 +116,32 @@ def test_valid_no_work_shape_remains_supported_without_must_gate() -> None:
 
     assert choice.kind.value == "NO_WORK"
     assert choice.action is None
-    assert "only when must_gated is false and none" in responses.kwargs["instructions"].lower()
+    assert "only when must_gated is false, alternative_required is false" in (
+        responses.kwargs["instructions"].lower()
+    )
+
+
+def test_alternative_mode_requires_a_recommendation_in_provider_contract() -> None:
+    response = SimpleNamespace(status="completed", output=[], output_text=json.dumps({
+        "kind": "RECOMMEND", "task_id": 1, "duration_minutes": 10,
+        "action": "Write for ten minutes.", "reason": "Alternative",
+    }))
+    client, responses = setup(response)
+
+    OpenAIResponsesRecommendationRanker(
+        client=client, model="gpt-test"
+    ).recommend(
+        RecommendationRankingContext(
+            AvailabilityKind.FINITE, 20, False, alternative_required=True
+        ),
+        (candidate(),),
+    )
+
+    payload = json.loads(responses.kwargs["input"])
+    assert payload["alternative_required"] is True
+    instructions = responses.kwargs["instructions"].lower()
+    assert "when alternative_required is true" in instructions
+    assert "must not return no_work" in instructions
 
 
 def test_adapter_configuration_is_lazy(monkeypatch) -> None:

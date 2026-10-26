@@ -64,7 +64,10 @@
         <p id="recommendation-action" class="action"></p>
       </div>
       <p id="recommendation-explanation" class="explanation"></p>
-      <button id="start-button" class="button primary" type="button">Start work</button>
+      <div class="recommendation-actions">
+        <button id="start-button" class="button primary" type="button">Start work</button>
+        <button id="not-now-button" class="button" type="button">Not now</button>
+      </div>
     </section>
 
     <section id="active" class="state" aria-live="polite" hidden>
@@ -92,6 +95,11 @@
       <h2>No work right now.</h2>
       <p id="no-work-explanation" class="explanation"></p>
     </section>
+
+    <div id="skipped-controls" class="skipped-controls" hidden>
+      <p>Skipped work is excluded only from this search. The original Task is unchanged.</p>
+      <button id="reset-skipped-button" class="button" type="button">Reset skipped work</button>
+    </div>
 
     <section id="closed" class="state" aria-live="polite" hidden>
       <p class="eyebrow">SESSION RECORDED</p>

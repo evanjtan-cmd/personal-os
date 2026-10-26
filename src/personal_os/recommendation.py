@@ -12,7 +12,8 @@ from personal_os.models import (
     serialize_instant,
 )
 from personal_os.recommendation_types import (
-    AvailabilityKind, DeterministicNoWorkReason, EligibleTaskCandidate,
+    MAX_EXCLUDED_TASK_IDS, AvailabilityKind, DeterministicNoWorkReason,
+    EligibleTaskCandidate,
     RecommendationChoice, RecommendationChoiceKind, RecommendationContext,
     RecommendationError, RecommendationFailureKind, RecommendationRankingContext,
     RecommendationResult, RecommendationResultKind, ScheduleState, DeadlineState,
@@ -112,9 +113,27 @@ class RecommendationService:
             raise DomainValidationError("candidate_limit must be a positive integer")
         self.store, self.ranker, self.candidate_limit = store, ranker, candidate_limit
 
-    def recommend(self, context: RecommendationContext) -> RecommendationResult:
+    def recommend(
+        self,
+        context: RecommendationContext,
+        *,
+        excluded_task_ids: tuple[int, ...] = (),
+    ) -> RecommendationResult:
         if not isinstance(context, RecommendationContext):
             raise DomainValidationError("context must be a RecommendationContext")
+        if not isinstance(excluded_task_ids, tuple) or any(
+            type(task_id) is not int or task_id <= 0
+            for task_id in excluded_task_ids
+        ):
+            raise DomainValidationError(
+                "excluded_task_ids must be a tuple of positive integers"
+            )
+        if len(set(excluded_task_ids)) != len(excluded_task_ids):
+            raise DomainValidationError("excluded_task_ids must be distinct")
+        if len(excluded_task_ids) > MAX_EXCLUDED_TASK_IDS:
+            raise DomainValidationError(
+                f"excluded_task_ids may contain at most {MAX_EXCLUDED_TASK_IDS} IDs"
+            )
         zone = ZoneInfo(context.timezone_name)
         projects, tasks, commitments = self.store.read_recommendation_snapshot()
         availability = calculate_availability(context, commitments)
@@ -171,9 +190,37 @@ class RecommendationService:
             candidates = [
                 item for item in candidates if item.importance is TaskImportance.MUST
             ]
+        excluded = frozenset(excluded_task_ids)
+        if excluded:
+            candidates = [
+                item for item in candidates if item.task_id not in excluded
+            ]
+        if not candidates:
+            if must_gated:
+                explanation = (
+                    "All feasible MUST work was skipped for this search. "
+                    "Only MUST work is currently permissible; reset skipped work "
+                    "to reconsider it."
+                )
+                reason = DeterministicNoWorkReason.ALL_FEASIBLE_MUST_TASKS_EXCLUDED
+            else:
+                explanation = (
+                    "All currently permissible work was skipped for this search. "
+                    "Reset skipped work to reconsider it."
+                )
+                reason = DeterministicNoWorkReason.ALL_PERMISSIBLE_TASKS_EXCLUDED
+            return RecommendationResult(
+                RecommendationResultKind.NO_WORK,
+                availability,
+                explanation,
+                deterministic_reason=reason,
+            )
         bounded = tuple(sorted(candidates, key=_candidate_sort_key)[:self.candidate_limit])
         ranking_context = RecommendationRankingContext(
-            availability.kind, availability.available_minutes, must_gated,
+            availability.kind,
+            availability.available_minutes,
+            must_gated,
+            alternative_required=bool(excluded_task_ids),
         )
         try:
             choice = self.ranker.recommend(ranking_context, bounded)
@@ -187,7 +234,13 @@ class RecommendationService:
                 str(exc) or type(exc).__name__,
             ) from exc
         return self._validate_choice(
-            choice, bounded, tasks_by_id, project_map, availability, must_gated,
+            choice,
+            bounded,
+            tasks_by_id,
+            project_map,
+            availability,
+            must_gated,
+            bool(excluded_task_ids),
         )
 
     @staticmethod
@@ -195,6 +248,7 @@ class RecommendationService:
         choice: RecommendationChoice,
         candidates: tuple[EligibleTaskCandidate, ...], tasks_by_id: dict,
         projects: dict, availability, must_gated: bool,
+        alternative_required: bool,
     ) -> RecommendationResult:
         if not isinstance(choice, RecommendationChoice):
             raise RecommendationError(
@@ -217,8 +271,15 @@ class RecommendationService:
                     RecommendationFailureKind.INVALID_OUTPUT,
                     "NO_WORK cannot contain task, duration, or action",
                 )
-            if must_gated:
-                raise RecommendationError(RecommendationFailureKind.INVALID_OUTPUT, "NO_WORK is invalid while feasible MUST tasks exist")
+            if must_gated or alternative_required:
+                detail = (
+                    "NO_WORK is invalid while feasible MUST tasks exist"
+                    if must_gated
+                    else "NO_WORK is invalid when an alternative is required"
+                )
+                raise RecommendationError(
+                    RecommendationFailureKind.INVALID_OUTPUT, detail
+                )
             return RecommendationResult(
                 RecommendationResultKind.NO_WORK, availability, choice.reason,
             )

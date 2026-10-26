@@ -229,7 +229,15 @@ the recommendation service and preserves RECOMMEND or NO_WORK. Its optional
 recommendation policy; it is distinct from deterministic HARD-commitment
 availability and from the selected recommendation duration. No cap is invented
 when omitted; omitted or blank availability is unknown rather than unlimited.
-Activation is read-only and never starts a session.
+Activation may also receive up to 100 distinct positive `excluded_task_ids` for
+one ephemeral work-selection flow. Feasible-MUST gating is determined from the
+complete feasible set before exclusions, exclusions are applied only within
+the permissible priority band and before the 50-candidate ranker bound, and an
+exhausted band returns deterministic NO_WORK without invoking AI. A non-empty
+exclusion request with remaining candidates requires the ranker to choose one;
+provider NO_WORK is invalid in that alternative mode. Exclusions are read-only,
+are never persisted, and do not extend start or feedback. Activation itself
+never starts a session.
 
 ## POS-001 executable boundary
 
@@ -397,3 +405,13 @@ candidate facts—never raw time, timezone, clock/daypart, rules, commitments, o
 mutation access—and strict validation rejects unknown tasks, unsupplied
 durations, contradictory fields, and NO_WORK during MUST gating. POS-004 adds no
 schema, mutation, CLI, session, history, rule evaluation, calendar, or UI.
+
+Temporary recommendation exclusions do not change eligibility or importance.
+The service establishes the complete feasible priority band first, removes the
+excluded Task IDs from that band second, and only then sorts and applies the
+50-candidate bound. Thus excluding every feasible MUST produces deterministic
+NO_WORK with an explicit MUST-only explanation rather than exposing SHOULD or
+COULD work. Unknown or newly ineligible excluded IDs are harmless. Initial
+recommendation retains ordinary NO_WORK semantics; an explicit alternative
+request requires one supplied remaining candidate to be selected and makes at
+most one ranker call.

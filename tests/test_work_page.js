@@ -27,6 +27,7 @@ const elementIds = [
   "recommendation-action",
   "recommendation-explanation",
   "start-button",
+  "not-now-button",
   "active-title",
   "active-meta",
   "active-action",
@@ -34,6 +35,8 @@ const elementIds = [
   "result-note",
   "feedback-form",
   "no-work-explanation",
+  "skipped-controls",
+  "reset-skipped-button",
   "closed-title",
   "closed-meta",
   "next-button",
@@ -97,7 +100,7 @@ function overview(session) {
 function createPage(fetch) {
   const elements = Object.fromEntries(elementIds.map((id) => [id, new FakeElement()]));
   for (const id of screenIds) elements[id].hidden = true;
-  for (const id of ["error", "progress", "capture-progress", "capture-result", "active-action-wrap"]) {
+  for (const id of ["error", "progress", "capture-progress", "capture-result", "active-action-wrap", "skipped-controls"]) {
     elements[id].hidden = true;
   }
   const document = {
@@ -337,4 +340,333 @@ test("retains Find Work, Start, and feedback requests", async () => {
   });
   assert.equal(page.elements.closed.hidden, false);
   assert.equal(page.elements["closed-title"].textContent, "Finish draft: finished");
+});
+
+test("Not now accumulates exclusions and successful reset clears skipped work", async () => {
+  const calls = [];
+  const page = createPage((path, options) => {
+    calls.push({ options, path });
+    if (path === "/v1/overview") return Promise.resolve(response(overview(null)));
+    if (path !== "/v1/activate") throw new Error(`Unexpected request: ${path}`);
+    const body = JSON.parse(options.body);
+    const excluded = body.excluded_task_ids || [];
+    if (excluded.length === 0) {
+      return Promise.resolve(response({ ok: true, result: {
+        kind: "RECOMMEND", task_id: 1, task_title: "First", project_name: null,
+        duration_minutes: 10, action: "Do first.", explanation: "First fit.",
+      } }));
+    }
+    if (excluded.length === 1) {
+      return Promise.resolve(response({ ok: true, result: {
+        kind: "RECOMMEND", task_id: 2, task_title: "Second", project_name: null,
+        duration_minutes: 10, action: "Do second.", explanation: "Second fit.",
+      } }));
+    }
+    return Promise.resolve(response({ ok: true, result: {
+      kind: "NO_WORK",
+      explanation: "All currently permissible work was skipped for this search.",
+      reason: "ALL_PERMISSIBLE_TASKS_EXCLUDED",
+    } }));
+  });
+
+  await settle();
+  page.elements["time-cap"].value = "20";
+  page.trigger("activate-form", "submit");
+  await settle();
+  page.trigger("not-now-button", "click");
+  await settle();
+  page.trigger("not-now-button", "click");
+  await settle();
+
+  const activationBodies = calls
+    .filter((call) => call.path === "/v1/activate")
+    .map((call) => JSON.parse(call.options.body));
+  assert.deepEqual(activationBodies, [
+    { time_cap_minutes: 20 },
+    { time_cap_minutes: 20, excluded_task_ids: [1] },
+    { time_cap_minutes: 20, excluded_task_ids: [1, 2] },
+  ]);
+  assert.equal(page.elements["no-work"].hidden, false);
+  assert.equal(page.elements["skipped-controls"].hidden, false);
+
+  page.trigger("reset-skipped-button", "click");
+  await settle();
+  assert.deepEqual(JSON.parse(calls.at(-1).options.body), { time_cap_minutes: 20 });
+  assert.equal(page.elements.recommendation.hidden, false);
+  assert.equal(page.elements["recommendation-title"].textContent, "First");
+  assert.equal(page.elements["skipped-controls"].hidden, true);
+
+  page.trigger("not-now-button", "click");
+  await settle();
+  assert.deepEqual(JSON.parse(calls.at(-1).options.body), {
+    time_cap_minutes: 20,
+    excluded_task_ids: [1],
+  });
+});
+
+test("failed reset preserves exhausted NO_WORK state and skipped controls", async () => {
+  const activationBodies = [];
+  const page = createPage((path, options) => {
+    if (path === "/v1/overview") return Promise.resolve(response(overview(null)));
+    if (path !== "/v1/activate") throw new Error(`Unexpected request: ${path}`);
+    const body = JSON.parse(options.body);
+    activationBodies.push(body);
+    if (activationBodies.length === 1) {
+      return Promise.resolve(response({ ok: true, result: {
+        kind: "RECOMMEND", task_id: 1, task_title: "Only task", project_name: null,
+        duration_minutes: 10, action: "Do the task.", explanation: "It fits.",
+      } }));
+    }
+    if (activationBodies.length === 2) {
+      return Promise.resolve(response({ ok: true, result: {
+        kind: "NO_WORK",
+        explanation: "All currently permissible work was skipped for this search.",
+        reason: "ALL_PERMISSIBLE_TASKS_EXCLUDED",
+      } }));
+    }
+    return Promise.resolve(response({
+      ok: false, error: { message: "provider unavailable" },
+    }, 500));
+  });
+
+  await settle();
+  page.trigger("activate-form", "submit");
+  await settle();
+  page.trigger("not-now-button", "click");
+  await settle();
+  page.trigger("reset-skipped-button", "click");
+  await settle();
+
+  assert.deepEqual(activationBodies, [{}, { excluded_task_ids: [1] }, {}]);
+  assert.equal(page.elements["no-work"].hidden, false);
+  assert.equal(
+    page.elements["no-work-explanation"].textContent,
+    "All currently permissible work was skipped for this search.",
+  );
+  assert.equal(page.elements["skipped-controls"].hidden, false);
+  assert.equal(page.elements["reset-skipped-button"].disabled, false);
+  assert.match(page.elements.error.textContent, /provider unavailable/i);
+});
+
+test("failed manual Find Work preserves the visible alternative and exclusion context", async () => {
+  const activationBodies = [];
+  const page = createPage((path, options) => {
+    if (path === "/v1/overview") return Promise.resolve(response(overview(null)));
+    if (path !== "/v1/activate") throw new Error(`Unexpected request: ${path}`);
+    const body = JSON.parse(options.body);
+    activationBodies.push(body);
+    if (activationBodies.length === 1) {
+      return Promise.resolve(response({ ok: true, result: {
+        kind: "RECOMMEND", task_id: 1, task_title: "First", project_name: null,
+        duration_minutes: 10, action: "Do first.", explanation: "First fit.",
+      } }));
+    }
+    if (activationBodies.length === 2) {
+      return Promise.resolve(response({ ok: true, result: {
+        kind: "RECOMMEND", task_id: 2, task_title: "Second", project_name: null,
+        duration_minutes: 10, action: "Do second.", explanation: "Second fit.",
+      } }));
+    }
+    if (activationBodies.length === 3) {
+      return Promise.resolve(response({
+        ok: false, error: { message: "provider unavailable" },
+      }, 500));
+    }
+    return Promise.resolve(response({ ok: true, result: {
+      kind: "NO_WORK",
+      explanation: "All currently permissible work was skipped for this search.",
+      reason: "ALL_PERMISSIBLE_TASKS_EXCLUDED",
+    } }));
+  });
+
+  await settle();
+  page.trigger("activate-form", "submit");
+  await settle();
+  page.trigger("not-now-button", "click");
+  await settle();
+  page.trigger("activate-form", "submit");
+  await settle();
+
+  assert.deepEqual(activationBodies.slice(0, 3), [{}, { excluded_task_ids: [1] }, {}]);
+  assert.equal(page.elements.recommendation.hidden, false);
+  assert.equal(page.elements["recommendation-title"].textContent, "Second");
+  assert.equal(page.elements["recommendation-explanation"].textContent, "Second fit.");
+  assert.equal(page.elements["skipped-controls"].hidden, false);
+
+  page.trigger("not-now-button", "click");
+  await settle();
+  assert.deepEqual(activationBodies.at(-1), { excluded_task_ids: [1, 2] });
+  assert.equal(page.elements["no-work"].hidden, false);
+});
+
+test("manual Find Work starts a new selection flow", async () => {
+  const activationBodies = [];
+  const page = createPage((path, options) => {
+    if (path === "/v1/overview") return Promise.resolve(response(overview(null)));
+    if (path === "/v1/activate") {
+      activationBodies.push(JSON.parse(options.body));
+      return Promise.resolve(response({ ok: true, result: {
+        kind: "RECOMMEND", task_id: activationBodies.length === 2 ? 2 : 1,
+        task_title: "Task", project_name: null, duration_minutes: 5,
+        action: "Do task.", explanation: "Fits.",
+      } }));
+    }
+    throw new Error(`Unexpected request: ${path}`);
+  });
+
+  await settle();
+  page.trigger("activate-form", "submit");
+  await settle();
+  page.trigger("not-now-button", "click");
+  await settle();
+  page.trigger("activate-form", "submit");
+  await settle();
+
+  assert.deepEqual(activationBodies, [{}, { excluded_task_ids: [1] }, {}]);
+  assert.equal(page.elements["skipped-controls"].hidden, true);
+});
+
+test("failed alternative rolls back the exclusion and keeps Start usable", async () => {
+  const calls = [];
+  const page = createPage((path, options) => {
+    calls.push({ path, options });
+    if (path === "/v1/overview") return Promise.resolve(response(overview(null)));
+    if (path === "/v1/activate" && calls.filter((call) => call.path === path).length === 1) {
+      return Promise.resolve(response({ ok: true, result: {
+        kind: "RECOMMEND", task_id: 4, task_title: "Finish draft",
+        project_name: null, duration_minutes: 15,
+        action: "Write the next paragraph.", explanation: "Fits.",
+      } }));
+    }
+    if (path === "/v1/activate") {
+      return Promise.resolve(response({
+        ok: false, error: { message: "provider unavailable" },
+      }, 500));
+    }
+    if (path === "/v1/start") {
+      return Promise.resolve(response({ ok: true, result: activeSession() }));
+    }
+    throw new Error(`Unexpected request: ${path}`);
+  });
+
+  await settle();
+  page.trigger("activate-form", "submit");
+  await settle();
+  page.trigger("not-now-button", "click");
+  await settle();
+
+  assert.equal(page.elements.recommendation.hidden, false);
+  assert.equal(page.elements["recommendation-title"].textContent, "Finish draft");
+  assert.equal(page.elements["skipped-controls"].hidden, true);
+  assert.match(page.elements.error.textContent, /current recommendation is still available/i);
+
+  page.trigger("start-button", "click");
+  await settle();
+  assert.deepEqual(JSON.parse(calls.at(-1).options.body), {
+    task_id: 4,
+    planned_minutes: 15,
+    selected_action: "Write the next paragraph.",
+  });
+  assert.equal(page.elements.active.hidden, false);
+});
+
+test("starting an alternative clears skipped work and preserves its exact choice", async () => {
+  const calls = [];
+  const page = createPage((path, options) => {
+    calls.push({ path, options });
+    if (path === "/v1/overview") return Promise.resolve(response(overview(null)));
+    if (path === "/v1/activate") {
+      const excluded = JSON.parse(options.body).excluded_task_ids || [];
+      return Promise.resolve(response({ ok: true, result: excluded.length === 0 ? {
+        kind: "RECOMMEND", task_id: 1, task_title: "First", project_name: null,
+        duration_minutes: 5, action: "Do first.", explanation: "Fits.",
+      } : {
+        kind: "RECOMMEND", task_id: 2, task_title: "Second", project_name: null,
+        duration_minutes: 15, action: "Do second exactly.", explanation: "Alternative.",
+      } }));
+    }
+    if (path === "/v1/start") {
+      return Promise.resolve(response({ ok: true, result: {
+        ...activeSession(), task_id: 2, task_title: "Second",
+        planned_minutes: 15, selected_action: "Do second exactly.",
+      } }));
+    }
+    throw new Error(`Unexpected request: ${path}`);
+  });
+
+  await settle();
+  page.trigger("activate-form", "submit");
+  await settle();
+  page.trigger("not-now-button", "click");
+  await settle();
+  assert.equal(page.elements["skipped-controls"].hidden, false);
+  page.trigger("start-button", "click");
+  await settle();
+
+  assert.deepEqual(JSON.parse(calls.at(-1).options.body), {
+    task_id: 2,
+    planned_minutes: 15,
+    selected_action: "Do second exactly.",
+  });
+  assert.equal(page.elements.active.hidden, false);
+  assert.equal(page.elements["skipped-controls"].hidden, true);
+});
+
+test("double Not now during a delayed response sends only one alternative request", async () => {
+  const alternative = deferred();
+  const calls = [];
+  const page = createPage((path, options) => {
+    calls.push({ path, options });
+    if (path === "/v1/overview") return Promise.resolve(response(overview(null)));
+    if (path === "/v1/activate" && calls.filter((call) => call.path === path).length === 1) {
+      return Promise.resolve(response({ ok: true, result: {
+        kind: "RECOMMEND", task_id: 1, task_title: "First", project_name: null,
+        duration_minutes: 5, action: "Do first.", explanation: "Fits.",
+      } }));
+    }
+    if (path === "/v1/activate") return alternative.promise;
+    throw new Error(`Unexpected request: ${path}`);
+  });
+
+  await settle();
+  page.trigger("activate-form", "submit");
+  await settle();
+  page.trigger("not-now-button", "click");
+  page.trigger("not-now-button", "click");
+  await settle();
+  assert.equal(calls.filter((call) => call.path === "/v1/activate").length, 2);
+
+  alternative.resolve(response({ ok: true, result: {
+    kind: "RECOMMEND", task_id: 2, task_title: "Second", project_name: null,
+    duration_minutes: 5, action: "Do second.", explanation: "Fits.",
+  } }));
+  await settle();
+  assert.equal(page.elements["recommendation-title"].textContent, "Second");
+});
+
+test("a fresh page starts with no exclusions", async () => {
+  const activationBodies = [];
+  const fetch = (path, options) => {
+    if (path === "/v1/overview") return Promise.resolve(response(overview(null)));
+    activationBodies.push(JSON.parse(options.body));
+    return Promise.resolve(response({ ok: true, result: {
+      kind: "RECOMMEND", task_id: 1, task_title: "First", project_name: null,
+      duration_minutes: 5, action: "Do first.", explanation: "Fits.",
+    } }));
+  };
+
+  const firstPage = createPage(fetch);
+  await settle();
+  firstPage.trigger("activate-form", "submit");
+  await settle();
+  firstPage.trigger("not-now-button", "click");
+  await settle();
+
+  const refreshedPage = createPage(fetch);
+  await settle();
+  refreshedPage.trigger("activate-form", "submit");
+  await settle();
+
+  assert.deepEqual(activationBodies.at(-1), {});
+  assert.equal(refreshedPage.elements["skipped-controls"].hidden, true);
 });
