@@ -39,24 +39,89 @@ function needsCommitmentProtection(commitment) {
   return commitment.protection_needs_input === true;
 }
 
+function importanceLabel(value) {
+  return {
+    UNSPECIFIED: "Not specified",
+    MUST: "Must do",
+    SHOULD: "Should do",
+    COULD: "Could do",
+  }[value];
+}
+
 function list(items, renderItem) {
   const output = element("ul", undefined, "state-list");
   for (const item of items) output.append(renderItem(item));
   return output;
 }
 
-async function postJson(path, body) {
-  const response = await fetch(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    credentials: "omit",
-  });
-  const envelope = await response.json();
-  if (!response.ok || !envelope.ok) {
-    throw new Error(envelope.error?.message || `Request failed (${response.status})`);
+const CONFIRMED_REJECTION = "CONFIRMED_REJECTION";
+const UNKNOWN_OUTCOME = "UNKNOWN_OUTCOME";
+
+class PostJsonError extends Error {
+  constructor(message, outcome) {
+    super(message);
+    this.name = "PostJsonError";
+    this.outcome = outcome;
   }
-  return envelope.result;
+}
+
+function caughtMessage(caught, fallback) {
+  return caught && typeof caught.message === "string" && caught.message
+    ? caught.message
+    : fallback;
+}
+
+async function postJson(path, body) {
+  let response;
+  try {
+    response = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      credentials: "omit",
+    });
+  } catch (caught) {
+    throw new PostJsonError(
+      caughtMessage(caught, "The request did not return a response."),
+      UNKNOWN_OUTCOME,
+    );
+  }
+
+  let envelope;
+  try {
+    envelope = await response.json();
+  } catch (caught) {
+    throw new PostJsonError(
+      caughtMessage(caught, "The server response could not be read."),
+      UNKNOWN_OUTCOME,
+    );
+  }
+
+  const isEnvelope = envelope !== null && typeof envelope === "object";
+  const hasResult = isEnvelope && Object.prototype.hasOwnProperty.call(
+    envelope,
+    "result",
+  );
+  if (response.ok && isEnvelope && envelope.ok === true && hasResult) {
+    return envelope.result;
+  }
+
+  const serverMessage = (
+    isEnvelope
+    && envelope.error !== null
+    && typeof envelope.error === "object"
+    && typeof envelope.error.message === "string"
+    && envelope.error.message
+  ) || `Request failed (${response.status})`;
+  if (
+    response.status === 400
+    && isEnvelope
+    && envelope.ok === false
+    && envelope.error?.code === "INVALID_REQUEST"
+  ) {
+    throw new PostJsonError(serverMessage, CONFIRMED_REJECTION);
+  }
+  throw new PostJsonError(serverMessage, UNKNOWN_OUTCOME);
 }
 
 function renderDurationQuestion(task) {
@@ -268,7 +333,180 @@ function renderActive(session) {
   target.replaceChildren(item);
 }
 
-function renderTasks(tasks) {
+function renderTaskFactsEditor(task, projects) {
+  const details = document.createElement("details");
+  details.className = "planning-editor task-facts-editor";
+  details.append(element("summary", "Edit task"));
+
+  const form = document.createElement("form");
+  form.dataset.taskId = String(task.id);
+
+  const titleLabel = element("label", "Task name");
+  const titleInput = document.createElement("input");
+  titleInput.name = "title";
+  titleInput.type = "text";
+  titleInput.required = true;
+  titleInput.value = task.title;
+  titleLabel.append(titleInput);
+
+  const importanceControl = element("label", "Importance");
+  const importanceSelect = document.createElement("select");
+  importanceSelect.name = "importance";
+  for (const [value, label] of [
+    ["UNSPECIFIED", "Not specified"],
+    ["MUST", "Must do"],
+    ["SHOULD", "Should do"],
+    ["COULD", "Could do"],
+  ]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    importanceSelect.append(option);
+  }
+  importanceSelect.value = task.importance;
+  importanceControl.append(importanceSelect);
+  const importanceHelp = element(
+    "p",
+    "Feasible Must do tasks take precedence over lower importance categories.",
+    "meta",
+  );
+
+  const projectControl = element("label", "Project");
+  const projectSelect = document.createElement("select");
+  projectSelect.name = "project_id";
+  const noProject = document.createElement("option");
+  noProject.value = "";
+  noProject.textContent = "No project";
+  projectSelect.append(noProject);
+  const activeProjectIds = new Set();
+  for (const project of projects) {
+    activeProjectIds.add(project.id);
+    const option = document.createElement("option");
+    option.value = String(project.id);
+    option.textContent = project.name;
+    projectSelect.append(option);
+  }
+  const currentProjectIsInactive = (
+    task.project_id !== null && !activeProjectIds.has(task.project_id)
+  );
+  if (currentProjectIsInactive) {
+    const current = document.createElement("option");
+    current.value = String(task.project_id);
+    current.textContent = `${task.project_name || `Project #${task.project_id}`} (inactive, current)`;
+    current.disabled = true;
+    projectSelect.append(current);
+  }
+  projectSelect.value = task.project_id === null ? "" : String(task.project_id);
+  projectControl.append(projectSelect);
+
+  const message = element("p", "", "form-message");
+  message.hidden = true;
+  const actions = element("div", undefined, "planning-actions");
+  const save = element("button", "Save changes", "button primary");
+  save.type = "submit";
+  save.disabled = true;
+  const cancel = element("button", "Cancel", "button");
+  cancel.type = "button";
+  actions.append(save, cancel);
+  let submitting = false;
+  let needsAuthoritativeRefresh = false;
+
+  function selectedProjectId() {
+    return projectSelect.value === "" ? null : Number(projectSelect.value);
+  }
+
+  function correctionBody() {
+    const body = { task_id: task.id };
+    if (titleInput.value.trim() !== task.title) body.title = titleInput.value;
+    if (importanceSelect.value !== task.importance) {
+      body.importance = importanceSelect.value;
+    }
+    const projectId = selectedProjectId();
+    if (projectId !== task.project_id) body.project_id = projectId;
+    return body;
+  }
+
+  function updateSaveState() {
+    save.disabled = Object.keys(correctionBody()).length === 1;
+  }
+
+  function setEditorDisabled(disabled) {
+    titleInput.disabled = disabled;
+    importanceSelect.disabled = disabled;
+    projectSelect.disabled = disabled;
+    save.disabled = disabled;
+    cancel.disabled = disabled;
+  }
+
+  function lockUntilAuthoritativeRefresh(text) {
+    needsAuthoritativeRefresh = true;
+    setEditorDisabled(true);
+    byId("overview").hidden = true;
+    const error = byId("state-error");
+    error.textContent = text;
+    error.hidden = false;
+  }
+
+  for (const control of [titleInput, importanceSelect, projectSelect]) {
+    control.addEventListener("input", updateSaveState);
+    control.addEventListener("change", updateSaveState);
+  }
+  cancel.addEventListener("click", () => {
+    titleInput.value = task.title;
+    importanceSelect.value = task.importance;
+    projectSelect.value = task.project_id === null ? "" : String(task.project_id);
+    message.hidden = true;
+    message.textContent = "";
+    details.open = false;
+    updateSaveState();
+  });
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (submitting || needsAuthoritativeRefresh) return;
+    const body = correctionBody();
+    if (Object.keys(body).length === 1) return;
+    message.hidden = true;
+    submitting = true;
+    setEditorDisabled(true);
+    try {
+      await postJson("/v1/task-facts", body);
+      if (!await loadOverview()) {
+        lockUntilAuthoritativeRefresh(
+          "The task correction was saved, but the authoritative display could not refresh. Use Refresh to reload the current state.",
+        );
+      }
+    } catch (caught) {
+      if (caught?.outcome === CONFIRMED_REJECTION) {
+        message.textContent = `${caught.message} The correction was not saved. Review the task facts, then try again.`;
+        message.hidden = false;
+      } else {
+        lockUntilAuthoritativeRefresh(
+          `The task correction's save result is uncertain: ${caughtMessage(caught, "the request did not complete normally")} It may have been saved. Use Refresh to reload authoritative state before editing again.`,
+        );
+      }
+    } finally {
+      submitting = false;
+      if (!needsAuthoritativeRefresh) {
+        setEditorDisabled(false);
+        updateSaveState();
+      }
+    }
+  });
+
+  form.append(titleLabel, importanceControl, importanceHelp, projectControl);
+  if (currentProjectIsInactive) {
+    form.append(element(
+      "p",
+      "The current Project is inactive. Choose an active Project or No project to correct this relationship.",
+      "planning-warning",
+    ));
+  }
+  form.append(actions, message);
+  details.append(form);
+  return details;
+}
+
+function renderTasks(tasks, projects) {
   const target = byId("tasks");
   if (!tasks.length) {
     target.replaceChildren(empty("No open or blocked tasks."));
@@ -282,7 +520,7 @@ function renderTasks(tasks) {
     );
     const facts = [];
     if (task.project_name) facts.push(task.project_name);
-    if (task.importance !== "UNSPECIFIED") facts.push(task.importance);
+    if (task.importance !== "UNSPECIFIED") facts.push(importanceLabel(task.importance));
     if (task.schedule.mode !== "FLEXIBLE") facts.push(formatSchedule(task.schedule));
     const deadline = formatDeadline(task.deadline);
     if (deadline) facts.push(deadline);
@@ -294,6 +532,7 @@ function renderTasks(tasks) {
       element("p", facts.join(" · ") || "Open", "meta"),
     );
     item.append(renderTaskActions(task));
+    item.append(renderTaskFactsEditor(task, projects));
     item.append(renderPlanningEditor(task));
     return item;
   }));
@@ -518,13 +757,15 @@ async function loadOverview() {
     renderNeedsInput(envelope.result);
     renderActive(envelope.result.active_session);
     renderCommitments(envelope.result.commitments);
-    renderTasks(envelope.result.tasks);
+    renderTasks(envelope.result.tasks, envelope.result.projects);
     renderProjects(envelope.result.projects);
     renderHistory(envelope.result);
     byId("overview").hidden = false;
+    return true;
   } catch (caught) {
     error.textContent = `${caught.message} Check the server, then try again.`;
     error.hidden = false;
+    return false;
   } finally {
     byId("state-progress").hidden = true;
     button.disabled = false;

@@ -431,3 +431,25 @@ validation and year selection. Impossible calendar dates remain UNRESOLVED with
 an invalid-date explanation, while date-only schedule and deadline semantics,
 immutable raw capture text, Project/Task separation, and SQLite schema version
 9 remain unchanged.
+
+## 2026-10-26 — Existing Task facts use narrow atomic correction
+
+User-facing correction of an existing Task is a purpose-built mutation, not
+generic CRUD or capture reinterpretation. `correct_task_facts` accepts one or
+more explicit changes to title, importance, and Project relationship for an
+OPEN or BLOCKED Task. Omitted fields remain unchanged, explicit null removes a
+Project relationship, and a newly assigned Project must exist and be ACTIVE.
+The store validates Project status and commits all supplied corrections in one
+transaction. A true no-op leaves `updated_at` unchanged.
+
+Task-fact correction is permitted while that Task has an active work session.
+The Task ID and lifecycle state do not change, so session identity, planned
+duration, accepted `selected_action`, timestamps, feedback behavior, and closed
+session history remain intact. The corrected title becomes current canonical
+state but does not overwrite an accepted historical session action. Lifecycle
+status correction continues to reject a Task with an active session.
+
+The original Capture, raw text, and source relationship remain immutable; this
+slice adds no correction event log or schema migration. It also excludes
+closed-Task correction, Project creation or editing, schedule/deadline changes,
+planning changes, bulk editing, and generic Task mutation.

@@ -1,6 +1,6 @@
 # Build State
 
-Last updated: 2026-10-25 for POS-027 numeric missing-year date shorthand.
+Last updated: 2026-10-26 for POS-028 Task facts correction.
 
 ## Implemented
 
@@ -176,6 +176,26 @@ Last updated: 2026-10-25 for POS-027 numeric missing-year date shorthand.
   interprets execution mode without inventing durations, and Work/CLI capture
   confirmations show title, splittable vs one-sitting, supplied duration, and
   the warning when a one-sitting task still needs a duration.
+- POS-028 adds narrow atomic correction of title, importance, and Project
+  relationship for OPEN/BLOCKED Tasks. Machine Interface v1
+  `correct_task_facts` and loopback `POST /v1/task-facts` distinguish omitted
+  fields from explicit null, reject closed Tasks and newly assigned missing or
+  completed Projects, preserve unrelated canonical and historical state, and
+  leave `updated_at` unchanged for a true no-op. Correction is safe during an
+  active session because Task identity, lifecycle state, planned duration,
+  accepted action, timestamps, and feedback behavior are unchanged.
+- POS-028 adds a compact collapsed State-page editor with user-facing
+  importance labels, an active-Project selector, accurate visibility for an
+  existing inactive Project relationship, changed-fields-only requests,
+  Save/Cancel controls, duplicate-submission protection, validation messages,
+  and authoritative overview refresh after save. A saved correction whose
+  overview refresh fails hides and locks the stale editor, reports that
+  persistence succeeded, and relies on the existing Refresh control to restore
+  authoritative state without repeating the mutation. Explicit HTTP 400
+  validation rejection permits correction and resubmission; network failures,
+  malformed responses, and HTTP 5xx responses instead report an uncertain
+  mutation outcome and lock stale state until Refresh. Existing planning and
+  lifecycle controls remain separate and unchanged.
 - POS-024 adds canonical CANCELLED task state through schema version 7 and a
   narrow task lifecycle correction operation. OPEN/BLOCKED tasks may be marked
   Done or Remove, and BLOCKED tasks may be unblocked; tasks with an active
@@ -267,6 +287,27 @@ Last updated: 2026-10-25 for POS-027 numeric missing-year date shorthand.
   preferences, or temporary context
 
 ## Validation
+
+Run on 2026-10-26 with Python 3.13.0 and pytest 8.4.2 for POS-028:
+
+- `.venv/bin/python -m pytest --ignore=tests/test_http_api.py -q` — passed:
+  636 tests in 24.18s using isolated temporary databases and fake AI
+  boundaries.
+- `.venv/bin/python -m pytest tests/test_http_api.py -q` — passed: 97 tests
+  in 51.25s using disposable loopback servers. The first sandboxed attempt was
+  blocked from binding `127.0.0.1`; the unchanged suite passed after granting
+  local loopback bind permission.
+- `node --test tests/test_work_page.js tests/test_state_page.js` — passed: 24
+  browser behavior tests, including eight Task-facts scenarios covering save,
+  cancel, duplicate-submit suppression, confirmed rejection, uncertain
+  outcomes, and authoritative refresh recovery.
+- `.venv/bin/python -m compileall -q src tests` — passed.
+- `node --check src/personal_os/static/work.js` and
+  `node --check src/personal_os/static/state.js` — passed.
+- `git diff --check` — passed.
+- No real user data, live AI provider, production database, package
+  installation, schema migration, commit, push, PR, merge, or deployment was
+  used.
 
 Run on 2026-10-25 with Python 3.13.0 and pytest 8.4.2 for POS-027:
 

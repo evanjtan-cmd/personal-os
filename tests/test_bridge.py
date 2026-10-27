@@ -146,6 +146,13 @@ def test_invalid_protocol_envelope_is_rejected(
         },
         {
             "version": 1,
+            "operation": "correct_task_facts",
+            "task_id": 1,
+            "title": "Rename",
+            "status": "OPEN",
+        },
+        {
+            "version": 1,
             "operation": "resolve_inbox",
             "inbox_item_id": 1,
             "raw_text": "Corrected",
@@ -227,6 +234,29 @@ def test_unknown_fields_are_rejected_for_every_operation(
             "task_id": 1,
             "execution_mode": "SPLITTABLE",
             "estimated_minutes": 0,
+        },
+        {
+            "version": 1,
+            "operation": "correct_task_facts",
+            "task_id": 1,
+        },
+        {
+            "version": 1,
+            "operation": "correct_task_facts",
+            "task_id": 1,
+            "title": "   ",
+        },
+        {
+            "version": 1,
+            "operation": "correct_task_facts",
+            "task_id": 1,
+            "importance": "URGENT",
+        },
+        {
+            "version": 1,
+            "operation": "correct_task_facts",
+            "task_id": 1,
+            "project_id": True,
         },
         {"version": 1, "operation": "resolve_inbox", "inbox_item_id": 1},
         {
@@ -530,6 +560,77 @@ def test_update_task_planning_updates_only_planning_fields(tmp_path: Path) -> No
     assert updated.importance is TaskImportance.MUST
     assert updated.execution_mode is TaskExecutionMode.ONE_SITTING
     assert updated.estimated_minutes == 180
+
+
+def test_correct_task_facts_updates_only_supplied_facts_without_ai(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / DEFAULT_DATABASE_FILENAME
+    initialize_database(database_path)
+    store = SQLiteStateStore(database_path, clock=lambda: NOW)
+    project = store.create_project("College")
+    task = store.create_task(
+        "Drfat essay",
+        importance=TaskImportance.UNSPECIFIED,
+        estimated_minutes=30,
+    )
+    runtime = fake_runtime()
+    runtime.store = store
+
+    status, response, _ = invoke(
+        {
+            "version": 1,
+            "operation": "correct_task_facts",
+            "task_id": task.id,
+            "title": "Draft essay",
+            "importance": "MUST",
+            "project_id": project.id,
+        },
+        runtime,
+    )
+
+    assert status == 0
+    assert response["result"] == {
+        "task_id": task.id,
+        "title": "Draft essay",
+        "importance": "MUST",
+        "project_id": project.id,
+        "status": "OPEN",
+        "updated_at": "2026-09-01T14:00:00.000000Z",
+    }
+    updated = store.get_task(task.id)
+    assert updated.title == "Draft essay"
+    assert updated.importance is TaskImportance.MUST
+    assert updated.project_id == project.id
+    assert updated.estimated_minutes == task.estimated_minutes
+    runtime.capture_service.capture_text.assert_not_called()
+    runtime.recommendation_service.recommend.assert_not_called()
+    runtime.activation_service.activate.assert_not_called()
+    runtime.session_service.start_session.assert_not_called()
+
+
+def test_correct_task_facts_explicit_null_removes_project(tmp_path: Path) -> None:
+    database_path = tmp_path / DEFAULT_DATABASE_FILENAME
+    initialize_database(database_path)
+    store = SQLiteStateStore(database_path, clock=lambda: NOW)
+    project = store.create_project("College")
+    task = store.create_task("Essay", project_id=project.id)
+    runtime = fake_runtime()
+    runtime.store = store
+
+    status, response, _ = invoke(
+        {
+            "version": 1,
+            "operation": "correct_task_facts",
+            "task_id": task.id,
+            "project_id": None,
+        },
+        runtime,
+    )
+
+    assert status == 0
+    assert response["result"]["project_id"] is None
+    assert store.get_task(task.id).project_id is None
 
 
 def test_task_status_correction_uses_narrow_store_operation(tmp_path: Path) -> None:

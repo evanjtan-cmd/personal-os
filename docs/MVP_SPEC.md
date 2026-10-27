@@ -173,7 +173,7 @@ The human CLI remains a dogfood interface rather than a machine-readable API.
 `personal-os-bridge` provides the stable local machine boundary with integer
 protocol version 1 and the operations `capture`, `recommend`, `start`,
 `feedback`, `active`, `overview`, `resolve_inbox`, `dismiss_inbox`,
-`correct_task_status`, `configure_commitment_protection`,
+`correct_task_facts`, `correct_task_status`, `configure_commitment_protection`,
 `cancel_commitment`, and the narrow `update_task_planning` operation, plus the
 canonical `activate` operation for availability-now triggers. Requests cannot
 supply authoritative current/reference timestamps. Recommendation remains
@@ -200,6 +200,16 @@ operation as `GET /v1/overview`; it does not duplicate overview policy.
 The `update_task_planning` operation, also exposed to the browser as
 `POST /v1/task-planning`, may update only `execution_mode` and
 `estimated_minutes` for planning correction. It is not generic Task CRUD.
+The `correct_task_facts` operation, exposed as `POST /v1/task-facts`, accepts
+one or more explicit corrections to an OPEN or BLOCKED Task's `title`,
+`importance`, or `project_id`. Omitted fields remain unchanged, while an
+explicit null Project removes the relationship. A newly assigned Project must
+exist and be ACTIVE, and validation plus persistence are atomic. A true no-op
+does not advance the Task update timestamp. The operation may correct a Task
+during an active session because it preserves the Task ID, lifecycle status,
+planning facts, accepted session action, and session history. It cannot create
+a Task or Project, correct a closed Task, or mutate capture history, scheduling,
+deadlines, planning, or lifecycle state. It is not generic Task CRUD.
 The `resolve_inbox` operation, exposed to the browser as
 `POST /v1/resolve-inbox`, accepts an unresolved Inbox item ID and revised
 complete capture text, creates a new durable capture before provider inference,

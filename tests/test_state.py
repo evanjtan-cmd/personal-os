@@ -228,6 +228,178 @@ def test_task_planning_update_round_trips_only_planning_fields(
     assert cleared.importance is TaskImportance.MUST
 
 
+def test_task_facts_correction_is_atomic_and_preserves_unrelated_fields(
+    store: SQLiteStateStore,
+) -> None:
+    first_project = store.create_project("First")
+    second_project = store.create_project("Second")
+    task = store.create_task(
+        "Drfat essay",
+        project_id=first_project.id,
+        importance=TaskImportance.SHOULD,
+        schedule_mode=TaskScheduleMode.DAY,
+        day_date=date(2026, 9, 2),
+        deadline_date=date(2026, 9, 5),
+        estimated_minutes=45,
+        execution_mode=TaskExecutionMode.ONE_SITTING,
+    )
+
+    updated = store.correct_task_facts(
+        task.id,
+        title=" Draft essay ",
+        importance=TaskImportance.MUST,
+        project_id=second_project.id,
+    )
+
+    assert updated.id == task.id
+    assert updated.title == "Draft essay"
+    assert updated.importance is TaskImportance.MUST
+    assert updated.project_id == second_project.id
+    assert updated.status is task.status
+    assert updated.schedule_mode is task.schedule_mode
+    assert updated.day_date == task.day_date
+    assert updated.deadline_date == task.deadline_date
+    assert updated.estimated_minutes == task.estimated_minutes
+    assert updated.execution_mode is task.execution_mode
+    assert updated.created_at == task.created_at
+    assert updated.source_capture_id == task.source_capture_id
+    assert updated.updated_at > task.updated_at
+    assert store.list_tasks() == [updated]
+    assert store.list_projects() == [first_project, second_project]
+
+
+def test_task_facts_correction_can_clear_importance_and_project(
+    store: SQLiteStateStore,
+) -> None:
+    project = store.create_project("College")
+    task = store.create_task(
+        "Essay", project_id=project.id, importance=TaskImportance.MUST
+    )
+
+    updated = store.correct_task_facts(
+        task.id,
+        importance=TaskImportance.UNSPECIFIED,
+        project_id=None,
+    )
+
+    assert updated.importance is TaskImportance.UNSPECIFIED
+    assert updated.project_id is None
+    assert updated.title == task.title
+
+
+@pytest.mark.parametrize("importance", list(TaskImportance))
+def test_task_facts_correction_accepts_every_importance_value(
+    store: SQLiteStateStore, importance: TaskImportance,
+) -> None:
+    initial = (
+        TaskImportance.MUST
+        if importance is not TaskImportance.MUST
+        else TaskImportance.COULD
+    )
+    task = store.create_task("Task", importance=initial)
+
+    updated = store.correct_task_facts(task.id, importance=importance)
+
+    assert updated.importance is importance
+
+
+def test_task_facts_true_no_op_does_not_change_updated_at(
+    store: SQLiteStateStore,
+) -> None:
+    project = store.create_project("College")
+    task = store.create_task(
+        "Draft essay",
+        project_id=project.id,
+        importance=TaskImportance.SHOULD,
+    )
+
+    unchanged = store.correct_task_facts(
+        task.id,
+        title=" Draft essay ",
+        project_id=project.id,
+        importance=TaskImportance.SHOULD,
+    )
+
+    assert unchanged == task
+    assert store.get_task(task.id).updated_at == task.updated_at
+
+
+def test_task_facts_preserve_inactive_current_project_until_explicit_change(
+    store: SQLiteStateStore,
+) -> None:
+    project = store.create_project("Finished project")
+    task = store.create_task("Typo", project_id=project.id)
+    store.update_project(project.id, status=ProjectStatus.COMPLETED)
+
+    renamed = store.correct_task_facts(task.id, title="Corrected")
+    detached = store.correct_task_facts(renamed.id, project_id=None)
+
+    assert renamed.project_id == project.id
+    assert detached.project_id is None
+
+
+def test_task_facts_reject_invalid_project_atomically(
+    store: SQLiteStateStore,
+) -> None:
+    completed = store.create_project(
+        "Completed", status=ProjectStatus.COMPLETED
+    )
+    task = store.create_task("Original", importance=TaskImportance.COULD)
+
+    with pytest.raises(DomainValidationError, match="not active"):
+        store.correct_task_facts(
+            task.id,
+            title="Changed",
+            importance=TaskImportance.MUST,
+            project_id=completed.id,
+        )
+    assert store.get_task(task.id) == task
+
+    with pytest.raises(EntityNotFoundError, match="project 999"):
+        store.correct_task_facts(task.id, project_id=999)
+    assert store.get_task(task.id) == task
+
+
+@pytest.mark.parametrize("status", [TaskStatus.COMPLETED, TaskStatus.CANCELLED])
+def test_task_facts_reject_closed_tasks(
+    store: SQLiteStateStore, status: TaskStatus,
+) -> None:
+    task = store.create_task("Closed", status=status)
+
+    with pytest.raises(DomainValidationError, match="cannot correct"):
+        store.correct_task_facts(task.id, title="Changed")
+
+    assert store.get_task(task.id) == task
+
+
+def test_task_facts_correction_accepts_blocked_task(
+    store: SQLiteStateStore,
+) -> None:
+    task = store.create_task("Typo", status=TaskStatus.BLOCKED)
+
+    updated = store.correct_task_facts(task.id, title="Corrected")
+
+    assert updated.title == "Corrected"
+    assert updated.status is TaskStatus.BLOCKED
+
+
+def test_task_facts_reject_empty_and_invalid_corrections(
+    store: SQLiteStateStore,
+) -> None:
+    task = store.create_task("Task")
+
+    with pytest.raises(DomainValidationError, match="at least one"):
+        store.correct_task_facts(task.id)
+    with pytest.raises(DomainValidationError, match="title"):
+        store.correct_task_facts(task.id, title="   ")
+    with pytest.raises(DomainValidationError, match="importance"):
+        store.correct_task_facts(task.id, importance="URGENT")
+    with pytest.raises(DomainValidationError, match="project_id"):
+        store.correct_task_facts(task.id, project_id=True)
+
+    assert store.get_task(task.id) == task
+
+
 def test_cancelled_task_round_trips(store: SQLiteStateStore) -> None:
     task = store.create_task("Abandoned", status=TaskStatus.CANCELLED)
 
