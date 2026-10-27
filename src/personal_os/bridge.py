@@ -23,6 +23,7 @@ from personal_os.models import (
     FixedCommitmentStatus,
     ProjectStatus,
     TaskExecutionMode,
+    TaskImportance,
     TaskStatus,
     serialize_instant,
 )
@@ -47,6 +48,27 @@ class NoActiveSessionError(PersonalOSError):
     """Raised when feedback is requested without an active session."""
 
 
+_OMITTED = object()
+
+
+@dataclass(frozen=True, slots=True)
+class _TaskFactCorrections:
+    title: object = _OMITTED
+    importance: object = _OMITTED
+    project_id: object = _OMITTED
+
+    def as_kwargs(self) -> dict[str, object]:
+        return {
+            field: value
+            for field, value in (
+                ("title", self.title),
+                ("importance", self.importance),
+                ("project_id", self.project_id),
+            )
+            if value is not _OMITTED
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class _ValidatedRequest:
     operation: str
@@ -67,6 +89,7 @@ class _ValidatedRequest:
     result_note: str | None = None
     time_cap_minutes: int | None = None
     excluded_task_ids: tuple[int, ...] = ()
+    task_fact_corrections: _TaskFactCorrections | None = None
 
 
 def _utc_now() -> datetime:
@@ -136,6 +159,20 @@ def _execution_mode(request: dict[str, object]) -> TaskExecutionMode:
     except ValueError as exc:
         raise InvalidRequestError(
             "execution_mode must be SPLITTABLE or ONE_SITTING"
+        ) from exc
+
+
+def _task_importance(request: dict[str, object]) -> TaskImportance:
+    value = request["importance"]
+    if not isinstance(value, str):
+        raise InvalidRequestError(
+            "importance must be UNSPECIFIED, MUST, SHOULD, or COULD"
+        )
+    try:
+        return TaskImportance(value)
+    except ValueError as exc:
+        raise InvalidRequestError(
+            "importance must be UNSPECIFIED, MUST, SHOULD, or COULD"
         ) from exc
 
 
@@ -435,6 +472,27 @@ def _update_task_planning(
     }
 
 
+def _correct_task_facts(
+    request: _ValidatedRequest, runtime: PersonalOSRuntime,
+) -> dict[str, object]:
+    assert (
+        request.task_id is not None
+        and request.task_fact_corrections is not None
+    )
+    task = runtime.store.correct_task_facts(
+        request.task_id,
+        **request.task_fact_corrections.as_kwargs(),
+    )
+    return {
+        "task_id": task.id,
+        "title": task.title,
+        "importance": task.importance.value,
+        "project_id": task.project_id,
+        "status": task.status.value,
+        "updated_at": serialize_instant(task.updated_at),
+    }
+
+
 def _correct_task_status(
     request: _ValidatedRequest, runtime: PersonalOSRuntime,
 ) -> dict[str, object]:
@@ -691,7 +749,8 @@ def _validate_request(request: object) -> _ValidatedRequest:
     if operation not in {
         "capture", "recommend", "start", "feedback", "active", "activate",
         "overview", "update_task_planning", "resolve_inbox", "dismiss_inbox",
-        "correct_task_status", "configure_commitment_protection",
+        "correct_task_facts", "correct_task_status",
+        "configure_commitment_protection",
         "cancel_commitment",
     }:
         raise InvalidRequestError(f"unknown operation: {operation}")
@@ -814,6 +873,42 @@ def _validate_request(request: object) -> _ValidatedRequest:
                 request, "estimated_minutes"
             ),
         )
+    if operation == "correct_task_facts":
+        correction_fields = {"title", "importance", "project_id"}
+        _require_fields(
+            request,
+            required={"version", "operation", "task_id"},
+            optional=correction_fields,
+        )
+        supplied = correction_fields & request.keys()
+        if not supplied:
+            raise InvalidRequestError(
+                "at least one task fact correction is required"
+            )
+        task_id = _integer(request, "task_id", positive=True)
+        assert task_id is not None
+        corrections = _TaskFactCorrections(
+            title=(
+                _required_text(request, "title")
+                if "title" in supplied
+                else _OMITTED
+            ),
+            importance=(
+                _task_importance(request)
+                if "importance" in supplied
+                else _OMITTED
+            ),
+            project_id=(
+                _nullable_positive_integer(request, "project_id")
+                if "project_id" in supplied
+                else _OMITTED
+            ),
+        )
+        return _ValidatedRequest(
+            operation=operation,
+            task_id=task_id,
+            task_fact_corrections=corrections,
+        )
     if operation == "correct_task_status":
         _require_fields(
             request,
@@ -888,6 +983,8 @@ def handle_request(
         return operation, _active(runtime)
     if operation == "update_task_planning":
         return operation, _update_task_planning(request, runtime)
+    if operation == "correct_task_facts":
+        return operation, _correct_task_facts(request, runtime)
     if operation == "dismiss_inbox":
         return operation, _dismiss_inbox(request, runtime)
     if operation == "correct_task_status":

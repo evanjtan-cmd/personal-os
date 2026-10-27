@@ -332,6 +332,62 @@ def test_close_outcomes_are_atomic_and_preserve_other_task_fields(store, outcome
     assert store.get_active_session() is None
 
 
+def test_active_session_survives_task_facts_correction_and_feedback(
+    store: SQLiteStateStore,
+) -> None:
+    closed_task = store.create_task("Earlier task")
+    earlier = start(
+        store,
+        closed_task.id,
+        selected_action="Do the earlier action.",
+    )
+    earlier_closed = SessionService(store).close_session(
+        session_id=earlier.id,
+        outcome=SessionOutcome.PROGRESS,
+        ended_at=NOW,
+        result_note="Made progress.",
+    )
+
+    project = store.create_project("Applications")
+    active_task = store.create_task("Drfat essay")
+    active = start(
+        store,
+        active_task.id,
+        minutes=25,
+        selected_action="Write the accepted draft section.",
+        start_reason="Recommended now.",
+    )
+    before_sessions = store.list_sessions()
+
+    corrected = store.correct_task_facts(
+        active_task.id,
+        title="Draft essay",
+        importance=TaskImportance.MUST,
+        project_id=project.id,
+    )
+
+    assert corrected.id == active_task.id
+    assert store.get_active_session() == active
+    assert store.list_sessions() == before_sessions
+    assert store.get_session(earlier_closed.id) == earlier_closed
+    assert active.selected_action == "Write the accepted draft section."
+
+    finished = SessionService(store).close_session(
+        session_id=active.id,
+        outcome=SessionOutcome.PROGRESS,
+        ended_at=NOW + timedelta(minutes=10),
+        result_note="Continued the draft.",
+    )
+
+    assert finished.selected_action == active.selected_action
+    assert finished.started_at == active.started_at
+    assert finished.planned_minutes == active.planned_minutes
+    assert finished.result_note == "Continued the draft."
+    assert store.get_task(active_task.id).status is TaskStatus.OPEN
+    assert store.get_task(active_task.id).title == "Draft essay"
+    assert store.get_session(earlier_closed.id) == earlier_closed
+
+
 def test_matching_task_state_closes_but_conflicting_state_does_not(store) -> None:
     task = store.create_task("Task")
     session = start(store, task.id)

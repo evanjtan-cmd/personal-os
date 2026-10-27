@@ -475,6 +475,85 @@ class SQLiteStateStore:
             estimated_minutes=estimated_minutes,
         )
 
+    def correct_task_facts(
+        self, task_id: int, *, title: object = _OMITTED,
+        importance: object = _OMITTED, project_id: object = _OMITTED,
+    ) -> Task:
+        if (
+            title is _OMITTED
+            and importance is _OMITTED
+            and project_id is _OMITTED
+        ):
+            raise DomainValidationError(
+                "at least one task fact correction is required"
+            )
+        with self._transaction() as connection:
+            current = self._task_from_row(
+                self._row_or_missing(connection, "tasks", task_id, "task")
+            )
+            if current.status not in {TaskStatus.OPEN, TaskStatus.BLOCKED}:
+                raise DomainValidationError(
+                    f"cannot correct task {current.id} while it is "
+                    f"{current.status.value}"
+                )
+            proposed = validate_task_fields(
+                title=current.title if title is _OMITTED else title,
+                project_id=(
+                    current.project_id if project_id is _OMITTED else project_id
+                ),
+                status=current.status,
+                importance=(
+                    current.importance if importance is _OMITTED else importance
+                ),
+                schedule_mode=current.schedule_mode,
+                day_date=current.day_date,
+                window_start=current.window_start,
+                window_end=current.window_end,
+                deadline_date=current.deadline_date,
+                deadline_at=current.deadline_at,
+                estimated_minutes=current.estimated_minutes,
+                execution_mode=current.execution_mode,
+            )
+            corrected_project_id = proposed["project_id"]
+            if (
+                project_id is not _OMITTED
+                and corrected_project_id != current.project_id
+                and corrected_project_id is not None
+            ):
+                project = self._project_from_row(
+                    self._row_or_missing(
+                        connection,
+                        "projects",
+                        corrected_project_id,
+                        "project",
+                    )
+                )
+                if project.status is not ProjectStatus.ACTIVE:
+                    raise DomainValidationError(
+                        f"project {project.id} is not active"
+                    )
+            if (
+                proposed["title"] == current.title
+                and proposed["importance"] is current.importance
+                and corrected_project_id == current.project_id
+            ):
+                return current
+            connection.execute(
+                """UPDATE tasks
+                   SET title = ?, project_id = ?, importance = ?, updated_at = ?
+                   WHERE id = ?""",
+                (
+                    proposed["title"],
+                    corrected_project_id,
+                    proposed["importance"].value,
+                    serialize_instant(self._now()),
+                    current.id,
+                ),
+            )
+            return self._task_from_row(
+                self._row_or_missing(connection, "tasks", current.id, "task")
+            )
+
     def correct_task_status(self, task_id: int, *, status: object) -> Task:
         target = require_enum(status, TaskStatus, "status")
         allowed = {

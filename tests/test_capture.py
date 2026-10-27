@@ -102,6 +102,39 @@ def test_capture_is_durable_before_interpretation(store: SQLiteStateStore) -> No
     assert store.get_task(result.task_ids[0]).source_capture_id == result.capture.id
 
 
+def test_task_facts_correction_preserves_original_capture_history(
+    store: SQLiteStateStore,
+) -> None:
+    raw_text = "Drfat college essay"
+    payload = apply_payload(tasks=[task("Drfat college essay")])
+    result = CaptureService(store, FakeInterpreter(payload)).capture_text(
+        raw_text,
+        reference_time=REFERENCE,
+        timezone_name="America/New_York",
+    )
+    before_capture = store.get_capture(result.capture.id)
+    before_counts = (
+        len(store.list_tasks()),
+        len(store.list_projects()),
+        len(store.list_captures()),
+    )
+
+    corrected = store.correct_task_facts(
+        result.task_ids[0],
+        title="Draft college essay",
+        importance=TaskImportance.SHOULD,
+    )
+
+    assert corrected.source_capture_id == before_capture.id
+    assert store.get_capture(before_capture.id) == before_capture
+    assert store.get_capture(before_capture.id).raw_text == raw_text
+    assert (
+        len(store.list_tasks()),
+        len(store.list_projects()),
+        len(store.list_captures()),
+    ) == before_counts
+
+
 def test_scheduleless_action_applies_as_standalone_flexible_task(
     store: SQLiteStateStore,
 ) -> None:

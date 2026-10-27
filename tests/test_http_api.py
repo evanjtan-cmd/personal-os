@@ -21,7 +21,14 @@ from personal_os.recommendation_types import (
     RecommendationContext,
 )
 from personal_os.session import SessionService
-from personal_os.models import CommitmentHardness, FixedCommitmentStatus, TaskExecutionMode, TaskStatus
+from personal_os.models import (
+    CommitmentHardness,
+    FixedCommitmentStatus,
+    ProjectStatus,
+    TaskExecutionMode,
+    TaskImportance,
+    TaskStatus,
+)
 from personal_os.state import SQLiteStateStore
 
 NOW = datetime(2026, 9, 21, 14, 0, tzinfo=UTC)
@@ -374,6 +381,100 @@ def test_task_planning_endpoint_updates_only_planning_fields(api) -> None:
     assert updated.execution_mode is TaskExecutionMode.ONE_SITTING
     assert updated.estimated_minutes == 180
     runtime_factory.assert_called_once_with()
+
+
+def test_task_facts_endpoint_updates_and_overview_returns_canonical_state(api) -> None:
+    _, store, ranker, runtime_factory = api
+    first = store.create_project("First")
+    second = store.create_project("Second")
+    task = store.create_task(
+        "Drfat essay",
+        project_id=first.id,
+        importance=TaskImportance.SHOULD,
+        estimated_minutes=45,
+    )
+    before_counts = (
+        len(store.list_tasks()),
+        len(store.list_projects()),
+        len(store.list_captures()),
+    )
+
+    status, response, _ = request(
+        api,
+        {
+            "task_id": task.id,
+            "title": "Draft essay",
+            "importance": "MUST",
+            "project_id": second.id,
+        },
+        path="/v1/task-facts",
+    )
+
+    assert status == 200
+    assert response["operation"] == "correct_task_facts"
+    assert response["result"] == {
+        "task_id": task.id,
+        "title": "Draft essay",
+        "importance": "MUST",
+        "project_id": second.id,
+        "status": "OPEN",
+        "updated_at": "2026-09-21T14:00:00.000000Z",
+    }
+    updated = store.get_task(task.id)
+    assert updated.estimated_minutes == task.estimated_minutes
+    assert (
+        len(store.list_tasks()),
+        len(store.list_projects()),
+        len(store.list_captures()),
+    ) == before_counts
+    assert ranker.calls == 0
+    runtime_factory.return_value.capture_service.capture_text.assert_not_called()
+
+    runtime_factory.reset_mock()
+    overview_status, overview, _ = request(
+        api, {}, method="GET", path="/v1/overview"
+    )
+    assert overview_status == 200
+    shown = overview["result"]["tasks"][0]
+    assert shown["title"] == "Draft essay"
+    assert shown["importance"] == "MUST"
+    assert shown["project_id"] == second.id
+    assert shown["project_name"] == "Second"
+
+
+def test_task_facts_endpoint_rejects_completed_project_and_closed_task(api) -> None:
+    _, store, ranker, runtime_factory = api
+    completed_project = store.create_project(
+        "Completed project", status=ProjectStatus.COMPLETED
+    )
+    task = store.create_task("Original")
+
+    status, response, _ = request(
+        api,
+        {
+            "task_id": task.id,
+            "title": "Changed",
+            "project_id": completed_project.id,
+        },
+        path="/v1/task-facts",
+    )
+
+    assert status == 500
+    assert response["error"]["code"] == "DOMAIN_VALIDATION"
+    assert "not active" in response["error"]["message"]
+    assert store.get_task(task.id) == task
+
+    closed = store.create_task("Closed", status=TaskStatus.COMPLETED)
+    status, response, _ = request(
+        api,
+        {"task_id": closed.id, "title": "Changed closed"},
+        path="/v1/task-facts",
+    )
+    assert status == 500
+    assert "cannot correct" in response["error"]["message"]
+    assert store.get_task(closed.id) == closed
+    assert ranker.calls == 0
+    runtime_factory.return_value.capture_service.capture_text.assert_not_called()
 
 
 def test_task_status_endpoint_updates_allowed_lifecycle(api) -> None:
@@ -759,6 +860,12 @@ def test_start_revalidates_stale_recommendation(api) -> None:
         ("/v1/task-planning", {"task_id": 1, "execution_mode": "MAYBE", "estimated_minutes": None}),
         ("/v1/task-planning", {"task_id": 1, "execution_mode": "SPLITTABLE", "estimated_minutes": 0}),
         ("/v1/task-planning", {"task_id": 1, "execution_mode": "SPLITTABLE", "estimated_minutes": None, "title": "Rename"}),
+        ("/v1/task-facts", {"task_id": 1}),
+        ("/v1/task-facts", {"task_id": 1, "title": "   "}),
+        ("/v1/task-facts", {"task_id": 1, "importance": "URGENT"}),
+        ("/v1/task-facts", {"task_id": 1, "project_id": 0}),
+        ("/v1/task-facts", {"task_id": 1, "project_id": True}),
+        ("/v1/task-facts", {"task_id": 1, "title": "Rename", "status": "OPEN"}),
         ("/v1/task-status", {"task_id": 1, "status": "BLOCKED"}),
         ("/v1/task-status", {"task_id": 1}),
         ("/v1/task-status", {"task_id": 1, "status": "COMPLETED", "title": "Rename"}),
@@ -787,7 +894,7 @@ def test_feedback_without_session_is_structured_error(api) -> None:
     "path", [
         "/v1/activate", "/v1/start", "/v1/feedback", "/v1/capture",
         "/v1/resolve-inbox", "/v1/dismiss-inbox", "/v1/task-planning",
-        "/v1/task-status", "/v1/commitment-protection",
+        "/v1/task-facts", "/v1/task-status", "/v1/commitment-protection",
         "/v1/cancel-commitment",
     ]
 )
@@ -800,6 +907,7 @@ def test_host_and_cross_origin_requests_are_rejected(api, path) -> None:
         "/v1/resolve-inbox": {"inbox_item_id": 1, "raw_text": "Study for ACT"},
         "/v1/dismiss-inbox": {"inbox_item_id": 1},
         "/v1/task-planning": {"task_id": 1, "execution_mode": "SPLITTABLE", "estimated_minutes": None},
+        "/v1/task-facts": {"task_id": 1, "title": "Rename"},
         "/v1/task-status": {"task_id": 1, "status": "COMPLETED"},
         "/v1/commitment-protection": {"commitment_id": 1, "duration_minutes": 30},
         "/v1/cancel-commitment": {"commitment_id": 1},
@@ -914,6 +1022,7 @@ def test_state_page_assets_use_overview_and_safe_dom_rendering() -> None:
     assert "createElement" in script
     assert "innerHTML" not in script
     assert 'postJson("/v1/task-planning"' in script
+    assert 'postJson("/v1/task-facts"' in script
     assert 'postJson("/v1/resolve-inbox"' in script
     assert 'postJson("/v1/dismiss-inbox"' in script
     assert 'postJson("/v1/task-status"' in script

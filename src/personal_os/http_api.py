@@ -35,6 +35,10 @@ POST_OPERATIONS = {
         "update_task_planning",
         {"task_id", "execution_mode", "estimated_minutes"},
     ),
+    "/v1/task-facts": (
+        "correct_task_facts",
+        {"task_id", "title", "importance", "project_id"},
+    ),
     "/v1/task-status": ("correct_task_status", {"task_id", "status"}),
     "/v1/commitment-protection": (
         "configure_commitment_protection",
