@@ -1,6 +1,6 @@
 # Build State
 
-Last updated: 2026-10-26 for POS-028 Task facts correction.
+Last updated: 2026-10-27 for the State-page Task editor UX refinement.
 
 ## Implemented
 
@@ -196,6 +196,26 @@ Last updated: 2026-10-26 for POS-028 Task facts correction.
   malformed responses, and HTTP 5xx responses instead report an uncertain
   mutation outcome and lock stale state until Refresh. Existing planning and
   lifecycle controls remain separate and unchanged.
+- The State page now presents one collapsed Edit details disclosure per
+  OPEN/BLOCKED Task, with separate Task details and Work requirements forms.
+  User-facing Priority choices map High/Medium/Low/Not set to the unchanged
+  MUST/SHOULD/COULD/UNSPECIFIED values through a native radio group. Work
+  requirements use a native split-across-sessions checkbox while preserving
+  SPLITTABLE/ONE_SITTING and estimated-duration semantics. Task facts and
+  planning continue to save independently through their existing endpoints;
+  there is no combined mutation or schema change.
+- State-page Task editor drafts are tracked locally by stable Task ID and
+  section. An authoritative refresh after one successful section save restores
+  unrelated unsaved drafts without submitting or merging them into canonical
+  state, keeps affected disclosures open, and marks restored values visibly.
+  Each draft section retains the authoritative Task facts from when it first
+  became dirty; restoration is rejected with a visible changed-elsewhere
+  explanation if those facts changed before refresh, while independent safe
+  drafts remain available.
+  Missing Tasks and invalid Project choices fail closed with an explanation.
+  Task details and Work requirements share confirmed-rejection, uncertain-save,
+  saved-but-not-refreshed, refresh-recovery, and duplicate-submit protections.
+  Cancel remains section-local and nonmutating.
 - POS-024 adds canonical CANCELLED task state through schema version 7 and a
   narrow task lifecycle correction operation. OPEN/BLOCKED tasks may be marked
   Done or Remove, and BLOCKED tasks may be unblocked; tasks with an active
@@ -287,6 +307,25 @@ Last updated: 2026-10-26 for POS-028 Task facts correction.
   preferences, or temporary context
 
 ## Validation
+
+Run on 2026-10-27 with Python 3.13.0 and pytest 8.4.2 for the State-page Task
+editor UX refinement:
+
+- `.venv/bin/python -m pytest --ignore=tests/test_http_api.py -q` — passed:
+  636 tests in 22.03s using isolated temporary databases and fake AI
+  boundaries.
+- `.venv/bin/python -m pytest tests/test_http_api.py -q` — passed: 97 tests in
+  51.79s using disposable loopback servers.
+- `node --test tests/test_work_page.js tests/test_state_page.js` — passed: 42
+  browser behavior tests, comprising 26 State-page tests and all 16 existing
+  Work-page tests.
+- `.venv/bin/python -m compileall -q src tests` — passed.
+- `node --check src/personal_os/static/state.js` and
+  `node --check src/personal_os/static/work.js` — passed.
+- `git diff --check` — passed.
+- No real user data, live AI provider, production database, package
+  installation, schema migration, commit, push, PR, merge, deployment, or
+  manual browser/responsive-layout verification was used.
 
 Run on 2026-10-26 with Python 3.13.0 and pytest 8.4.2 for POS-028:
 

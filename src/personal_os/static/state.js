@@ -39,13 +39,15 @@ function needsCommitmentProtection(commitment) {
   return commitment.protection_needs_input === true;
 }
 
-function importanceLabel(value) {
-  return {
-    UNSPECIFIED: "Not specified",
-    MUST: "Must do",
-    SHOULD: "Should do",
-    COULD: "Could do",
-  }[value];
+const PRIORITY_OPTIONS = [
+  ["MUST", "High"],
+  ["SHOULD", "Medium"],
+  ["COULD", "Low"],
+  ["UNSPECIFIED", "Not set"],
+];
+
+function priorityLabel(value) {
+  return Object.fromEntries(PRIORITY_OPTIONS)[value];
 }
 
 function list(items, renderItem) {
@@ -56,6 +58,9 @@ function list(items, renderItem) {
 
 const CONFIRMED_REJECTION = "CONFIRMED_REJECTION";
 const UNKNOWN_OUTCOME = "UNKNOWN_OUTCOME";
+const taskEditorDrafts = new Map();
+let preserveDraftsOnRequiredRefresh = false;
+let taskSaveInFlight = false;
 
 class PostJsonError extends Error {
   constructor(message, outcome) {
@@ -69,6 +74,120 @@ function caughtMessage(caught, fallback) {
   return caught && typeof caught.message === "string" && caught.message
     ? caught.message
     : fallback;
+}
+
+function setTaskDraftSection(taskId, section, values, baseline) {
+  const draft = taskEditorDrafts.get(taskId) || {};
+  draft[section] = {
+    ...values,
+    baseline: draft[section]?.baseline || baseline,
+    restored: false,
+  };
+  taskEditorDrafts.set(taskId, draft);
+}
+
+function clearTaskDraftSection(taskId, section) {
+  const draft = taskEditorDrafts.get(taskId);
+  if (!draft) return;
+  delete draft[section];
+  if (!draft.facts && !draft.planning) taskEditorDrafts.delete(taskId);
+}
+
+function prepareTaskDraftsForRestore(result) {
+  const tasksById = new Map(result.tasks.map((task) => [task.id, task]));
+  const activeProjectIds = new Set(result.projects.map((project) => project.id));
+  const warnings = [];
+  const priorityValues = new Set(PRIORITY_OPTIONS.map(([value]) => value));
+
+  for (const [taskId, draft] of taskEditorDrafts) {
+    const task = tasksById.get(taskId);
+    if (!task) {
+      taskEditorDrafts.delete(taskId);
+      warnings.push(
+        `Unsaved edits for Task #${taskId} could not be restored because the Task is no longer editable.`,
+      );
+      continue;
+    }
+
+    if (draft.facts) {
+      const projectValue = draft.facts.projectValue;
+      const projectId = projectValue === "" ? null : Number(projectValue);
+      const baseline = draft.facts.baseline;
+      const projectIsSafe = (
+        projectId === null
+        || (
+          Number.isInteger(projectId)
+          && projectId > 0
+          && (activeProjectIds.has(projectId) || projectId === task.project_id)
+        )
+      );
+      const factsAreSafe = (
+        typeof draft.facts.title === "string"
+        && priorityValues.has(draft.facts.importance)
+        && projectIsSafe
+        && baseline !== null
+        && typeof baseline === "object"
+        && typeof baseline.title === "string"
+        && priorityValues.has(baseline.importance)
+        && (
+          baseline.projectId === null
+          || (Number.isInteger(baseline.projectId) && baseline.projectId > 0)
+        )
+      );
+      if (!factsAreSafe) {
+        clearTaskDraftSection(taskId, "facts");
+        warnings.push(
+          `Unsaved Task details for Task #${taskId} could not be restored because a saved choice is no longer valid.`,
+        );
+      } else if (
+        baseline.title !== task.title
+        || baseline.importance !== task.importance
+        || baseline.projectId !== task.project_id
+      ) {
+        clearTaskDraftSection(taskId, "facts");
+        warnings.push(
+          `Unsaved Task details for Task #${taskId} were not restored because the Task changed elsewhere. The latest saved Task details are shown.`,
+        );
+      } else {
+        draft.facts.restored = true;
+      }
+    }
+
+    if (draft.planning) {
+      const baseline = draft.planning.baseline;
+      const planningIsSafe = (
+        typeof draft.planning.estimatedMinutes === "string"
+        && typeof draft.planning.canSplit === "boolean"
+        && baseline !== null
+        && typeof baseline === "object"
+        && ["SPLITTABLE", "ONE_SITTING"].includes(baseline.executionMode)
+        && (
+          baseline.estimatedMinutes === null
+          || (
+            Number.isInteger(baseline.estimatedMinutes)
+            && baseline.estimatedMinutes > 0
+          )
+        )
+      );
+      if (!planningIsSafe) {
+        clearTaskDraftSection(taskId, "planning");
+        warnings.push(
+          `Unsaved Work requirements for Task #${taskId} could not be restored because the draft is no longer valid.`,
+        );
+      } else if (
+        baseline.executionMode !== task.execution_mode
+        || baseline.estimatedMinutes !== task.estimated_minutes
+      ) {
+        clearTaskDraftSection(taskId, "planning");
+        warnings.push(
+          `Unsaved Work requirements for Task #${taskId} were not restored because the Task changed elsewhere. The latest saved Work requirements are shown.`,
+        );
+      } else {
+        draft.planning.restored = true;
+      }
+    }
+  }
+  return warnings;
 }
 
 async function postJson(path, body) {
@@ -333,13 +452,24 @@ function renderActive(session) {
   target.replaceChildren(item);
 }
 
-function renderTaskFactsEditor(task, projects) {
+function renderTaskDetailsEditor(task, projects) {
+  const existingDraft = taskEditorDrafts.get(task.id);
   const details = document.createElement("details");
-  details.className = "planning-editor task-facts-editor";
-  details.append(element("summary", "Edit task"));
+  details.className = "planning-editor task-details-editor";
+  details.open = Boolean(existingDraft?.facts || existingDraft?.planning);
+  details.append(element("summary", "Edit details"));
+  details.append(element(
+    "p",
+    "Task details and work requirements save separately.",
+    "editor-help",
+  ));
 
-  const form = document.createElement("form");
-  form.dataset.taskId = String(task.id);
+  const factsSection = element("section", undefined, "editor-section");
+  factsSection.append(element("h4", "Task details"));
+  const factsForm = document.createElement("form");
+  factsForm.className = "editor-form task-facts-form";
+  factsForm.dataset.taskId = String(task.id);
+  factsForm.dataset.section = "facts";
 
   const titleLabel = element("label", "Task name");
   const titleInput = document.createElement("input");
@@ -349,25 +479,28 @@ function renderTaskFactsEditor(task, projects) {
   titleInput.value = task.title;
   titleLabel.append(titleInput);
 
-  const importanceControl = element("label", "Importance");
-  const importanceSelect = document.createElement("select");
-  importanceSelect.name = "importance";
-  for (const [value, label] of [
-    ["UNSPECIFIED", "Not specified"],
-    ["MUST", "Must do"],
-    ["SHOULD", "Should do"],
-    ["COULD", "Could do"],
-  ]) {
-    const option = document.createElement("option");
-    option.value = value;
-    option.textContent = label;
-    importanceSelect.append(option);
+  const priorityFieldset = document.createElement("fieldset");
+  priorityFieldset.className = "priority-fieldset";
+  priorityFieldset.append(element("legend", "Priority"));
+  const priorityChoices = element("div", undefined, "priority-choices");
+  const priorityRadios = [];
+  for (const [value, label] of PRIORITY_OPTIONS) {
+    const choice = element("label", undefined, "priority-choice");
+    const radio = document.createElement("input");
+    radio.type = "radio";
+    radio.name = `task-${task.id}-priority`;
+    radio.id = `task-${task.id}-priority-${value.toLowerCase()}`;
+    radio.value = value;
+    radio.checked = task.importance === value;
+    choice.htmlFor = radio.id;
+    choice.append(radio, element("span", label));
+    priorityChoices.append(choice);
+    priorityRadios.push(radio);
   }
-  importanceSelect.value = task.importance;
-  importanceControl.append(importanceSelect);
-  const importanceHelp = element(
+  priorityFieldset.append(priorityChoices);
+  const priorityHelp = element(
     "p",
-    "Feasible Must do tasks take precedence over lower importance categories.",
+    "When any High-priority Task is feasible, recommendations are limited to feasible High-priority Tasks.",
     "meta",
   );
 
@@ -399,47 +532,133 @@ function renderTaskFactsEditor(task, projects) {
   projectSelect.value = task.project_id === null ? "" : String(task.project_id);
   projectControl.append(projectSelect);
 
-  const message = element("p", "", "form-message");
-  message.hidden = true;
-  const actions = element("div", undefined, "planning-actions");
-  const save = element("button", "Save changes", "button primary");
-  save.type = "submit";
-  save.disabled = true;
-  const cancel = element("button", "Cancel", "button");
-  cancel.type = "button";
-  actions.append(save, cancel);
+  const factsDraftStatus = element("p", "", "draft-status");
+  factsDraftStatus.hidden = true;
+  const factsMessage = element("p", "", "form-message");
+  factsMessage.hidden = true;
+  const factsActions = element("div", undefined, "planning-actions");
+  const saveFacts = element("button", "Save task details", "button primary");
+  saveFacts.type = "submit";
+  saveFacts.disabled = true;
+  const cancelFacts = element("button", "Cancel", "button");
+  cancelFacts.type = "button";
+  factsActions.append(saveFacts, cancelFacts);
+
+  factsForm.append(titleLabel, priorityFieldset, priorityHelp, projectControl);
+  if (currentProjectIsInactive) {
+    factsForm.append(element(
+      "p",
+      "The current Project is inactive. Choose an active Project or No project to correct this relationship.",
+      "planning-warning",
+    ));
+  }
+  factsForm.append(factsDraftStatus, factsActions, factsMessage);
+  factsSection.append(factsForm);
+
+  const planningSection = element("section", undefined, "editor-section");
+  planningSection.append(element("h4", "Work requirements"));
+  const planningForm = document.createElement("form");
+  planningForm.className = "editor-form task-planning-form";
+  planningForm.dataset.taskId = String(task.id);
+  planningForm.dataset.section = "planning";
+
+  const minutesLabel = element("label", "Estimated duration (minutes)");
+  const minutesInput = document.createElement("input");
+  minutesInput.name = "estimated_minutes";
+  minutesInput.type = "number";
+  minutesInput.min = "1";
+  minutesInput.step = "1";
+  minutesInput.inputMode = "numeric";
+  minutesInput.placeholder = "Minutes";
+  minutesInput.value = task.estimated_minutes === null ? "" : String(task.estimated_minutes);
+  minutesLabel.append(minutesInput);
+
+  const splitLabel = element("label", undefined, "checkbox-field");
+  const splitInput = document.createElement("input");
+  splitInput.name = "can_split";
+  splitInput.type = "checkbox";
+  splitInput.checked = task.execution_mode === "SPLITTABLE";
+  splitLabel.append(splitInput, element("span", "Can be split across sessions"));
+
+  const durationWarning = element(
+    "p",
+    "A one-sitting Task needs an estimated duration before it can be recommended.",
+    "planning-warning",
+  );
+  const planningDraftStatus = element("p", "", "draft-status");
+  planningDraftStatus.hidden = true;
+  const planningMessage = element("p", "", "form-message");
+  planningMessage.hidden = true;
+  const planningActions = element("div", undefined, "planning-actions");
+  const savePlanning = element("button", "Save work requirements", "button primary");
+  savePlanning.type = "submit";
+  savePlanning.disabled = true;
+  const cancelPlanning = element("button", "Cancel", "button");
+  cancelPlanning.type = "button";
+  planningActions.append(savePlanning, cancelPlanning);
+  planningForm.append(
+    minutesLabel,
+    splitLabel,
+    durationWarning,
+    planningDraftStatus,
+    planningActions,
+    planningMessage,
+  );
+  planningSection.append(planningForm);
+
+  details.append(factsSection, planningSection);
+
   let submitting = false;
   let needsAuthoritativeRefresh = false;
+  let editorReplaced = false;
+
+  function setSelectedPriority(value) {
+    for (const radio of priorityRadios) radio.checked = radio.value === value;
+  }
+
+  function selectedPriority() {
+    return priorityRadios.find((radio) => radio.checked)?.value || task.importance;
+  }
 
   function selectedProjectId() {
     return projectSelect.value === "" ? null : Number(projectSelect.value);
   }
 
-  function correctionBody() {
+  function factsBody() {
     const body = { task_id: task.id };
     if (titleInput.value.trim() !== task.title) body.title = titleInput.value;
-    if (importanceSelect.value !== task.importance) {
-      body.importance = importanceSelect.value;
+    if (selectedPriority() !== task.importance) {
+      body.importance = selectedPriority();
     }
     const projectId = selectedProjectId();
     if (projectId !== task.project_id) body.project_id = projectId;
     return body;
   }
 
-  function updateSaveState() {
-    save.disabled = Object.keys(correctionBody()).length === 1;
+  function planningBody() {
+    const minutes = minutesInput.value.trim();
+    return {
+      task_id: task.id,
+      execution_mode: splitInput.checked ? "SPLITTABLE" : "ONE_SITTING",
+      estimated_minutes: minutes === "" ? null : Number(minutes),
+    };
   }
 
   function setEditorDisabled(disabled) {
     titleInput.disabled = disabled;
-    importanceSelect.disabled = disabled;
+    for (const radio of priorityRadios) radio.disabled = disabled;
     projectSelect.disabled = disabled;
-    save.disabled = disabled;
-    cancel.disabled = disabled;
+    minutesInput.disabled = disabled;
+    splitInput.disabled = disabled;
+    saveFacts.disabled = disabled;
+    cancelFacts.disabled = disabled;
+    savePlanning.disabled = disabled;
+    cancelPlanning.disabled = disabled;
   }
 
   function lockUntilAuthoritativeRefresh(text) {
     needsAuthoritativeRefresh = true;
+    preserveDraftsOnRequiredRefresh = true;
     setEditorDisabled(true);
     byId("overview").hidden = true;
     const error = byId("state-error");
@@ -447,62 +666,168 @@ function renderTaskFactsEditor(task, projects) {
     error.hidden = false;
   }
 
-  for (const control of [titleInput, importanceSelect, projectSelect]) {
-    control.addEventListener("input", updateSaveState);
-    control.addEventListener("change", updateSaveState);
+  function setDraftStatus(target, draft) {
+    target.hidden = !draft;
+    target.textContent = draft
+      ? (draft.restored ? "Unsaved changes restored after refresh." : "Unsaved changes.")
+      : "";
   }
-  cancel.addEventListener("click", () => {
+
+  function updateFactsState(restoring = false) {
+    const changed = Object.keys(factsBody()).length > 1;
+    const currentDraft = taskEditorDrafts.get(task.id)?.facts;
+    if (!changed) {
+      clearTaskDraftSection(task.id, "facts");
+    } else if (!restoring || !currentDraft) {
+      setTaskDraftSection(task.id, "facts", {
+        title: titleInput.value,
+        importance: selectedPriority(),
+        projectValue: projectSelect.value,
+      }, {
+        title: task.title,
+        importance: task.importance,
+        projectId: task.project_id,
+      });
+    }
+    setDraftStatus(factsDraftStatus, taskEditorDrafts.get(task.id)?.facts);
+    saveFacts.disabled = !changed || submitting || needsAuthoritativeRefresh;
+  }
+
+  function updateDurationWarning() {
+    durationWarning.hidden = splitInput.checked || minutesInput.value.trim() !== "";
+  }
+
+  function updatePlanningState(restoring = false) {
+    const body = planningBody();
+    const changed = (
+      body.execution_mode !== task.execution_mode
+      || body.estimated_minutes !== task.estimated_minutes
+    );
+    const currentDraft = taskEditorDrafts.get(task.id)?.planning;
+    if (!changed) {
+      clearTaskDraftSection(task.id, "planning");
+    } else if (!restoring || !currentDraft) {
+      setTaskDraftSection(task.id, "planning", {
+        estimatedMinutes: minutesInput.value,
+        canSplit: splitInput.checked,
+      }, {
+        executionMode: task.execution_mode,
+        estimatedMinutes: task.estimated_minutes,
+      });
+    }
+    setDraftStatus(planningDraftStatus, taskEditorDrafts.get(task.id)?.planning);
+    savePlanning.disabled = !changed || submitting || needsAuthoritativeRefresh;
+    updateDurationWarning();
+  }
+
+  if (existingDraft?.facts) {
+    titleInput.value = existingDraft.facts.title;
+    setSelectedPriority(existingDraft.facts.importance);
+    projectSelect.value = existingDraft.facts.projectValue;
+  }
+  if (existingDraft?.planning) {
+    minutesInput.value = existingDraft.planning.estimatedMinutes;
+    splitInput.checked = existingDraft.planning.canSplit;
+  }
+
+  for (const control of [titleInput, projectSelect]) {
+    control.addEventListener("input", () => updateFactsState());
+    control.addEventListener("change", () => updateFactsState());
+  }
+  for (const radio of priorityRadios) {
+    radio.addEventListener("change", () => updateFactsState());
+  }
+  minutesInput.addEventListener("input", () => updatePlanningState());
+  minutesInput.addEventListener("change", () => updatePlanningState());
+  splitInput.addEventListener("change", () => updatePlanningState());
+
+  cancelFacts.addEventListener("click", () => {
     titleInput.value = task.title;
-    importanceSelect.value = task.importance;
+    setSelectedPriority(task.importance);
     projectSelect.value = task.project_id === null ? "" : String(task.project_id);
-    message.hidden = true;
-    message.textContent = "";
-    details.open = false;
-    updateSaveState();
+    clearTaskDraftSection(task.id, "facts");
+    factsMessage.hidden = true;
+    factsMessage.textContent = "";
+    updateFactsState(true);
   });
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    if (submitting || needsAuthoritativeRefresh) return;
-    const body = correctionBody();
-    if (Object.keys(body).length === 1) return;
+
+  cancelPlanning.addEventListener("click", () => {
+    minutesInput.value = task.estimated_minutes === null ? "" : String(task.estimated_minutes);
+    splitInput.checked = task.execution_mode === "SPLITTABLE";
+    clearTaskDraftSection(task.id, "planning");
+    planningMessage.hidden = true;
+    planningMessage.textContent = "";
+    updatePlanningState(true);
+  });
+
+  async function saveSection(section, path, body, message, label) {
+    if (submitting || taskSaveInFlight || needsAuthoritativeRefresh) return;
+    const changed = section === "facts"
+      ? Object.keys(body).length > 1
+      : (
+        body.execution_mode !== task.execution_mode
+        || body.estimated_minutes !== task.estimated_minutes
+      );
+    if (!changed) return;
     message.hidden = true;
     submitting = true;
+    taskSaveInFlight = true;
     setEditorDisabled(true);
     try {
-      await postJson("/v1/task-facts", body);
-      if (!await loadOverview()) {
+      await postJson(path, body);
+      clearTaskDraftSection(task.id, section);
+      if (!await loadOverview({ preserveDrafts: true })) {
         lockUntilAuthoritativeRefresh(
-          "The task correction was saved, but the authoritative display could not refresh. Use Refresh to reload the current state.",
+          `The ${label} were saved, but the authoritative display could not refresh. Use Refresh to reload the current state.`,
         );
+      } else {
+        editorReplaced = true;
       }
     } catch (caught) {
       if (caught?.outcome === CONFIRMED_REJECTION) {
-        message.textContent = `${caught.message} The correction was not saved. Review the task facts, then try again.`;
+        message.textContent = `${caught.message} The ${label} were not saved. Review this section, then try again.`;
         message.hidden = false;
       } else {
+        clearTaskDraftSection(task.id, section);
         lockUntilAuthoritativeRefresh(
-          `The task correction's save result is uncertain: ${caughtMessage(caught, "the request did not complete normally")} It may have been saved. Use Refresh to reload authoritative state before editing again.`,
+          `The ${label} save result is uncertain: ${caughtMessage(caught, "the request did not complete normally")} The changes may have been saved. Use Refresh to reload authoritative state before editing again.`,
         );
       }
     } finally {
       submitting = false;
-      if (!needsAuthoritativeRefresh) {
+      taskSaveInFlight = false;
+      if (!needsAuthoritativeRefresh && !editorReplaced) {
         setEditorDisabled(false);
-        updateSaveState();
+        updateFactsState(true);
+        updatePlanningState(true);
       }
     }
+  }
+
+  factsForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await saveSection(
+      "facts",
+      "/v1/task-facts",
+      factsBody(),
+      factsMessage,
+      "Task details",
+    );
   });
 
-  form.append(titleLabel, importanceControl, importanceHelp, projectControl);
-  if (currentProjectIsInactive) {
-    form.append(element(
-      "p",
-      "The current Project is inactive. Choose an active Project or No project to correct this relationship.",
-      "planning-warning",
-    ));
-  }
-  form.append(actions, message);
-  details.append(form);
+  planningForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await saveSection(
+      "planning",
+      "/v1/task-planning",
+      planningBody(),
+      planningMessage,
+      "Work requirements",
+    );
+  });
+
+  updateFactsState(true);
+  updatePlanningState(true);
   return details;
 }
 
@@ -520,7 +845,9 @@ function renderTasks(tasks, projects) {
     );
     const facts = [];
     if (task.project_name) facts.push(task.project_name);
-    if (task.importance !== "UNSPECIFIED") facts.push(importanceLabel(task.importance));
+    if (task.importance !== "UNSPECIFIED") {
+      facts.push(`Priority: ${priorityLabel(task.importance)}`);
+    }
     if (task.schedule.mode !== "FLEXIBLE") facts.push(formatSchedule(task.schedule));
     const deadline = formatDeadline(task.deadline);
     if (deadline) facts.push(deadline);
@@ -532,8 +859,7 @@ function renderTasks(tasks, projects) {
       element("p", facts.join(" · ") || "Open", "meta"),
     );
     item.append(renderTaskActions(task));
-    item.append(renderTaskFactsEditor(task, projects));
-    item.append(renderPlanningEditor(task));
+    item.append(renderTaskDetailsEditor(task, projects));
     return item;
   }));
 }
@@ -617,71 +943,6 @@ async function correctTaskStatus(task, status, container) {
   }
 }
 
-function renderPlanningEditor(task) {
-  const details = document.createElement("details");
-  details.className = "planning-editor";
-  details.append(element("summary", "More"));
-
-  const form = document.createElement("form");
-  form.dataset.taskId = String(task.id);
-
-  const modeLabel = element("label", "Can this be split across work sessions?");
-  const modeSelect = document.createElement("select");
-  modeSelect.name = "execution_mode";
-  for (const [value, text] of [
-    ["SPLITTABLE", "Yes"],
-    ["ONE_SITTING", "No, it needs one sitting"],
-  ]) {
-    const option = document.createElement("option");
-    option.value = value;
-    option.textContent = text;
-    option.selected = task.execution_mode === value;
-    modeSelect.append(option);
-  }
-  modeLabel.append(modeSelect);
-
-  const minutesLabel = element("label", "About how long total?");
-  const minutesInput = document.createElement("input");
-  minutesInput.name = "estimated_minutes";
-  minutesInput.type = "number";
-  minutesInput.min = "1";
-  minutesInput.step = "1";
-  minutesInput.inputMode = "numeric";
-  minutesInput.placeholder = "Minutes";
-  minutesInput.value = task.estimated_minutes === null ? "" : String(task.estimated_minutes);
-  minutesLabel.append(minutesInput);
-
-  const message = element("p", "", "form-message");
-  message.hidden = true;
-  const actions = element("div", undefined, "planning-actions");
-  const save = element("button", "Save planning", "button primary");
-  save.type = "submit";
-  actions.append(save);
-  form.append(modeLabel, minutesLabel, actions, message);
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const minutes = minutesInput.value.trim();
-    const body = {
-      task_id: task.id,
-      execution_mode: modeSelect.value,
-      estimated_minutes: minutes === "" ? null : Number(minutes),
-    };
-    message.hidden = true;
-    save.disabled = true;
-    try {
-      await postJson("/v1/task-planning", body);
-      await loadOverview();
-    } catch (caught) {
-      message.textContent = `${caught.message} Refresh state, then try again.`;
-      message.hidden = false;
-    } finally {
-      save.disabled = false;
-    }
-  });
-  details.append(form);
-  return details;
-}
-
 function renderProjects(projects) {
   const target = byId("projects");
   if (!projects.length) {
@@ -742,7 +1003,7 @@ function renderHistory(result) {
   target.replaceChildren(details);
 }
 
-async function loadOverview() {
+async function loadOverview({ preserveDrafts = false } = {}) {
   const button = byId("refresh-button");
   const error = byId("state-error");
   button.disabled = true;
@@ -754,6 +1015,12 @@ async function loadOverview() {
     if (!response.ok || !envelope.ok) {
       throw new Error(envelope.error?.message || `Request failed (${response.status})`);
     }
+    let draftWarnings = [];
+    if (preserveDrafts) {
+      draftWarnings = prepareTaskDraftsForRestore(envelope.result);
+    } else {
+      taskEditorDrafts.clear();
+    }
     renderNeedsInput(envelope.result);
     renderActive(envelope.result.active_session);
     renderCommitments(envelope.result.commitments);
@@ -761,6 +1028,10 @@ async function loadOverview() {
     renderProjects(envelope.result.projects);
     renderHistory(envelope.result);
     byId("overview").hidden = false;
+    if (draftWarnings.length) {
+      error.textContent = draftWarnings.join(" ");
+      error.hidden = false;
+    }
     return true;
   } catch (caught) {
     error.textContent = `${caught.message} Check the server, then try again.`;
@@ -772,5 +1043,12 @@ async function loadOverview() {
   }
 }
 
-byId("refresh-button").addEventListener("click", loadOverview);
+async function refreshOverview() {
+  const succeeded = await loadOverview({
+    preserveDrafts: preserveDraftsOnRequiredRefresh,
+  });
+  if (succeeded) preserveDraftsOnRequiredRefresh = false;
+}
+
+byId("refresh-button").addEventListener("click", refreshOverview);
 loadOverview();

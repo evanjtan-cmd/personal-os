@@ -1017,19 +1017,32 @@ def test_state_page_assets_use_overview_and_safe_dom_rendering() -> None:
     assert 'href="/"' in state_html
     assert 'href="/state" aria-current="page"' in state_html
     assert 'fetch("/v1/overview"' in script
-    assert 'byId("refresh-button").addEventListener("click", loadOverview)' in script
+    assert 'byId("refresh-button").addEventListener("click", refreshOverview)' in script
     assert "textContent" in script
     assert "createElement" in script
     assert "innerHTML" not in script
-    assert 'postJson("/v1/task-planning"' in script
-    assert 'postJson("/v1/task-facts"' in script
+    assert '"/v1/task-planning"' in script
+    assert '"/v1/task-facts"' in script
+    assert "await postJson(path, body)" in script
     assert 'postJson("/v1/resolve-inbox"' in script
     assert 'postJson("/v1/dismiss-inbox"' in script
     assert 'postJson("/v1/task-status"' in script
     assert 'postJson("/v1/commitment-protection"' in script
     assert 'postJson("/v1/cancel-commitment"' in script
-    assert "Can this be split across work sessions?" in script
-    assert "No, it needs one sitting" in script
+    assert 'element("summary", "Edit details")' in script
+    assert 'document.createElement("fieldset")' in script
+    assert 'element("legend", "Priority")' in script
+    assert '["MUST", "High"]' in script
+    assert '["SHOULD", "Medium"]' in script
+    assert '["COULD", "Low"]' in script
+    assert '["UNSPECIFIED", "Not set"]' in script
+    assert "Estimated duration (minutes)" in script
+    assert "Can be split across sessions" in script
+    assert "Edit task" not in script
+    assert 'element("summary", "More")' not in script
+    assert "Must do" not in script
+    assert "Should do" not in script
+    assert "Could do" not in script
     assert "Should this reserve time from work recommendations?" in script
     assert 'commitment.status === "CANCELLED"' in script
     assert (
