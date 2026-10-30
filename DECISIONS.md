@@ -393,19 +393,20 @@ Work recommendation flexibility uses temporary Task-ID exclusions carried by
 the canonical activation boundary. The browser stores at most 100 distinct
 positive IDs only for the current selection flow; they are not canonical Task
 facts, are not persisted, and never imply BLOCKED, CANCELLED, COMPLETED, or a
-learned preference. Successful normal Find/Refresh and Reset requests, page
-reload, successful start, active-session restoration, and completed feedback
-clear the browser context. A failed Find/Refresh or Reset restores the prior
-selection context so the still-visible recommendation or deterministic NO_WORK
+learned preference. Successful New search and Reset requests, page reload,
+successful start, active-session restoration, and completed feedback clear the
+browser context. A failed New search or Reset restores the prior selection
+context so the still-visible recommendation or deterministic NO_WORK
 explanation remains coherent and retryable.
 
 The recommendation service computes current eligibility, duration feasibility,
 and feasible-MUST gating from the complete coherent snapshot before applying
-exclusions. It then removes excluded IDs only from the permissible priority
-band and does so before candidate sorting and the 50-candidate AI bound. If the
-band is exhausted, deterministic NO_WORK distinguishes exhausted feasible MUST
-work from exhausted non-MUST permissible work and AI is not called. Lower work
-never becomes permissible merely because every MUST was declined.
+exclusions. It then removes excluded IDs from the current priority bands and
+does so before candidate sorting and the 50-candidate AI bound. Unexcluded
+feasible MUST work remains the only permissible band. Once every feasible MUST
+Task is excluded, the next lower-priority band becomes permissible without a
+second confirmation. If every feasible Task is excluded, deterministic NO_WORK
+is returned and AI is not called.
 
 A non-empty exclusion request is an explicit alternative request. When
 permissible candidates remain, the ranker must choose one and provider NO_WORK
@@ -415,6 +416,36 @@ has no deterministic fallback action or duration, and remains subject to fresh
 atomic session-start revalidation if accepted. Machine Interface v1 and
 `POST /v1/activate` add the optional validated `excluded_task_ids` field without
 a new endpoint, protocol version, table, or migration.
+
+## 2026-10-28 — Automatic lower-priority alternatives use ephemeral authorization
+
+Ordinary recommendation continues to give feasible MUST Tasks deterministic
+precedence. Temporary exclusions still apply only to the current selection
+flow. When all currently feasible MUST Tasks have been excluded and at least
+one unexcluded lower-priority Task is feasible, those exclusions are the
+explicit user decision to continue to the next alternative. Recommendation
+ranks SHOULD, UNSPECIFIED, and COULD candidates immediately; there is no
+intermediate result kind, confirmation screen, request field, second activation
+request, or second ranker call. Remaining or newly feasible MUST Tasks always
+take precedence.
+
+An automatically selected lower-priority recommendation carries a typed
+client-held authorization bound to the exact selected Task, duration,
+normalized timezone, caller availability, and sorted feasible-MUST Task-ID set.
+Session Start recomputes the current feasible-MUST set inside the same immediate
+transaction that enforces Task, Project, schedule, HARD availability, duration,
+and single-active-session rules. Missing or mismatched authorization preserves
+the ordinary priority rejection; any changed feasible-MUST set makes the
+authorization stale and requires a fresh recommendation.
+
+The authorization is selection context, not durable state or an authentication
+credential. It is never stored in Task or session history, introduces no table
+or migration, and is cleared by the browser with exclusions on Reset, reload,
+fresh independent search, successful Start, feedback, or active-session
+restoration. Machine Interface v1 is a trusted local boundary; a future
+untrusted transport would need a separate signed or server-held capability.
+User interfaces describe canonical MUST importance as High priority while the
+stored and machine-facing enum remains unchanged.
 
 ## 2026-10-25 — Numeric missing-year dates use explicit US month/day order
 

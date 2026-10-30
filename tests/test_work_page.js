@@ -35,6 +35,7 @@ const elementIds = [
   "result-note",
   "feedback-form",
   "no-work-explanation",
+  "no-work-title",
   "skipped-controls",
   "reset-skipped-button",
   "closed-title",
@@ -133,6 +134,50 @@ async function settle() {
   await new Promise((resolve) => setImmediate(resolve));
   await Promise.resolve();
 }
+
+async function renderNoWork(result) {
+  const page = createPage((path) => {
+    if (path === "/v1/overview") return Promise.resolve(response(overview(null)));
+    if (path === "/v1/activate") {
+      return Promise.resolve(response({ ok: true, result }));
+    }
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  await settle();
+  page.trigger("activate-form", "submit");
+  await settle();
+  return page;
+}
+
+test("labels deterministic infeasible and HARD-blocked NO_WORK as no feasible work", async () => {
+  for (const reason of ["NO_FEASIBLE_TASKS", "ACTIVE_HARD_COMMITMENT"]) {
+    const explanation = `Deterministic explanation for ${reason}.`;
+    const page = await renderNoWork({ kind: "NO_WORK", explanation, reason });
+
+    assert.equal(page.elements["no-work-title"].textContent, "No feasible work right now.");
+    assert.equal(page.elements["no-work-explanation"].textContent, explanation);
+  }
+});
+
+test("labels exhausted skipped selections as no unskipped work", async () => {
+  const explanation = "All currently permissible work was skipped for this search.";
+  const page = await renderNoWork({
+    kind: "NO_WORK",
+    explanation,
+    reason: "ALL_PERMISSIBLE_TASKS_EXCLUDED",
+  });
+
+  assert.equal(page.elements["no-work-title"].textContent, "No unskipped work in this search.");
+  assert.equal(page.elements["no-work-explanation"].textContent, explanation);
+});
+
+test("labels provider-selected NO_WORK with a null reason as not recommended", async () => {
+  const explanation = "The available choices are feasible, but none is recommended now.";
+  const page = await renderNoWork({ kind: "NO_WORK", explanation, reason: null });
+
+  assert.equal(page.elements["no-work-title"].textContent, "No work recommended right now.");
+  assert.equal(page.elements["no-work-explanation"].textContent, explanation);
+});
 
 test("restores an active session with its existing feedback controls", async () => {
   const calls = [];
@@ -340,6 +385,185 @@ test("retains Find Work, Start, and feedback requests", async () => {
   });
   assert.equal(page.elements.closed.hidden, false);
   assert.equal(page.elements["closed-title"].textContent, "Finish draft: finished");
+  assert.equal(page.elements["closed-meta"].textContent, "Task completed.");
+});
+
+test("Not now advances High to High to authorized lower work in one request each", async () => {
+  const calls = [];
+  const mediumAuthorization = {
+    task_id: 3,
+    duration_minutes: 10,
+    timezone_name: "UTC",
+    available_minutes: 20,
+    feasible_high_task_ids: [1, 2],
+  };
+  const lowAuthorization = {
+    ...mediumAuthorization,
+    task_id: 4,
+    duration_minutes: 15,
+  };
+  const page = createPage((path, options) => {
+    calls.push({ path, options });
+    if (path === "/v1/overview") return Promise.resolve(response(overview(null)));
+    if (path === "/v1/activate") {
+      const body = JSON.parse(options.body);
+      const excluded = body.excluded_task_ids || [];
+      if (excluded.length === 0) {
+        return Promise.resolve(response({ ok: true, result: {
+          kind: "RECOMMEND", task_id: 1, task_title: "First High task",
+          project_name: null, duration_minutes: 5,
+          action: "Do first High work.", explanation: "High priority comes first.",
+        } }));
+      }
+      if (excluded.length === 1) {
+        return Promise.resolve(response({ ok: true, result: {
+          kind: "RECOMMEND", task_id: 2, task_title: "Second High task",
+          project_name: null, duration_minutes: 5,
+          action: "Do second High work.", explanation: "Another High priority fits.",
+        } }));
+      }
+      if (excluded.length === 2) {
+        return Promise.resolve(response({ ok: true, result: {
+          kind: "RECOMMEND", task_id: 3, task_title: "Medium task",
+          project_name: null, duration_minutes: 10,
+          action: "Do medium work.", explanation: "Automatic alternative.",
+          lower_priority_authorization: mediumAuthorization,
+        } }));
+      }
+      return Promise.resolve(response({ ok: true, result: {
+        kind: "RECOMMEND", task_id: 4, task_title: "Low task",
+        project_name: null, duration_minutes: 15,
+        action: "Do low work.", explanation: "Next feasible alternative.",
+        lower_priority_authorization: lowAuthorization,
+      } }));
+    }
+    if (path === "/v1/start") {
+      return Promise.resolve(response({ ok: true, result: {
+        ...activeSession(), task_id: 4, task_title: "Low task",
+        planned_minutes: 15, selected_action: "Do low work.",
+      } }));
+    }
+    throw new Error(`Unexpected request: ${path}`);
+  });
+
+  await settle();
+  page.elements["time-cap"].value = "20";
+  page.trigger("activate-form", "submit");
+  await settle();
+  assert.equal(page.elements["recommendation-title"].textContent, "First High task");
+
+  page.trigger("not-now-button", "click");
+  await settle();
+  assert.equal(page.elements["recommendation-title"].textContent, "Second High task");
+
+  page.trigger("not-now-button", "click");
+  await settle();
+  assert.equal(page.elements["recommendation-title"].textContent, "Medium task");
+
+  page.trigger("not-now-button", "click");
+  await settle();
+  assert.equal(page.elements["recommendation-title"].textContent, "Low task");
+  assert.equal(page.elements["skipped-controls"].hidden, false);
+
+  page.trigger("start-button", "click");
+  await settle();
+
+  const activationBodies = calls
+    .filter((call) => call.path === "/v1/activate")
+    .map((call) => JSON.parse(call.options.body));
+  assert.deepEqual(activationBodies, [
+    { time_cap_minutes: 20 },
+    { time_cap_minutes: 20, excluded_task_ids: [1] },
+    { time_cap_minutes: 20, excluded_task_ids: [1, 2] },
+    { time_cap_minutes: 20, excluded_task_ids: [1, 2, 3] },
+  ]);
+  assert.deepEqual(JSON.parse(calls.at(-1).options.body), {
+    task_id: 4,
+    planned_minutes: 15,
+    selected_action: "Do low work.",
+    available_minutes: 20,
+    lower_priority_authorization: lowAuthorization,
+  });
+  assert.equal(page.elements.active.hidden, false);
+  assert.equal(page.elements["skipped-controls"].hidden, true);
+});
+
+test("reset from automatic lower work restores normal High-priority selection", async () => {
+  const activationBodies = [];
+  const page = createPage((path, options) => {
+    if (path === "/v1/overview") return Promise.resolve(response(overview(null)));
+    const body = JSON.parse(options.body);
+    activationBodies.push(body);
+    if (body.excluded_task_ids) {
+      return Promise.resolve(response({ ok: true, result: {
+        kind: "RECOMMEND", task_id: 2, task_title: "Medium task",
+        project_name: null, duration_minutes: 5,
+        action: "Do medium work.", explanation: "Automatic alternative.",
+        lower_priority_authorization: {
+          task_id: 2, duration_minutes: 5, timezone_name: "UTC",
+          available_minutes: null, feasible_high_task_ids: [1],
+        },
+      } }));
+    }
+    return Promise.resolve(response({ ok: true, result: {
+      kind: "RECOMMEND", task_id: 1, task_title: "High task",
+      project_name: null, duration_minutes: 5,
+      action: "Do high work.", explanation: "High priority comes first.",
+    } }));
+  });
+
+  await settle();
+  page.trigger("activate-form", "submit");
+  await settle();
+  page.trigger("not-now-button", "click");
+  await settle();
+  assert.equal(page.elements["recommendation-title"].textContent, "Medium task");
+  page.trigger("reset-skipped-button", "click");
+  await settle();
+
+  assert.deepEqual(activationBodies, [{}, { excluded_task_ids: [1] }, {}]);
+  assert.equal(page.elements.recommendation.hidden, false);
+  assert.equal(page.elements["recommendation-title"].textContent, "High task");
+  assert.equal(page.elements["skipped-controls"].hidden, true);
+});
+
+test("New search clears an automatic lower-priority flow", async () => {
+  const activationBodies = [];
+  const page = createPage((path, options) => {
+    if (path === "/v1/overview") return Promise.resolve(response(overview(null)));
+    const body = JSON.parse(options.body);
+    activationBodies.push(body);
+    if (body.excluded_task_ids) {
+      return Promise.resolve(response({ ok: true, result: {
+        kind: "RECOMMEND", task_id: 2, task_title: "Medium task",
+        project_name: null, duration_minutes: 5,
+        action: "Do medium work.", explanation: "Automatic alternative.",
+        lower_priority_authorization: {
+          task_id: 2, duration_minutes: 5, timezone_name: "UTC",
+          available_minutes: null, feasible_high_task_ids: [1],
+        },
+      } }));
+    }
+    return Promise.resolve(response({ ok: true, result: {
+      kind: "RECOMMEND", task_id: 1, task_title: "High task",
+      project_name: null, duration_minutes: 5,
+      action: "Do high work.", explanation: "High priority comes first.",
+    } }));
+  });
+
+  await settle();
+  page.trigger("activate-form", "submit");
+  await settle();
+  page.trigger("not-now-button", "click");
+  await settle();
+  assert.equal(page.elements["recommendation-title"].textContent, "Medium task");
+  assert.equal(page.elements["activate-button"].textContent, "New search");
+  page.trigger("activate-form", "submit");
+  await settle();
+
+  assert.deepEqual(activationBodies.at(-1), {});
+  assert.equal(page.elements["recommendation-title"].textContent, "High task");
+  assert.equal(page.elements["skipped-controls"].hidden, true);
 });
 
 test("Not now accumulates exclusions and successful reset clears skipped work", async () => {
@@ -448,7 +672,7 @@ test("failed reset preserves exhausted NO_WORK state and skipped controls", asyn
   assert.match(page.elements.error.textContent, /provider unavailable/i);
 });
 
-test("failed manual Find Work preserves the visible alternative and exclusion context", async () => {
+test("failed New search preserves the visible alternative and exclusion context", async () => {
   const activationBodies = [];
   const page = createPage((path, options) => {
     if (path === "/v1/overview") return Promise.resolve(response(overview(null)));
@@ -499,7 +723,7 @@ test("failed manual Find Work preserves the visible alternative and exclusion co
   assert.equal(page.elements["no-work"].hidden, false);
 });
 
-test("manual Find Work starts a new selection flow", async () => {
+test("New search starts a new selection flow", async () => {
   const activationBodies = [];
   const page = createPage((path, options) => {
     if (path === "/v1/overview") return Promise.resolve(response(overview(null)));

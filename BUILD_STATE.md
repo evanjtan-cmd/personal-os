@@ -1,6 +1,6 @@
 # Build State
 
-Last updated: 2026-10-27 for the State-page Task editor UX refinement.
+Last updated: 2026-10-29 for the final Work-selection UX simplification.
 
 ## Implemented
 
@@ -105,13 +105,21 @@ Last updated: 2026-10-27 for the State-page Task editor UX refinement.
 - Work activation now accepts up to 100 distinct positive temporary excluded
   Task IDs. Recommendation computes feasibility and feasible-MUST gating from
   the complete current snapshot, then applies exclusions within the permissible
-  band before the existing 50-candidate bound. Exhausting feasible MUST work or
-  all other permissible work returns distinct deterministic NO_WORK results
-  without AI; lower-priority work never leaks through a declined MUST gate.
-  A non-empty exclusion request with remaining candidates requires one ranked
-  alternative and rejects provider NO_WORK without retry or fallback. The
-  exclusions are read-only, in-memory selection context and add no schema or
-  canonical-state mutation.
+  band before the existing 50-candidate bound. Remaining High-priority Tasks
+  always come first. Once all feasible High-priority choices are excluded, the
+  same request ranks feasible Medium, Not set, and Low work automatically; if
+  no unskipped feasible Task remains, it returns accurate skipped-search
+  NO_WORK without AI. Each alternative request makes at most one ranker call
+  and rejects provider NO_WORK without retry or fallback. Exclusions are
+  read-only, in-memory selection context and add no schema or canonical-state
+  mutation.
+- Automatically selected lower-priority recommendations carry a typed ephemeral
+  authorization bound to the selected Task, duration, timezone, caller cap,
+  and exact feasible High-priority Task-ID set. Start validates that binding and
+  recomputes the High-priority set inside the existing atomic transaction after
+  all current Task, Project, schedule, HARD availability, and duration checks.
+  Missing, mismatched, or stale authorization fails closed. Authorization is
+  never persisted and no database migration or session-history field was added.
 - Machine Interface v1 additionally exposes `activate` with strict request
   validation and ACTIVE_SESSION/RECOMMEND/NO_WORK result kinds while retaining
   all existing version-1 operations unchanged.
@@ -164,11 +172,20 @@ Last updated: 2026-10-27 for the State-page Task editor UX refinement.
   IDs only for the current browser selection flow, explains that Tasks remain
   unchanged, and rolls back a newly skipped ID if the alternative request
   fails so the prior recommendation remains startable. Successful normal
-  Find/Refresh and reset requests clear exclusions; failed requests restore the
+  New search and reset requests clear exclusions; failed requests restore the
   prior selection context and skipped-work controls. Page reload, successful
   start, active-session restoration, and completed feedback also clear
   exclusions. Pending-state and startup-response race protections remain in
   effect.
+- The browser Work page automatically moves to lower-priority alternatives
+  after the last feasible High-priority Task is skipped and carries the returned
+  authorization only with its exact recommendation. Not now needs one activation
+  request, and New search, Reset, reload, successful Start, feedback, or
+  active-session restoration clears the selection flow. The page distinguishes
+  genuine infeasibility from exhausted skipped choices and provider-selected
+  NO_WORK with feasible candidates, describes canonical MUST as High priority,
+  and explains that Finished completes a Task while Made progress ends the
+  session and keeps the Task open.
 - POS-021 extends overview tasks with execution mode and estimated minutes,
   adds Machine Interface v1 `update_task_planning` plus loopback
   `POST /v1/task-planning` for updating only those two planning facts, and adds
@@ -307,6 +324,53 @@ Last updated: 2026-10-27 for the State-page Task editor UX refinement.
   preferences, or temporary context
 
 ## Validation
+
+Run on 2026-10-29 with Python 3.13.0 and pytest 8.4.2 for the final
+Work-selection UX simplification:
+
+- Focused recommendation, activation, and bridge coverage passed: 226 tests in
+  5.26s. Focused session, recommendation-provider, and CLI coverage passed:
+  115 tests in 8.42s.
+- `.venv/bin/python -m pytest --ignore=tests/test_http_api.py -q` — passed:
+  657 tests in 29.31s using isolated temporary databases and fake AI
+  boundaries.
+- `.venv/bin/python -m pytest tests/test_http_api.py -q` — passed: 100 tests
+  in 53.43s using disposable loopback servers and fake AI boundaries.
+- `node --test tests/test_work_page.js tests/test_state_page.js` — passed: 48
+  browser behavior tests.
+- `.venv/bin/python -m compileall -q src tests` — passed.
+- `node --check` for both browser scripts and both browser test files — passed.
+- `git diff --check` — passed.
+- No real user data, live AI provider, database migration, commit, push, PR,
+  merge, or deployment was used.
+
+Run on 2026-10-29 for the Work NO_WORK headline correction:
+
+- `node --test tests/test_work_page.js` — passed: 24 browser behavior tests,
+  including deterministic infeasibility/HARD blocking, exhausted skipped
+  selections, and provider-selected NO_WORK with a null deterministic reason.
+- `node --check src/personal_os/static/work.js` and
+  `node --check tests/test_work_page.js` — passed.
+- `git diff --check` — passed.
+- No real user data, live AI provider, database change, commit, push, PR,
+  merge, or deployment was used.
+
+Run on 2026-10-28 with Python 3.13.0 and pytest 8.4.2 for the High-priority
+skip override and Work UX corrections:
+
+- `.venv/bin/python -m pytest --ignore=tests/test_http_api.py -q` — passed:
+  665 tests in 27.50s using isolated temporary databases and fake AI
+  boundaries.
+- `.venv/bin/python -m pytest tests/test_http_api.py -q` — passed: 101 tests
+  in 53.77s using disposable loopback servers.
+- `node --test tests/test_work_page.js tests/test_state_page.js` — passed: 47
+  browser behavior tests.
+- Focused recommendation, activation, session, bridge, provider, and CLI
+  coverage passed: 349 tests in 12.85s.
+- `.venv/bin/python -m compileall -q src tests`, `node --check` for both browser
+  scripts, and `git diff --check` — passed.
+- No real user data, live AI provider, database migration, commit, push, PR,
+  merge, or deployment was used.
 
 Run on 2026-10-27 with Python 3.13.0 and pytest 8.4.2 for the State-page Task
 editor UX refinement:

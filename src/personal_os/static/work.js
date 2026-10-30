@@ -352,6 +352,14 @@ function renderActive(result) {
   showScreen("active");
 }
 
+function noWorkTitle(reason) {
+  if (reason === null) return "No work recommended right now.";
+  if (typeof reason === "string" && reason.startsWith("ALL_")) {
+    return "No unskipped work in this search.";
+  }
+  return "No feasible work right now.";
+}
+
 function renderActivation(result) {
   if (result.kind === "ACTIVE_SESSION") {
     recommendation = null;
@@ -366,6 +374,7 @@ function renderActivation(result) {
     updateSkippedControls();
   } else if (result.kind === "NO_WORK") {
     recommendation = null;
+    byId("no-work-title").textContent = noWorkTitle(result.reason);
     byId("no-work-explanation").textContent = result.explanation;
     showScreen("no-work");
     updateSkippedControls();
@@ -374,7 +383,11 @@ function renderActivation(result) {
   }
 }
 
-async function activate({ preserveExclusions = false, contextOverride = null, failureMessage = null } = {}) {
+async function activate({
+  preserveExclusions = false,
+  contextOverride = null,
+  failureMessage = null,
+} = {}) {
   if (pending) return false;
   invalidateRestore();
   const previousExcludedTaskIds = preserveExclusions ? null : [...excludedTaskIds];
@@ -390,7 +403,7 @@ async function activate({ preserveExclusions = false, contextOverride = null, fa
     const result = await request("/v1/activate", body);
     recommendationContext = context;
     renderActivation(result);
-    byId("activate-button").textContent = "Refresh work";
+    byId("activate-button").textContent = "New search";
     return true;
   } catch (error) {
     if (previousExcludedTaskIds !== null) {
@@ -440,6 +453,9 @@ async function startWork() {
   if (recommendationContext?.time_cap_minutes !== undefined) {
     body.available_minutes = recommendationContext.time_cap_minutes;
   }
+  if (recommendation.lower_priority_authorization !== undefined) {
+    body.lower_priority_authorization = recommendation.lower_priority_authorization;
+  }
   clearError();
   setPending(true);
   try {
@@ -447,7 +463,7 @@ async function startWork() {
     recommendation = null;
     renderActive(result);
   } catch (error) {
-    showError(`${error.message} The recommendation may have changed. Find work again to refresh it.`);
+    showError(`${error.message} The recommendation may have changed. Start a new search.`);
   } finally {
     setPending(false);
   }
@@ -465,8 +481,13 @@ async function submitFeedback(outcome) {
     const result = await request("/v1/feedback", body);
     clearSkippedWork();
     recommendationContext = null;
-    byId("closed-title").textContent = `${result.task_title}: ${result.outcome.toLowerCase()}`;
-    byId("closed-meta").textContent = `Task status: ${result.task_status.toLowerCase()}`;
+    const outcomeCopy = {
+      FINISHED: [`${result.task_title}: finished`, "Task completed."],
+      PROGRESS: [`${result.task_title}: progress recorded`, "Session ended. Task remains open."],
+      BLOCKED: [`${result.task_title}: blocked`, "Session ended. Task is blocked."],
+    }[result.outcome];
+    byId("closed-title").textContent = outcomeCopy[0];
+    byId("closed-meta").textContent = outcomeCopy[1];
     showScreen("closed");
   } catch (error) {
     showError(`${error.message} Refresh the work state before trying again.`);

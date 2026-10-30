@@ -175,6 +175,77 @@ def test_activate_exclusions_exhaust_candidates_without_ai_or_mutation(api) -> N
     assert store.read_state_snapshot() == before
 
 
+def test_automatic_lower_priority_recommendation_can_start_through_http(api) -> None:
+    _, store, ranker, _ = api
+    high = store.create_task("High", importance=TaskImportance.MUST)
+    lower = store.create_task("Medium", importance=TaskImportance.SHOULD)
+    before = store.read_state_snapshot()
+
+    status, automatic, _ = request(api, {
+        "timezone": "UTC",
+        "time_cap_minutes": 20,
+        "excluded_task_ids": [high.id],
+    })
+
+    assert status == 200
+    recommendation = automatic["result"]
+    assert recommendation["kind"] == "RECOMMEND"
+    assert recommendation["task_id"] == lower.id
+    assert recommendation["lower_priority_authorization"] == {
+        "task_id": lower.id,
+        "duration_minutes": 5,
+        "timezone_name": "UTC",
+        "available_minutes": 20,
+        "feasible_high_task_ids": [high.id],
+    }
+    assert ranker.calls == 1
+    assert store.read_state_snapshot() == before
+
+    status, started, _ = request(api, {
+        "task_id": lower.id,
+        "planned_minutes": 5,
+        "available_minutes": 20,
+        "timezone": "UTC",
+        "selected_action": recommendation["action"],
+        "lower_priority_authorization": recommendation[
+            "lower_priority_authorization"
+        ],
+    }, path="/v1/start")
+
+    assert status == 200
+    assert started["result"]["task_id"] == lower.id
+    assert store.get_active_session() is not None
+    assert store.get_task(high.id).status is TaskStatus.OPEN
+    assert store.get_task(lower.id).status is TaskStatus.OPEN
+
+
+def test_new_high_before_authorized_http_start_rejects_stale_authorization(
+    api,
+) -> None:
+    _, store, _, _ = api
+    high = store.create_task("High", importance=TaskImportance.MUST)
+    lower = store.create_task("Medium", importance=TaskImportance.SHOULD)
+    _, automatic, _ = request(api, {
+        "timezone": "UTC",
+        "excluded_task_ids": [high.id],
+    })
+    store.create_task("New high", importance=TaskImportance.MUST)
+
+    status, response, _ = request(api, {
+        "task_id": lower.id,
+        "planned_minutes": 5,
+        "timezone": "UTC",
+        "selected_action": automatic["result"]["action"],
+        "lower_priority_authorization": automatic["result"][
+            "lower_priority_authorization"
+        ],
+    }, path="/v1/start")
+
+    assert status == 500
+    assert response["error"]["kind"] == "PRIORITY_AUTHORIZATION_STALE"
+    assert store.get_active_session() is None
+
+
 def test_active_session_wins_without_timezone_or_ai(api) -> None:
     _, store, ranker, _ = api
     task = store.create_task("Continue draft")
@@ -231,6 +302,7 @@ def test_no_work_preserves_deterministic_reason_and_skips_ai(api) -> None:
         {"excluded_task_ids": [0]},
         {"excluded_task_ids": [1, 1]},
         {"excluded_task_ids": list(range(1, 102))},
+        {"allow_lower_priorities": True},
         [],
     ],
 )
@@ -982,8 +1054,15 @@ def test_work_page_assets_do_not_collect_or_send_timezone() -> None:
     assert "placeholder=\"Not sure\"" in html
     assert "Leave blank if you're not sure" in html
     assert 'id="not-now-button"' in html
+    assert 'id="show-other-priorities-button"' not in html
     assert 'id="reset-skipped-button"' in html
     assert "excluded_task_ids" in script
+    assert "allow_lower_priorities" not in script
+    assert "lower_priority_authorization" in script
+    assert "New search" in script
+    assert '>Find work</button>' in html
+    assert "Finished completes this Task" in html
+    assert "Made progress ends the session but keeps the Task open" in html
     assert "The current recommendation is still available" in script
 
 

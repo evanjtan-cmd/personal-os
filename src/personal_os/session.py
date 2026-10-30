@@ -12,7 +12,9 @@ from personal_os.models import (
     normalize_instant, require_enum, require_identifier,
 )
 from personal_os.recommendation import allowed_durations
-from personal_os.recommendation_types import AvailabilityKind, RecommendationContext
+from personal_os.recommendation_types import (
+    AvailabilityKind, LowerPriorityAuthorization, RecommendationContext,
+)
 from personal_os.session_types import (
     SessionOutcome, SessionStartError, SessionStartFailureKind, WorkSession,
     optional_session_text,
@@ -24,6 +26,7 @@ def validate_session_start(
     *, selected: Task, planned_minutes: int, context: RecommendationContext,
     projects: list[Project], tasks: list[Task],
     commitments: list[FixedCommitment],
+    lower_priority_authorization: LowerPriorityAuthorization | None = None,
 ) -> None:
     """Apply start rejection policy in its explicit deterministic order."""
 
@@ -68,8 +71,10 @@ def validate_session_start(
             SessionStartFailureKind.DURATION_NOT_ALLOWED,
             f"planned duration {planned_minutes} is not currently allowed",
         )
-    feasible_must = any(
-        item.importance is TaskImportance.MUST
+    feasible_high_task_ids = tuple(sorted(
+        item.id
+        for item in tasks
+        if item.importance is TaskImportance.MUST
         and evaluate_task(
             item, projects=project_map, now=context.reference_time,
             local_date=local_date,
@@ -78,12 +83,36 @@ def validate_session_start(
             item.execution_mode, item.estimated_minutes, availability.kind,
             availability.available_minutes,
         ))
-        for item in tasks
-    )
-    if feasible_must and selected.importance is not TaskImportance.MUST:
+    ))
+    if lower_priority_authorization is not None:
+        if (
+            lower_priority_authorization.task_id != selected.id
+            or lower_priority_authorization.duration_minutes != planned_minutes
+            or lower_priority_authorization.timezone_name != context.timezone_name
+            or lower_priority_authorization.available_minutes
+            != context.available_minutes
+            or selected.importance is TaskImportance.MUST
+        ):
+            raise SessionStartError(
+                SessionStartFailureKind.PRIORITY_AUTHORIZATION_MISMATCH,
+                "the lower-priority authorization does not match this Start request",
+            )
+        if (
+            lower_priority_authorization.feasible_high_task_ids
+            != feasible_high_task_ids
+        ):
+            raise SessionStartError(
+                SessionStartFailureKind.PRIORITY_AUTHORIZATION_STALE,
+                "High-priority availability changed; request a fresh recommendation",
+            )
+    if (
+        feasible_high_task_ids
+        and selected.importance is not TaskImportance.MUST
+        and lower_priority_authorization is None
+    ):
         raise SessionStartError(
             SessionStartFailureKind.FEASIBLE_MUST_REQUIRED,
-            "a feasible MUST task currently requires selection",
+            "a feasible High-priority Task currently requires selection",
         )
 
 
@@ -95,17 +124,28 @@ class SessionService:
         self, *, task_id: int, planned_minutes: int,
         context: RecommendationContext, selected_action: str | None = None,
         start_reason: str | None = None,
+        lower_priority_authorization: LowerPriorityAuthorization | None = None,
     ) -> WorkSession:
         task_id = require_identifier(task_id, "task_id")
         if type(planned_minutes) is not int or planned_minutes <= 0:
             raise DomainValidationError("planned_minutes must be a positive integer")
         if not isinstance(context, RecommendationContext):
             raise DomainValidationError("context must be a RecommendationContext")
+        if (
+            lower_priority_authorization is not None
+            and not isinstance(
+                lower_priority_authorization, LowerPriorityAuthorization
+            )
+        ):
+            raise DomainValidationError(
+                "lower_priority_authorization must be a LowerPriorityAuthorization or None"
+            )
         action = optional_session_text(selected_action, "selected_action")
         reason = optional_session_text(start_reason, "start_reason")
         return self.store.start_session_atomically(
             task_id=task_id, planned_minutes=planned_minutes,
             context=context, selected_action=action, start_reason=reason,
+            lower_priority_authorization=lower_priority_authorization,
         )
 
     def close_session(

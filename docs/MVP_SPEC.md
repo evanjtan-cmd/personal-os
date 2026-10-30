@@ -87,8 +87,14 @@ POS-005 persists session history with exact UTC start/end facts and derives
 actual elapsed duration without rounding. At most one session may be active,
 enforced by SQLite as well as application checks. A session start revalidates
 current Task/project eligibility, HARD availability, exact allowed duration,
-and feasible-MUST protection atomically with insertion. Recommendation ranking,
-urgency sorting, and the 50-candidate AI bound do not constrain session start.
+and feasible-MUST protection atomically with insertion. A lower-priority Start
+may relax only that final priority guard when it carries the typed ephemeral
+authorization returned after temporary exclusions establish that every
+currently feasible MUST Task was skipped. The authorization must match the
+selected Task, duration, timezone, caller availability, and the exact freshly
+recomputed feasible-MUST Task-ID set. It does not bypass any other validation
+and is never persisted. Recommendation ranking, urgency sorting, and the
+50-candidate AI bound do not constrain session start.
 
 A generated recommendation action remains ephemeral until the user accepts it
 by starting a session. Session start may persist that exact accepted text as
@@ -233,21 +239,25 @@ deletion and rejects already CANCELLED commitments. These operations are not
 generic Commitment CRUD.
 
 Activation first returns the current active session and associated Task without
-invoking recommendation. When no session is active, it delegates unchanged to
-the recommendation service and preserves RECOMMEND or NO_WORK. Its optional
+invoking recommendation. When no session is active, it delegates to the
+recommendation service and preserves RECOMMEND or NO_WORK. Its optional
 `time_cap_minutes` is a caller-imposed maximum mapped into existing
 recommendation policy; it is distinct from deterministic HARD-commitment
 availability and from the selected recommendation duration. No cap is invented
 when omitted; omitted or blank availability is unknown rather than unlimited.
 Activation may also receive up to 100 distinct positive `excluded_task_ids` for
 one ephemeral work-selection flow. Feasible-MUST gating is determined from the
-complete feasible set before exclusions, exclusions are applied only within
-the permissible priority band and before the 50-candidate ranker bound, and an
-exhausted band returns deterministic NO_WORK without invoking AI. A non-empty
-exclusion request with remaining candidates requires the ranker to choose one;
-provider NO_WORK is invalid in that alternative mode. Exclusions are read-only,
-are never persisted, and do not extend start or feedback. Activation itself
-never starts a session.
+complete feasible set before exclusions. Remaining feasible MUST Tasks are
+always offered before lower-priority work. When every feasible MUST Task has
+been excluded and an unexcluded lower-priority Task is feasible, activation
+ranks the lower-priority candidates immediately and returns a Task-bound
+authorization for Start. No second activation request or ranker call is
+required. If no unexcluded candidate remains, activation returns an accurate
+deterministic NO_WORK. Exclusions are applied before the 50-candidate ranker
+bound. A non-empty alternative request with remaining candidates requires the
+ranker to choose one; provider NO_WORK is invalid in that mode. Exclusions and
+authorizations are read-only, are never persisted, and do not extend feedback.
+Activation itself never starts a session.
 
 ## POS-001 executable boundary
 
@@ -420,11 +430,15 @@ durations, contradictory fields, and NO_WORK during MUST gating. POS-004 adds no
 schema, mutation, CLI, session, history, rule evaluation, calendar, or UI.
 
 Temporary recommendation exclusions do not change eligibility or importance.
-The service establishes the complete feasible priority band first, removes the
-excluded Task IDs from that band second, and only then sorts and applies the
-50-candidate bound. Thus excluding every feasible MUST produces deterministic
-NO_WORK with an explicit MUST-only explanation rather than exposing SHOULD or
-COULD work. Unknown or newly ineligible excluded IDs are harmless. Initial
-recommendation retains ordinary NO_WORK semantics; an explicit alternative
-request requires one supplied remaining candidate to be selected and makes at
-most one ranker call.
+The service establishes the complete feasible priority bands first, removes
+excluded Task IDs second, and only then sorts and applies the 50-candidate
+bound. Unexcluded feasible MUST work remains the only permissible band. Once
+every feasible MUST Task is explicitly excluded, the service immediately ranks
+unexcluded SHOULD, UNSPECIFIED, and COULD work. The selected lower-priority
+recommendation carries a typed, client-held authorization bound to its Task,
+duration, context, and current feasible-MUST set. If no unexcluded feasible
+Task remains, the service returns accurate deterministic NO_WORK without AI.
+Unknown or newly ineligible excluded IDs are harmless. Initial recommendation
+retains ordinary NO_WORK semantics; an explicit alternative request requires
+one supplied remaining candidate to be selected and makes at most one ranker
+call.

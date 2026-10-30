@@ -154,6 +154,62 @@ class RecommendationChoice:
 
 
 @dataclass(frozen=True, slots=True)
+class LowerPriorityAuthorization:
+    task_id: int
+    duration_minutes: int
+    timezone_name: str
+    available_minutes: int | None
+    feasible_high_task_ids: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "task_id", require_identifier(self.task_id, "task_id"))
+        if type(self.duration_minutes) is not int or self.duration_minutes <= 0:
+            raise DomainValidationError(
+                "duration_minutes must be a positive integer"
+            )
+        timezone_name = require_text(self.timezone_name, "timezone_name")
+        try:
+            ZoneInfo(timezone_name)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise DomainValidationError(
+                "timezone_name must identify an IANA timezone"
+            ) from exc
+        object.__setattr__(self, "timezone_name", timezone_name)
+        if self.available_minutes is not None and (
+            type(self.available_minutes) is not int or self.available_minutes < 0
+        ):
+            raise DomainValidationError(
+                "available_minutes must be a nonnegative integer or None"
+            )
+        if (
+            not isinstance(self.feasible_high_task_ids, tuple)
+            or not self.feasible_high_task_ids
+            or any(
+                type(task_id) is not int or task_id <= 0
+                for task_id in self.feasible_high_task_ids
+            )
+        ):
+            raise DomainValidationError(
+                "feasible_high_task_ids must be a non-empty tuple of positive integers"
+            )
+        if len(set(self.feasible_high_task_ids)) != len(
+            self.feasible_high_task_ids
+        ):
+            raise DomainValidationError(
+                "feasible_high_task_ids must contain distinct IDs"
+            )
+        if len(self.feasible_high_task_ids) > MAX_EXCLUDED_TASK_IDS:
+            raise DomainValidationError(
+                f"feasible_high_task_ids may contain at most "
+                f"{MAX_EXCLUDED_TASK_IDS} IDs"
+            )
+        if tuple(sorted(self.feasible_high_task_ids)) != self.feasible_high_task_ids:
+            raise DomainValidationError(
+                "feasible_high_task_ids must be sorted"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class RecommendationResult:
     kind: RecommendationResultKind
     availability: AvailabilityDecision
@@ -163,6 +219,7 @@ class RecommendationResult:
     duration_minutes: int | None = None
     action: str | None = None
     deterministic_reason: DeterministicNoWorkReason | None = None
+    lower_priority_authorization: LowerPriorityAuthorization | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "explanation", require_text(self.explanation, "explanation"))
@@ -173,7 +230,24 @@ class RecommendationResult:
                 )
             require_identifier(self.task.id, "task_id")
             object.__setattr__(self, "action", require_text(self.action, "action"))
+            if self.lower_priority_authorization is not None:
+                if not isinstance(
+                    self.lower_priority_authorization,
+                    LowerPriorityAuthorization,
+                ):
+                    raise DomainValidationError(
+                        "lower_priority_authorization must be a LowerPriorityAuthorization"
+                    )
+                if (
+                    self.lower_priority_authorization.task_id != self.task.id
+                    or self.lower_priority_authorization.duration_minutes
+                    != self.duration_minutes
+                ):
+                    raise DomainValidationError(
+                        "lower-priority authorization must match the recommendation"
+                    )
         elif any(value is not None for value in (
             self.task, self.project_name, self.duration_minutes, self.action,
+            self.lower_priority_authorization,
         )):
             raise DomainValidationError("no-work result cannot contain recommendation fields")

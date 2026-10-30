@@ -69,6 +69,8 @@ def test_adapter_uses_strict_responses_without_raw_temporal_context() -> None:
     assert "already executable" in instructions
     assert "do not claim unknown facts" in instructions
     assert "not a substitute for the action" in instructions
+    assert "must importance as high priority" in instructions
+    assert "do not expose those canonical enum names" in instructions
     payload = json.loads(responses.kwargs["input"])
     serialized = json.dumps(payload).lower()
     assert set(payload) == {

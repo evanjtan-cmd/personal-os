@@ -15,7 +15,8 @@ from personal_os.models import (
 )
 from personal_os.recommendation import RecommendationService
 from personal_os.recommendation_types import (
-    RecommendationChoice, RecommendationChoiceKind, RecommendationContext,
+    LowerPriorityAuthorization, RecommendationChoice, RecommendationChoiceKind,
+    RecommendationContext,
     RecommendationResultKind,
 )
 from personal_os.session import SessionService
@@ -224,6 +225,131 @@ def test_feasible_must_gates_without_candidate_bound(store) -> None:
     with pytest.raises(SessionStartError) as error:
         start(store, lower.id, selected_action="Work on lower task")
     assert error.value.kind is SessionStartFailureKind.FEASIBLE_MUST_REQUIRED
+
+
+def test_matching_lower_priority_authorization_allows_atomic_start(store) -> None:
+    high = store.create_task("High", importance=TaskImportance.MUST)
+    lower = store.create_task("Medium", importance=TaskImportance.SHOULD)
+    authorization = LowerPriorityAuthorization(
+        task_id=lower.id,
+        duration_minutes=5,
+        timezone_name="UTC",
+        available_minutes=None,
+        feasible_high_task_ids=(high.id,),
+    )
+
+    session = SessionService(store).start_session(
+        task_id=lower.id,
+        planned_minutes=5,
+        context=context(),
+        lower_priority_authorization=authorization,
+    )
+
+    assert session.task_id == lower.id
+    assert store.get_task(high.id).importance is TaskImportance.MUST
+    assert store.get_task(lower.id).importance is TaskImportance.SHOULD
+
+
+@pytest.mark.parametrize("mismatch", ["task", "duration", "timezone", "cap"])
+def test_mismatched_lower_priority_authorization_is_rejected(
+    store, mismatch,
+) -> None:
+    high = store.create_task("High", importance=TaskImportance.MUST)
+    lower = store.create_task("Medium", importance=TaskImportance.SHOULD)
+    other = store.create_task("Other")
+    values = {
+        "task_id": lower.id,
+        "duration_minutes": 5,
+        "timezone_name": "UTC",
+        "available_minutes": None,
+        "feasible_high_task_ids": (high.id,),
+    }
+    if mismatch == "task":
+        values["task_id"] = other.id
+    elif mismatch == "duration":
+        values["duration_minutes"] = 10
+    elif mismatch == "timezone":
+        values["timezone_name"] = "America/New_York"
+    else:
+        values["available_minutes"] = 30
+
+    with pytest.raises(SessionStartError) as error:
+        SessionService(store).start_session(
+            task_id=lower.id,
+            planned_minutes=5,
+            context=context(),
+            lower_priority_authorization=LowerPriorityAuthorization(**values),
+        )
+
+    assert (
+        error.value.kind
+        is SessionStartFailureKind.PRIORITY_AUTHORIZATION_MISMATCH
+    )
+    assert store.list_sessions() == []
+
+
+@pytest.mark.parametrize("change", ["new", "newly_feasible", "removed"])
+def test_changed_feasible_high_set_makes_authorization_stale(store, change) -> None:
+    high = store.create_task("High", importance=TaskImportance.MUST)
+    lower = store.create_task("Medium", importance=TaskImportance.SHOULD)
+    authorization = LowerPriorityAuthorization(
+        task_id=lower.id,
+        duration_minutes=5,
+        timezone_name="UTC",
+        available_minutes=None,
+        feasible_high_task_ids=(high.id,),
+    )
+    if change == "new":
+        store.create_task("New high", importance=TaskImportance.MUST)
+    elif change == "newly_feasible":
+        newly_feasible = store.create_task(
+            "Blocked high",
+            importance=TaskImportance.MUST,
+            status=TaskStatus.BLOCKED,
+        )
+        store.correct_task_status(newly_feasible.id, status=TaskStatus.OPEN)
+    else:
+        store.correct_task_status(high.id, status=TaskStatus.COMPLETED)
+
+    with pytest.raises(SessionStartError) as error:
+        SessionService(store).start_session(
+            task_id=lower.id,
+            planned_minutes=5,
+            context=context(),
+            lower_priority_authorization=authorization,
+        )
+
+    assert error.value.kind is SessionStartFailureKind.PRIORITY_AUTHORIZATION_STALE
+    assert store.list_sessions() == []
+
+
+def test_authorization_never_bypasses_active_hard_commitment(store) -> None:
+    high = store.create_task("High", importance=TaskImportance.MUST)
+    lower = store.create_task("Medium", importance=TaskImportance.SHOULD)
+    authorization = LowerPriorityAuthorization(
+        task_id=lower.id,
+        duration_minutes=5,
+        timezone_name="UTC",
+        available_minutes=None,
+        feasible_high_task_ids=(high.id,),
+    )
+    store.create_fixed_commitment(
+        "Meeting",
+        NOW,
+        end_at=NOW + timedelta(minutes=30),
+        hardness=CommitmentHardness.HARD,
+    )
+
+    with pytest.raises(SessionStartError) as error:
+        SessionService(store).start_session(
+            task_id=lower.id,
+            planned_minutes=5,
+            context=context(),
+            lower_priority_authorization=authorization,
+        )
+
+    assert error.value.kind is SessionStartFailureKind.HARD_COMMITMENT_ACTIVE
+    assert store.list_sessions() == []
 
 
 @pytest.mark.parametrize("must_kind", ["blocked", "future", "duration"])

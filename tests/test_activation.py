@@ -130,6 +130,32 @@ def test_activation_forwards_temporary_exclusions_to_recommendation(store) -> No
     assert ranker.calls[0][0].alternative_required is True
 
 
+def test_activation_automatically_returns_authorized_lower_work(
+    store,
+) -> None:
+    high = store.create_task("High", importance=TaskImportance.MUST)
+    lower = store.create_task("Medium", importance=TaskImportance.SHOULD)
+    ranker = RecordingRanker()
+    service = WorkActivationService(
+        store, RecommendationService(store, ranker)
+    )
+
+    result = service.activate(WorkActivationContext(
+        NOW,
+        "UTC",
+        20,
+        excluded_task_ids=(high.id,),
+    ))
+
+    assert result.kind is WorkActivationResultKind.RECOMMEND
+    assert result.recommendation is not None
+    assert result.recommendation.task == lower
+    authorization = result.recommendation.lower_priority_authorization
+    assert authorization is not None
+    assert authorization.feasible_high_task_ids == (high.id,)
+    assert len(ranker.calls) == 1
+
+
 def test_deterministic_no_work_is_preserved_and_skips_ranker(store) -> None:
     store.create_task("Task")
     ranker = RecordingRanker()

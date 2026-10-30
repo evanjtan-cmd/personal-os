@@ -87,12 +87,13 @@
           <button class="button" type="submit" name="outcome" value="PROGRESS">Made progress</button>
           <button class="button" type="submit" name="outcome" value="BLOCKED">Blocked</button>
         </div>
+        <p class="field-help">Finished completes this Task. Made progress ends the session but keeps the Task open.</p>
       </form>
     </section>
 
     <section id="no-work" class="state" aria-live="polite" hidden>
       <p class="eyebrow">CURRENT STATE</p>
-      <h2>No work right now.</h2>
+      <h2 id="no-work-title">No feasible work right now.</h2>
       <p id="no-work-explanation" class="explanation"></p>
     </section>
 
@@ -105,7 +106,7 @@
       <p class="eyebrow">SESSION RECORDED</p>
       <h2 id="closed-title"></h2>
       <p id="closed-meta" class="meta"></p>
-      <button id="next-button" class="button primary" type="button">Find next work</button>
+      <button id="next-button" class="button primary" type="button">Find work</button>
     </section>
   </main>
 </body>

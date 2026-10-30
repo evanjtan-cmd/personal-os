@@ -57,6 +57,7 @@ input:focus, textarea:focus, select:focus, button:focus-visible, summary:focus-v
 .skipped-controls p { margin-bottom: 10px; color: #607067; font-size: 13px; line-height: 1.5; }
 .feedback-form { margin-top: 28px; }
 .feedback-actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 16px; }
+.feedback-form > .field-help { margin: 12px 0 0; }
 .error { margin: 22px 0 0; padding: 12px 15px; border-left: 3px solid #b54334; background: #fbefec; color: #79372f; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
 .progress { margin: 15px 0 0; color: #566b5d; font-size: 13px; }
 

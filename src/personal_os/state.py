@@ -665,6 +665,7 @@ class SQLiteStateStore:
     def start_session_atomically(
         self, *, task_id: int, planned_minutes: int, context,
         selected_action: str | None, start_reason: str | None,
+        lower_priority_authorization=None,
     ) -> WorkSession:
         """Revalidate current state and insert one active session atomically."""
 
@@ -700,6 +701,7 @@ class SQLiteStateStore:
                 selected=selected, planned_minutes=planned_minutes,
                 context=context, projects=projects, tasks=tasks,
                 commitments=commitments,
+                lower_priority_authorization=lower_priority_authorization,
             )
             try:
                 cursor = connection.execute(

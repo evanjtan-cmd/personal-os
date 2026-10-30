@@ -295,30 +295,114 @@ def test_excluding_only_permissible_task_is_deterministic_no_work(store) -> None
     assert _database_dump(store.database_path) == before
 
 
-def test_must_gate_is_applied_before_exclusions_and_lower_work_never_leaks(store) -> None:
+def test_high_gate_automatically_advances_to_authorized_lower_work(store) -> None:
     first = store.create_task("Must one", importance=TaskImportance.MUST)
     second = store.create_task("Must two", importance=TaskImportance.MUST)
-    store.create_task("Should", importance=TaskImportance.SHOULD)
+    medium = store.create_task("Should", importance=TaskImportance.SHOULD)
+    low = store.create_task("Could", importance=TaskImportance.COULD)
+    before = _database_dump(store.database_path)
     ranker = Ranker()
     service = RecommendationService(store, ranker)
 
-    result = service.recommend(
+    initial = service.recommend(RecommendationContext(NOW, "UTC", 30))
+    remaining_high = service.recommend(
         RecommendationContext(NOW, "UTC"), excluded_task_ids=(first.id,)
     )
-    exhausted = service.recommend(
-        RecommendationContext(NOW, "UTC"),
+    automatic_medium = service.recommend(
+        RecommendationContext(NOW, "UTC", 30),
         excluded_task_ids=(first.id, second.id),
+    )
+    automatic_low = service.recommend(
+        RecommendationContext(NOW, "UTC", 30),
+        excluded_task_ids=(first.id, second.id, medium.id),
+    )
+
+    assert initial.task == first
+    assert remaining_high.task == second
+    assert [item.task_id for item in ranker.calls[1][1]] == [second.id]
+    assert automatic_medium.task == medium
+    assert automatic_low.task == low
+    for automatic in (automatic_medium, automatic_low):
+        assert automatic.lower_priority_authorization is not None
+        assert automatic.lower_priority_authorization.task_id == automatic.task.id
+        assert automatic.lower_priority_authorization.duration_minutes == 5
+        assert automatic.lower_priority_authorization.timezone_name == "UTC"
+        assert automatic.lower_priority_authorization.available_minutes == 30
+        assert automatic.lower_priority_authorization.feasible_high_task_ids == (
+            first.id,
+            second.id,
+        )
+    context, candidates = ranker.calls[2]
+    assert context.must_gated is False
+    assert context.alternative_required is True
+    assert [item.task_id for item in candidates] == [medium.id, low.id]
+    assert [item.task_id for item in ranker.calls[3][1]] == [low.id]
+    assert len(ranker.calls) == 4
+    assert _database_dump(store.database_path) == before
+
+
+def test_skipped_high_without_feasible_lower_work_returns_no_work(store) -> None:
+    high = store.create_task("High", importance=TaskImportance.MUST)
+    completed_project = store.create_project(
+        "Completed project", status=ProjectStatus.COMPLETED
+    )
+    store.create_task("Blocked lower", status=TaskStatus.BLOCKED)
+    store.create_task("Completed-project lower", project_id=completed_project.id)
+    store.create_task(
+        "Future lower",
+        schedule_mode=TaskScheduleMode.DAY,
+        day_date=date(2026, 9, 3),
+    )
+    store.create_task(
+        "Too long lower",
+        execution_mode=TaskExecutionMode.ONE_SITTING,
+        estimated_minutes=60,
+    )
+    ranker = Ranker()
+
+    result = RecommendationService(store, ranker).recommend(
+        RecommendationContext(NOW, "UTC", 30),
+        excluded_task_ids=(high.id,),
+    )
+
+    assert result.kind is RecommendationResultKind.NO_WORK
+    assert (
+        result.deterministic_reason
+        is DeterministicNoWorkReason.ALL_FEASIBLE_MUST_TASKS_EXCLUDED
+    )
+    assert "no other priority currently has feasible work" in result.explanation
+    assert not ranker.calls
+
+
+def test_unskipped_high_wins_before_lower_priorities(store) -> None:
+    first = store.create_task("First high", importance=TaskImportance.MUST)
+    second = store.create_task("Second high", importance=TaskImportance.MUST)
+    store.create_task("Medium", importance=TaskImportance.SHOULD)
+    ranker = Ranker()
+
+    result = RecommendationService(store, ranker).recommend(
+        RecommendationContext(NOW, "UTC"),
+        excluded_task_ids=(first.id,),
+    )
+
+    assert result.task == second
+    assert result.lower_priority_authorization is None
+    assert [item.task_id for item in ranker.calls[0][1]] == [second.id]
+
+
+def test_automatic_lower_exclusions_apply_before_candidate_bound(store) -> None:
+    high = store.create_task("High", importance=TaskImportance.MUST)
+    first = store.create_task("First medium", importance=TaskImportance.SHOULD)
+    second = store.create_task("Second medium", importance=TaskImportance.SHOULD)
+    ranker = Ranker()
+
+    result = RecommendationService(store, ranker, candidate_limit=1).recommend(
+        RecommendationContext(NOW, "UTC"),
+        excluded_task_ids=(high.id, first.id),
     )
 
     assert result.task == second
     assert [item.task_id for item in ranker.calls[0][1]] == [second.id]
-    assert exhausted.kind is RecommendationResultKind.NO_WORK
-    assert (
-        exhausted.deterministic_reason
-        is DeterministicNoWorkReason.ALL_FEASIBLE_MUST_TASKS_EXCLUDED
-    )
-    assert "Only MUST work is currently permissible" in exhausted.explanation
-    assert len(ranker.calls) == 1
 
 
 def test_new_feasible_must_gates_during_an_existing_selection_flow(store) -> None:

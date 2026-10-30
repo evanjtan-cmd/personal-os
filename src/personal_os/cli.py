@@ -13,7 +13,8 @@ from personal_os.config import get_database_path, get_timezone_name
 from personal_os.database import initialize_database
 from personal_os.errors import PersonalOSError
 from personal_os.models import (
-    CaptureStatus, TaskExecutionMode, TaskScheduleMode, serialize_instant,
+    CaptureStatus, TaskExecutionMode, TaskImportance, TaskScheduleMode,
+    serialize_instant,
 )
 from personal_os.recommendation_types import (
     RecommendationContext,
@@ -81,6 +82,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 _CLIRuntime = PersonalOSRuntime
 _build_runtime = build_runtime
+
+
+def _priority_label(importance: TaskImportance) -> str:
+    return {
+        TaskImportance.MUST: "High priority",
+        TaskImportance.SHOULD: "Medium priority",
+        TaskImportance.COULD: "Low priority",
+        TaskImportance.UNSPECIFIED: "Priority not set",
+    }[importance]
 
 
 def _utc_now() -> datetime:
@@ -263,7 +273,8 @@ def _print_state(snapshot: StateSnapshot) -> None:
     section("Tasks", snapshot.tasks)
     for task in snapshot.tasks:
         print(
-            f"  #{task.id} [{task.status.value}/{task.importance.value}] {task.title}"
+            f"  #{task.id} [{task.status.value}/{_priority_label(task.importance)}] "
+            f"{task.title}"
         )
         print(f"    Project: {'none' if task.project_id is None else f'#{task.project_id}'}")
         if task.schedule_mode is TaskScheduleMode.FLEXIBLE:
