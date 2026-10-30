@@ -128,6 +128,9 @@ class OpenAIResponsesRecommendationRanker:
             "ACT' invents an unsupported subtask. If the task title is already executable, "
             "preserve its action rather than adding invented specificity. The reason is a "
             "short ranking explanation, not a substitute for the action. For NO_WORK, action must be null."
+            " In user-facing actions and reasons, describe MUST importance as High priority, "
+            "SHOULD as Medium priority, COULD as Low priority, and UNSPECIFIED as Not set; "
+            "do not expose those canonical enum names to the user."
         )
         try:
             response = client.responses.create(

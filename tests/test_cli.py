@@ -250,7 +250,7 @@ def test_state_command_formats_complete_persisted_state(
 
     output = capsys.readouterr().out
     assert "Projects (1)\n  #1 [ACTIVE] College" in output
-    assert "Tasks (1)\n  #1 [OPEN/MUST] Submit essay" in output
+    assert "Tasks (1)\n  #1 [OPEN/High priority] Submit essay" in output
     assert "Schedule: WINDOW 2026-08-30T17:00:00.000000Z to 2026-08-30T18:00:00.000000Z" in output
     assert "Deadline: DATE 2026-09-01" in output
     assert "Commitments (1)\n  #1 [HARD] Call" in output
@@ -725,7 +725,7 @@ def test_complete_dogfood_cli_loop_uses_real_services_without_network(
 
     assert main(["state"]) == 0
     state_output = capsys.readouterr().out
-    assert "Tasks (1)\n  #1 [COMPLETED/MUST] Finish loop" in state_output
+    assert "Tasks (1)\n  #1 [COMPLETED/High priority] Finish loop" in state_output
     assert "Sessions (1)\n  #1 [FINISHED] Task #1" in state_output
     assert "Result note: Done" in state_output
 

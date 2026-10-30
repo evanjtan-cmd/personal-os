@@ -24,11 +24,16 @@ POST_OPERATIONS = {
     "/v1/dismiss-inbox": ("dismiss_inbox", {"inbox_item_id"}),
     ACTIVATE_PATH: (
         "activate",
-        {"timezone", "time_cap_minutes", "excluded_task_ids"},
+        {
+            "timezone", "time_cap_minutes", "excluded_task_ids",
+        },
     ),
     "/v1/start": (
         "start",
-        {"task_id", "planned_minutes", "timezone", "available_minutes", "selected_action", "start_reason"},
+        {
+            "task_id", "planned_minutes", "timezone", "available_minutes",
+            "selected_action", "start_reason", "lower_priority_authorization",
+        },
     ),
     "/v1/feedback": ("feedback", {"outcome", "result_note"}),
     "/v1/task-planning": (

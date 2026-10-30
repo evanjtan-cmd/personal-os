@@ -29,7 +29,7 @@ from personal_os.models import (
 )
 from personal_os.recommendation import RecommendationService
 from personal_os.recommendation_types import (
-    DeterministicNoWorkReason,
+    DeterministicNoWorkReason, LowerPriorityAuthorization,
     RecommendationChoice,
     RecommendationChoiceKind,
     RecommendationResultKind,
@@ -1360,6 +1360,29 @@ def test_activate_rejects_malformed_excluded_task_ids(excluded: object) -> None:
     runtime_factory.assert_not_called()
 
 
+def test_activate_rejects_removed_lower_priority_confirmation_field() -> None:
+    runtime_factory = Mock(side_effect=AssertionError("runtime must not be built"))
+    output = io.StringIO()
+
+    status = bridge.run(
+        io.StringIO(json.dumps({
+            "version": 1,
+            "operation": "activate",
+            "timezone": "UTC",
+            "allow_lower_priorities": True,
+        })),
+        output,
+        runtime_factory=runtime_factory,
+        environ={},
+    )
+
+    assert status == 2
+    error = json.loads(output.getvalue())["error"]
+    assert error["code"] == "INVALID_REQUEST"
+    assert "unknown field: allow_lower_priorities" in error["message"]
+    runtime_factory.assert_not_called()
+
+
 def test_activate_unknown_field_is_rejected_before_runtime_construction() -> None:
     runtime_factory = Mock(side_effect=AssertionError("runtime must not be built"))
     output = io.StringIO()
@@ -1525,6 +1548,51 @@ def test_activate_recommend_serializes_existing_recommendation_shape() -> None:
     runtime.session_service.start_session.assert_not_called()
 
 
+def test_activate_serializes_automatic_lower_priority_authorization() -> None:
+    runtime = fake_runtime()
+    authorization = LowerPriorityAuthorization(
+        task_id=7,
+        duration_minutes=10,
+        timezone_name="UTC",
+        available_minutes=20,
+        feasible_high_task_ids=(3, 9),
+    )
+    runtime.activation_service.activate.return_value = SimpleNamespace(
+        kind=WorkActivationResultKind.RECOMMEND,
+        recommendation=SimpleNamespace(
+            kind=RecommendationResultKind.RECOMMEND,
+            task=SimpleNamespace(id=7, title="Medium task"),
+            project_name=None,
+            duration_minutes=10,
+            action="Do the next step.",
+            explanation="Automatic alternative.",
+            lower_priority_authorization=authorization,
+        ),
+    )
+
+    status, response, _ = invoke(
+        {
+            "version": 1,
+            "operation": "activate",
+            "timezone": "UTC",
+            "time_cap_minutes": 20,
+            "excluded_task_ids": [3, 9],
+        },
+        runtime,
+    )
+
+    assert status == 0
+    assert response["result"]["lower_priority_authorization"] == {
+        "task_id": 7,
+        "duration_minutes": 10,
+        "timezone_name": "UTC",
+        "available_minutes": 20,
+        "feasible_high_task_ids": [3, 9],
+    }
+    context = runtime.activation_service.activate.call_args.args[0]
+    assert context.excluded_task_ids == (3, 9)
+
+
 def test_activate_no_work_serializes_reason_and_environment_timezone() -> None:
     runtime = fake_runtime()
     runtime.activation_service.activate.return_value = SimpleNamespace(
@@ -1610,6 +1678,98 @@ def test_start_allows_omitted_selected_action() -> None:
     assert status == 0
     assert runtime.session_service.start_session.call_args.kwargs["selected_action"] is None
     assert response["result"]["selected_action"] is None
+
+
+def test_start_parses_and_delegates_lower_priority_authorization() -> None:
+    runtime = fake_runtime()
+    runtime.session_service.start_session.return_value = SimpleNamespace(
+        id=9,
+        task_id=4,
+        planned_minutes=5,
+        selected_action="Do it.",
+        started_at=NOW,
+    )
+    runtime.store.get_task.return_value = SimpleNamespace(title="Medium task")
+    payload = {
+        "task_id": 4,
+        "duration_minutes": 5,
+        "timezone_name": "UTC",
+        "available_minutes": 30,
+        "feasible_high_task_ids": [1, 3],
+    }
+
+    status, _, _ = invoke(
+        {
+            "version": 1,
+            "operation": "start",
+            "task_id": 4,
+            "planned_minutes": 5,
+            "available_minutes": 30,
+            "timezone": "UTC",
+            "selected_action": "Do it.",
+            "lower_priority_authorization": payload,
+        },
+        runtime,
+    )
+
+    assert status == 0
+    authorization = runtime.session_service.start_session.call_args.kwargs[
+        "lower_priority_authorization"
+    ]
+    assert authorization == LowerPriorityAuthorization(
+        task_id=4,
+        duration_minutes=5,
+        timezone_name="UTC",
+        available_minutes=30,
+        feasible_high_task_ids=(1, 3),
+    )
+
+
+@pytest.mark.parametrize(
+    "authorization",
+    [
+        None,
+        [],
+        {},
+        {
+            "task_id": 4,
+            "duration_minutes": 5,
+            "timezone_name": "UTC",
+            "available_minutes": 30,
+            "feasible_high_task_ids": [],
+        },
+        {
+            "task_id": 4,
+            "duration_minutes": 5,
+            "timezone_name": "UTC",
+            "available_minutes": 30,
+            "feasible_high_task_ids": [3, 1],
+        },
+    ],
+)
+def test_start_rejects_malformed_lower_priority_authorization(
+    authorization,
+) -> None:
+    runtime_factory = Mock(side_effect=AssertionError("runtime must not be built"))
+    output = io.StringIO()
+
+    status = bridge.run(
+        io.StringIO(json.dumps({
+            "version": 1,
+            "operation": "start",
+            "task_id": 4,
+            "planned_minutes": 5,
+            "timezone": "UTC",
+            "lower_priority_authorization": authorization,
+        })),
+        output,
+        runtime_factory=runtime_factory,
+        environ={},
+    )
+
+    assert status == 2
+    assert json.loads(output.getvalue())["error"]["code"] == "INVALID_REQUEST"
+    runtime_factory.assert_not_called()
 
 
 def test_start_error_preserves_semantic_kind_and_does_not_precheck() -> None:

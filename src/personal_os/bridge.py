@@ -28,7 +28,7 @@ from personal_os.models import (
     serialize_instant,
 )
 from personal_os.recommendation_types import (
-    MAX_EXCLUDED_TASK_IDS,
+    MAX_EXCLUDED_TASK_IDS, LowerPriorityAuthorization,
     RecommendationContext,
     RecommendationResult,
     RecommendationResultKind,
@@ -89,6 +89,7 @@ class _ValidatedRequest:
     result_note: str | None = None
     time_cap_minutes: int | None = None
     excluded_task_ids: tuple[int, ...] = ()
+    lower_priority_authorization: LowerPriorityAuthorization | None = None
     task_fact_corrections: _TaskFactCorrections | None = None
 
 
@@ -148,6 +149,78 @@ def _excluded_task_ids(request: dict[str, object]) -> tuple[int, ...]:
     if len(set(value)) != len(value):
         raise InvalidRequestError("excluded_task_ids must contain distinct IDs")
     return tuple(value)
+
+
+def _lower_priority_authorization(
+    request: dict[str, object],
+) -> LowerPriorityAuthorization | None:
+    if "lower_priority_authorization" not in request:
+        return None
+    value = request["lower_priority_authorization"]
+    if not isinstance(value, dict):
+        raise InvalidRequestError(
+            "lower_priority_authorization must be an object"
+        )
+    required = {
+        "task_id",
+        "duration_minutes",
+        "timezone_name",
+        "available_minutes",
+        "feasible_high_task_ids",
+    }
+    _require_fields(value, required=required, optional=set())
+    task_id = _integer(value, "task_id", positive=True)
+    duration = _integer(value, "duration_minutes", positive=True)
+    timezone_name = value["timezone_name"]
+    if not isinstance(timezone_name, str):
+        raise InvalidRequestError(
+            "lower_priority_authorization timezone_name must be text"
+        )
+    try:
+        timezone_name = get_timezone_name(timezone_name, {})
+    except PersonalOSError as exc:
+        raise InvalidRequestError(str(exc)) from exc
+    available = value["available_minutes"]
+    if available is not None and (
+        type(available) is not int or available < 0
+    ):
+        raise InvalidRequestError(
+            "lower_priority_authorization available_minutes must be a "
+            "nonnegative integer or null"
+        )
+    high_ids = value["feasible_high_task_ids"]
+    if not isinstance(high_ids, list) or not high_ids:
+        raise InvalidRequestError(
+            "lower_priority_authorization feasible_high_task_ids must be a "
+            "non-empty array"
+        )
+    if len(high_ids) > MAX_EXCLUDED_TASK_IDS:
+        raise InvalidRequestError(
+            "lower_priority_authorization feasible_high_task_ids may contain "
+            f"at most {MAX_EXCLUDED_TASK_IDS} IDs"
+        )
+    if any(type(task_id) is not int or task_id <= 0 for task_id in high_ids):
+        raise InvalidRequestError(
+            "lower_priority_authorization feasible_high_task_ids must contain "
+            "only positive integers"
+        )
+    if len(set(high_ids)) != len(high_ids):
+        raise InvalidRequestError(
+            "lower_priority_authorization feasible_high_task_ids must contain "
+            "distinct IDs"
+        )
+    if high_ids != sorted(high_ids):
+        raise InvalidRequestError(
+            "lower_priority_authorization feasible_high_task_ids must be sorted"
+        )
+    assert task_id is not None and duration is not None
+    return LowerPriorityAuthorization(
+        task_id=task_id,
+        duration_minutes=duration,
+        timezone_name=timezone_name,
+        available_minutes=available,
+        feasible_high_task_ids=tuple(high_ids),
+    )
 
 
 def _execution_mode(request: dict[str, object]) -> TaskExecutionMode:
@@ -241,7 +314,7 @@ def _serialize_recommendation(
     assert result.task is not None
     assert result.duration_minutes is not None
     assert result.action is not None
-    return {
+    serialized = {
         "kind": "RECOMMEND",
         "task_id": result.task.id,
         "task_title": result.task.title,
@@ -250,6 +323,18 @@ def _serialize_recommendation(
         "action": result.action,
         "explanation": result.explanation,
     }
+    authorization = getattr(result, "lower_priority_authorization", None)
+    if authorization is not None:
+        serialized["lower_priority_authorization"] = {
+            "task_id": authorization.task_id,
+            "duration_minutes": authorization.duration_minutes,
+            "timezone_name": authorization.timezone_name,
+            "available_minutes": authorization.available_minutes,
+            "feasible_high_task_ids": list(
+                authorization.feasible_high_task_ids
+            ),
+        }
+    return serialized
 
 
 def _capture(
@@ -414,6 +499,7 @@ def _start(
         context=_context(request, now=now, environ=environ),
         selected_action=request.selected_action,
         start_reason=request.start_reason,
+        lower_priority_authorization=request.lower_priority_authorization,
     )
     task = runtime.store.get_task(session.task_id)
     return {
@@ -793,7 +879,9 @@ def _validate_request(request: object) -> _ValidatedRequest:
         _require_fields(
             request,
             required={"version", "operation"},
-            optional={"time_cap_minutes", "timezone", "excluded_task_ids"},
+            optional={
+                "time_cap_minutes", "timezone", "excluded_task_ids",
+            },
         )
         return _ValidatedRequest(
             operation=operation,
@@ -817,7 +905,8 @@ def _validate_request(request: object) -> _ValidatedRequest:
             request,
             required={"version", "operation", "task_id", "planned_minutes"},
             optional={
-                "available_minutes", "timezone", "selected_action", "start_reason"
+                "available_minutes", "timezone", "selected_action", "start_reason",
+                "lower_priority_authorization",
             },
         )
         task_id = _integer(request, "task_id", positive=True)
@@ -831,6 +920,7 @@ def _validate_request(request: object) -> _ValidatedRequest:
             planned_minutes=planned_minutes,
             selected_action=_optional_text(request, "selected_action"),
             start_reason=_optional_text(request, "start_reason"),
+            lower_priority_authorization=_lower_priority_authorization(request),
         )
     if operation == "feedback":
         _require_fields(

@@ -13,7 +13,7 @@ from personal_os.models import (
 )
 from personal_os.recommendation_types import (
     MAX_EXCLUDED_TASK_IDS, AvailabilityKind, DeterministicNoWorkReason,
-    EligibleTaskCandidate,
+    EligibleTaskCandidate, LowerPriorityAuthorization,
     RecommendationChoice, RecommendationChoiceKind, RecommendationContext,
     RecommendationError, RecommendationFailureKind, RecommendationRankingContext,
     RecommendationResult, RecommendationResultKind, ScheduleState, DeadlineState,
@@ -185,42 +185,75 @@ class RecommendationService:
                 deterministic_reason=DeterministicNoWorkReason.NO_FEASIBLE_TASKS,
             )
 
-        must_gated = any(item.importance is TaskImportance.MUST for item in candidates)
-        if must_gated:
-            candidates = [
-                item for item in candidates if item.importance is TaskImportance.MUST
-            ]
         excluded = frozenset(excluded_task_ids)
-        if excluded:
-            candidates = [
-                item for item in candidates if item.task_id not in excluded
-            ]
-        if not candidates:
-            if must_gated:
-                explanation = (
-                    "All feasible MUST work was skipped for this search. "
-                    "Only MUST work is currently permissible; reset skipped work "
-                    "to reconsider it."
+        feasible_high = tuple(
+            item for item in candidates if item.importance is TaskImportance.MUST
+        )
+        feasible_lower = tuple(
+            item for item in candidates if item.importance is not TaskImportance.MUST
+        )
+        remaining_high = tuple(
+            item for item in feasible_high if item.task_id not in excluded
+        )
+        remaining_lower = tuple(
+            item for item in feasible_lower if item.task_id not in excluded
+        )
+        must_gated = bool(remaining_high)
+        authorized_high_task_ids: tuple[int, ...] | None = None
+
+        if remaining_high:
+            candidates = list(remaining_high)
+        elif feasible_high:
+            if remaining_lower:
+                candidates = list(remaining_lower)
+                authorized_high_task_ids = tuple(
+                    sorted(item.task_id for item in feasible_high)
                 )
-                reason = DeterministicNoWorkReason.ALL_FEASIBLE_MUST_TASKS_EXCLUDED
             else:
-                explanation = (
-                    "All currently permissible work was skipped for this search. "
-                    "Reset skipped work to reconsider it."
+                if feasible_lower:
+                    explanation = (
+                        "All currently available work priorities were skipped for this "
+                        "search. Reset skipped work to reconsider them."
+                    )
+                    reason = (
+                        DeterministicNoWorkReason.ALL_PERMISSIBLE_TASKS_EXCLUDED
+                    )
+                else:
+                    explanation = (
+                        "All feasible High-priority Tasks were skipped for this search, "
+                        "and no other priority currently has feasible work. Reset "
+                        "skipped work to reconsider it."
+                    )
+                    reason = (
+                        DeterministicNoWorkReason.ALL_FEASIBLE_MUST_TASKS_EXCLUDED
+                    )
+                return RecommendationResult(
+                    RecommendationResultKind.NO_WORK,
+                    availability,
+                    explanation,
+                    deterministic_reason=reason,
                 )
-                reason = DeterministicNoWorkReason.ALL_PERMISSIBLE_TASKS_EXCLUDED
-            return RecommendationResult(
-                RecommendationResultKind.NO_WORK,
-                availability,
-                explanation,
-                deterministic_reason=reason,
-            )
+        else:
+            candidates = list(remaining_lower)
+            if not candidates:
+                return RecommendationResult(
+                    RecommendationResultKind.NO_WORK,
+                    availability,
+                    "All currently permissible work was skipped for this search. "
+                    "Reset skipped work to reconsider it.",
+                    deterministic_reason=(
+                        DeterministicNoWorkReason.ALL_PERMISSIBLE_TASKS_EXCLUDED
+                    ),
+                )
         bounded = tuple(sorted(candidates, key=_candidate_sort_key)[:self.candidate_limit])
         ranking_context = RecommendationRankingContext(
             availability.kind,
             availability.available_minutes,
             must_gated,
-            alternative_required=bool(excluded_task_ids),
+            alternative_required=(
+                bool(excluded_task_ids)
+                or authorized_high_task_ids is not None
+            ),
         )
         try:
             choice = self.ranker.recommend(ranking_context, bounded)
@@ -240,7 +273,9 @@ class RecommendationService:
             project_map,
             availability,
             must_gated,
-            bool(excluded_task_ids),
+            bool(excluded_task_ids) or authorized_high_task_ids is not None,
+            context,
+            authorized_high_task_ids,
         )
 
     @staticmethod
@@ -248,7 +283,8 @@ class RecommendationService:
         choice: RecommendationChoice,
         candidates: tuple[EligibleTaskCandidate, ...], tasks_by_id: dict,
         projects: dict, availability, must_gated: bool,
-        alternative_required: bool,
+        alternative_required: bool, context: RecommendationContext,
+        authorized_high_task_ids: tuple[int, ...] | None,
     ) -> RecommendationResult:
         if not isinstance(choice, RecommendationChoice):
             raise RecommendationError(
@@ -273,7 +309,7 @@ class RecommendationService:
                 )
             if must_gated or alternative_required:
                 detail = (
-                    "NO_WORK is invalid while feasible MUST tasks exist"
+                    "NO_WORK is invalid while feasible High-priority Tasks exist"
                     if must_gated
                     else "NO_WORK is invalid when an alternative is required"
                 )
@@ -302,9 +338,21 @@ class RecommendationService:
             raise RecommendationError(RecommendationFailureKind.INVALID_OUTPUT, "duration was not allowed for selected task")
         task = tasks_by_id[candidate.task_id]
         project_name = None if task.project_id is None else projects[task.project_id].name
+        authorization = (
+            None
+            if authorized_high_task_ids is None
+            else LowerPriorityAuthorization(
+                task_id=task.id,
+                duration_minutes=choice.duration_minutes,
+                timezone_name=context.timezone_name,
+                available_minutes=context.available_minutes,
+                feasible_high_task_ids=authorized_high_task_ids,
+            )
+        )
         return RecommendationResult(
             RecommendationResultKind.RECOMMEND, availability, choice.reason,
             task=task, project_name=project_name,
             duration_minutes=choice.duration_minutes,
             action=choice.action,
+            lower_priority_authorization=authorization,
         )
